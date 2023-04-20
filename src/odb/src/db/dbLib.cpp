@@ -44,6 +44,7 @@
 #include "dbTable.hpp"
 #include "dbTech.h"
 #include "dbTransform.h"
+#include "dbCommon.h"
 
 namespace odb {
 
@@ -306,6 +307,17 @@ dbMaster* dbLib::findMaster(const char* name)
 {
   _dbLib* lib = (_dbLib*) this;
   return (dbMaster*) lib->_master_hash.find(name);
+}
+
+std::vector<dbMaster*> dbLib::findMasters(const char* pattern)
+{
+  std::vector<dbMaster*> masters;
+  for (dbMaster* master : getMasters()) {
+    if (globNameMatch(pattern, master)) {
+      masters.push_back(master);
+    }
+  }
+  return masters;
 }
 
 dbSet<dbSite> dbLib::getSites()

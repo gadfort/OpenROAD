@@ -31,6 +31,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include <cstring>
+#include <fnmatch.h>
 
 namespace odb {
 
@@ -42,6 +43,12 @@ inline uint flagsToUInt(T* obj)
   uint i;
   std::memcpy(&i, &obj->_flags, sizeof(obj->_flags));
   return i;
+}
+
+template <typename T>
+bool globNameMatch(const char* pattern, T* obj)
+{
+  return fnmatch(pattern, obj->getConstName(), 0) == 0;
 }
 
 }  // namespace odb

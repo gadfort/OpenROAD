@@ -379,6 +379,18 @@ dbMaster* dbDatabase::findMaster(const char* name)
   return NULL;
 }
 
+std::vector<dbMaster*> dbDatabase::findMasters(const char* pattern)
+{
+  std::vector<dbMaster*> masters;
+
+  for (dbLib* lib : getLibs()) {
+    const std::vector<dbMaster*> lib_masters = lib->findMasters(pattern);
+    masters.insert(masters.end(), lib_masters.begin(), lib_masters.end());
+  }
+
+  return masters;
+}
+
 dbSet<dbChip> dbDatabase::getChips()
 {
   _dbDatabase* db = (_dbDatabase*) this;

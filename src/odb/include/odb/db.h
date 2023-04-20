@@ -320,6 +320,11 @@ class dbDatabase : public dbObject
   dbMaster* findMaster(const char* name);
 
   ///
+  /// Find masters based on provided glob
+  ///
+  std::vector<dbMaster*> findMasters(const char* pattern);
+
+  ///
   /// Get the chip of this database.
   /// Returns NULL if no chip has been created.
   ///
@@ -5167,6 +5172,11 @@ class dbLib : public dbObject
   /// Returns NULL if the object was not found.
   ///
   dbMaster* findMaster(const char* name);
+
+  ///
+  /// Find masters based on provided glob
+  ///
+  std::vector<dbMaster*> findMasters(const char* pattern);
 
   ///
   /// Get the sites of this library
