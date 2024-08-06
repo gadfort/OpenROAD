@@ -232,7 +232,17 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
              ordered_nets.size());
 
   const double dbus = block_->getDbUnitsPerMicron();
-  for (const auto& [points, net] : ordered_nets) {
+  std::set<odb::dbInst*>
+      routed_insts;  // track insts that have been routed to and skip
+  for (auto& [points, net] : ordered_nets) {
+    if (routed_insts.find(points.target0.terminal->getInst())
+        != routed_insts.end()) {
+      continue;
+    }
+    if (routed_insts.find(points.target1.terminal->getInst())
+        != routed_insts.end()) {
+      continue;
+    }
     debugPrint(logger_,
                utl::PAD,
                "Router",
@@ -255,6 +265,8 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
           logger_, utl::PAD, "Router", 2, "Route segments {}", route.size());
       routes[net].push_back({route, points.target0, points.target1});
       commitRoute(route);
+      routed_insts.insert(points.target0.terminal->getInst());
+      routed_insts.insert(points.target1.terminal->getInst());
       for (const auto& [p0, p1] : added_edges0) {
         boost::remove_edge(
             point_vertex_map_[p0], point_vertex_map_[p1], graph_);
@@ -1163,7 +1175,6 @@ std::vector<RDLRouter::TargetPair> RDLRouter::generateRoutingPairs(
 
     const odb::dbTransform xform = iterm->getInst()->getTransform();
 
-    bool found = false;
     for (auto* mpin : iterm->getMTerm()->getMPins()) {
       for (auto* geom : mpin->getGeometry()) {
         odb::dbTechLayer* found_layer = geom->getTechLayer();
@@ -1186,11 +1197,6 @@ std::vector<RDLRouter::TargetPair> RDLRouter::generateRoutingPairs(
 
         terms[box] = {iterm, found_layer};
         terms_rects[iterm].insert(box);
-        found = true;
-        break;
-      }
-      if (found) {
-        break;
       }
     }
   }
@@ -1278,7 +1284,6 @@ std::vector<RDLRouter::TargetPair> RDLRouter::generateRoutingPairs(
         });
 
     // find acceptable pairs
-    std::set<odb::dbInst*> used_instances;
     std::set<odb::Rect> used;
     for (const auto& [cover, non_cover] : rect_pairs) {
       if (used.find(cover) != used.end()) {
@@ -1289,21 +1294,10 @@ std::vector<RDLRouter::TargetPair> RDLRouter::generateRoutingPairs(
       }
 
       const auto& iterm0 = terms[cover];
-      if (used_instances.find(iterm0.first->getInst())
-          != used_instances.end()) {
-        continue;
-      }
-
       const auto& iterm1 = terms[non_cover];
-      if (used_instances.find(iterm1.first->getInst())
-          != used_instances.end()) {
-        continue;
-      }
 
       used.insert(cover);
       used.insert(non_cover);
-      used_instances.insert(iterm0.first->getInst());
-      used_instances.insert(iterm1.first->getInst());
 
       const odb::Point pt_cover(cover.xCenter(), cover.yCenter());
       const odb::Point pt_non_cover(non_cover.xCenter(), non_cover.yCenter());
