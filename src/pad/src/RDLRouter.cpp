@@ -195,10 +195,6 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
   // build graph
   makeGraph();
 
-  if (gui_ != nullptr) {
-    gui_->pause();
-  }
-
   std::map<odb::dbNet*, std::vector<TargetPair>> failed;
   struct NetRoute
   {
@@ -1145,6 +1141,7 @@ std::vector<RDLRouter::TargetPair> RDLRouter::generateRoutingPairs(
     odb::dbNet* net) const
 {
   std::map<odb::Rect, std::pair<odb::dbITerm*, odb::dbTechLayer*>> terms;
+  std::map<odb::dbITerm*, std::set<odb::Rect>> terms_rects;
   odb::dbTechLayer* bump_pin_layer = getOtherLayer(bump_accessvia_);
   odb::dbTechLayer* pad_pin_layer = getOtherLayer(pad_accessvia_);
 
@@ -1188,6 +1185,7 @@ std::vector<RDLRouter::TargetPair> RDLRouter::generateRoutingPairs(
         xform.apply(box);
 
         terms[box] = {iterm, found_layer};
+        terms_rects[iterm].insert(box);
         found = true;
         break;
       }
@@ -1213,7 +1211,6 @@ std::vector<RDLRouter::TargetPair> RDLRouter::generateRoutingPairs(
              net->getName(),
              terms.size());
 
-  const double dbus = block_->getDbUnitsPerMicron();
   std::vector<TargetPair> pairs;
   if (terms.size() == 2) {
     const auto& [shape0, term0] = *terms.begin();
@@ -1223,103 +1220,98 @@ std::vector<RDLRouter::TargetPair> RDLRouter::generateRoutingPairs(
     pairs.push_back({{shape0center, shape0, term0.first, term0.second},
                      {shape1center, shape1, term1.first, term1.second}});
   } else {
+    // build distance matrix
+    std::vector<odb::Rect> covers;
+    std::vector<odb::Rect> non_covers;
+    for (const auto& [shape, iterm] : terms) {
+      if (routing_map_.find(iterm.first) != routing_map_.end()) {
+        continue;
+      }
+
+      if (iterm.first->getMTerm()->getMaster()->getType().isCover()) {
+        covers.push_back(shape);
+      } else {
+        non_covers.push_back(shape);
+      }
+    }
+
+    std::vector<std::pair<odb::Rect, odb::Rect>> rect_pairs;
+    for (const auto& cover : covers) {
+      for (const auto& non_cover : non_covers) {
+        rect_pairs.emplace_back(cover, non_cover);
+      }
+    }
+
+    // add routing_map rects
+    for (const auto& [src, dst] : routing_map_) {
+      if (dst == nullptr) {
+        continue;
+      }
+
+      auto find_term0 = terms_rects.find(src);
+      if (find_term0 == terms_rects.end()) {
+        continue;
+      }
+      auto find_term1 = terms_rects.find(dst);
+      if (find_term1 == terms_rects.end()) {
+        continue;
+      }
+
+      for (const auto& src_rect : find_term0->second) {
+        for (const auto& dst_rect : find_term1->second) {
+          rect_pairs.emplace_back(src_rect, dst_rect);
+        }
+      }
+    }
+
+    // sort by distance
+    std::stable_sort(
+        rect_pairs.begin(),
+        rect_pairs.end(),
+        [](const auto& lhs, const auto& rhs) {
+          const odb::Point lhs_pt0(lhs.first.xCenter(), lhs.first.yCenter());
+          const odb::Point lhs_pt1(lhs.second.xCenter(), lhs.second.yCenter());
+          const odb::Point rhs_pt0(rhs.first.xCenter(), rhs.first.yCenter());
+          const odb::Point rhs_pt1(rhs.second.xCenter(), rhs.second.yCenter());
+
+          return distance(lhs_pt0, lhs_pt1) < distance(rhs_pt0, rhs_pt1);
+        });
+
+    // find acceptable pairs
     std::set<odb::dbInst*> used_instances;
     std::set<odb::Rect> used;
-    for (const auto& [shape0, iterm0] : terms) {
-      if (used.find(shape0) != used.end()) {
+    for (const auto& [cover, non_cover] : rect_pairs) {
+      if (used.find(cover) != used.end()) {
         continue;
       }
-      if (used_instances.find(iterm0.first->getInst()) != used_instances.end()) {
-        continue;
-      }
-
-      // only pick covers (bumps)
-      if (!iterm0.first->getMTerm()->getMaster()->getType().isCover()) {
+      if (used.find(non_cover) != used.end()) {
         continue;
       }
 
-      debugPrint(logger_,
-                 utl::PAD,
-                 "Router",
-                 2,
-                 "Finding routing pair for {} ({})",
-                 iterm0.first->getName(),
-                 iterm0.first->getNet()->getName());
-
-      odb::dbITerm* find_terminal = nullptr;
-      auto check_routing_map = routing_map_.find(iterm0.first);
-      if (check_routing_map != routing_map_.end()) {
-        find_terminal = check_routing_map->second;
-
-        if (find_terminal == nullptr) {
-          // do not route this bump
-          used.insert(shape0);
-          continue;
-        }
+      const auto& iterm0 = terms[cover];
+      if (used_instances.find(iterm0.first->getInst())
+          != used_instances.end()) {
+        continue;
       }
 
-      int64_t dist = std::numeric_limits<int64_t>::max();
-      const odb::Point pt0(shape0.xCenter(), shape0.yCenter());
-      odb::Rect shape = shape0;
-      odb::Point point = pt0;
-      odb::dbITerm* term = iterm0.first;
-      odb::dbTechLayer* layer = iterm0.second;
-      for (const auto& [shape1, iterm1] : terms) {
-        if (used.find(shape1) != used.end() || shape0 == shape1) {
-          continue;
-        }
-        if (used_instances.find(iterm1.first->getInst()) != used_instances.end()) {
-          continue;
-        }
-
-        if (find_terminal != nullptr) {
-          if (find_terminal != iterm1.first) {
-            continue;
-          }
-        } else if (iterm1.first->getMTerm()->getMaster()->getType().isCover()) {
-          // only pick non covers
-          continue;
-        }
-
-        const odb::Point pt1(shape1.xCenter(), shape1.yCenter());
-        const int64_t new_dist = distance(pt0, pt1);
-
-        debugPrint(logger_,
-                   utl::PAD,
-                   "Router",
-                   2,
-                   "  {} ({}): {:.4f}um",
-                   iterm1.first->getName(),
-                   iterm1.first->getNet()->getName(),
-                   new_dist / dbus);
-
-        if (new_dist < dist) {
-          dist = new_dist;
-          shape = shape1;
-          point = pt1;
-          term = iterm1.first;
-          layer = iterm1.second;
-        }
+      const auto& iterm1 = terms[non_cover];
+      if (used_instances.find(iterm1.first->getInst())
+          != used_instances.end()) {
+        continue;
       }
 
-      if (pt0 == point) {
-        logger_->error(utl::PAD,
-                       37,
-                       "Unable to find routing pair for {} ({})",
-                       iterm0.first->getName(),
-                       iterm0.first->getNet()->getName());
-      }
-
-      used.insert(shape0);
+      used.insert(cover);
+      used.insert(non_cover);
       used_instances.insert(iterm0.first->getInst());
-      if (!find_terminal) {
-        used.insert(shape);
-        used_instances.insert(term->getInst());
-      }
-      pairs.push_back({{pt0, shape0, iterm0.first, iterm0.second},
-                       {point, shape, term, layer}});
+      used_instances.insert(iterm1.first->getInst());
+
+      const odb::Point pt_cover(cover.xCenter(), cover.yCenter());
+      const odb::Point pt_non_cover(non_cover.xCenter(), non_cover.yCenter());
+      pairs.push_back({{pt_cover, cover, iterm0.first, iterm0.second},
+                       {pt_non_cover, non_cover, iterm1.first, iterm1.second}});
     }
   }
+
   return pairs;
 }
 
@@ -1373,7 +1365,7 @@ void RDLGui::drawObjects(gui::Painter& painter)
   if (draw_vertex || draw_edge) {
     RDLRouter::GridGraph::vertex_iterator v, vend;
     for (boost::tie(v, vend) = boost::vertices(router_->getGraph()); v != vend;
-        ++v) {
+         ++v) {
       const odb::Point& pt = vertex_map.at(*v);
       if (box.contains({pt, pt})) {
         vertex.push_back(*v);
@@ -1408,7 +1400,8 @@ void RDLGui::drawObjects(gui::Painter& painter)
 
   const bool draw_flywires = checkDisplayControl(draw_fly_wires_);
   if (draw_flywires) {
-    painter.setPenAndBrush(gui::Painter::yellow, true, gui::Painter::Brush::SOLID, 3);
+    painter.setPenAndBrush(
+        gui::Painter::yellow, true, gui::Painter::Brush::SOLID, 3);
 
     for (const auto& [net, pairs] : router_->getRoutingMap()) {
       for (const auto& pair : pairs) {
