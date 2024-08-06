@@ -28,6 +28,7 @@ record_tests {
   rdl_route_45_cost
   rdl_route_via
   rdl_route_bump_via
+  rdl_route_45_with_2port_bump
 
   skywater130_overlapping_filler
 
