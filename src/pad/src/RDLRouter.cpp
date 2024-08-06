@@ -150,7 +150,8 @@ RDLRouter::RDLRouter(utl::Logger* logger,
       spacing_(spacing),
       allow45_(allow45),
       turn_penalty_(turn_penalty),
-      routing_map_(routing_map)
+      routing_map_(routing_map),
+      gui_(nullptr)
 {
   if (width_ == 0) {
     width_ = layer_->getWidth();
@@ -193,6 +194,10 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
 
   // build graph
   makeGraph();
+
+  if (gui_ != nullptr) {
+    gui_->pause();
+  }
 
   std::map<odb::dbNet*, std::vector<TargetPair>> failed;
   struct NetRoute
@@ -1325,6 +1330,14 @@ RDLGui::RDLGui()
   addDisplayControl(draw_vertex_, true);
   addDisplayControl(draw_edge_, true);
   addDisplayControl(draw_obs_, true);
+  addDisplayControl(draw_fly_wires_, true);
+}
+
+RDLGui::~RDLGui()
+{
+  if (router_ != nullptr) {
+    router_->setRDLGui(nullptr);
+  }
 }
 
 void RDLGui::drawObjects(gui::Painter& painter)
@@ -1332,14 +1345,13 @@ void RDLGui::drawObjects(gui::Painter& painter)
   if (router_ == nullptr) {
     return;
   }
-  if (painter.getPixelsPerDBU() * 1000 < 1) {
-    return;
-  }
+  const bool draw_detail = painter.getPixelsPerDBU() * 1000 >= 1;
+
   const odb::Rect box = painter.getBounds();
 
   const auto& vertex_map = router_->getVertexMap();
 
-  const bool draw_obs = checkDisplayControl(draw_obs_);
+  const bool draw_obs = draw_detail && checkDisplayControl(draw_obs_);
   if (draw_obs) {
     gui::Painter::Color obs_color = gui::Painter::cyan;
     obs_color.a = 127;
@@ -1354,25 +1366,27 @@ void RDLGui::drawObjects(gui::Painter& painter)
     }
   }
 
-  const bool draw_vertex = checkDisplayControl(draw_vertex_);
-  const bool draw_edge = checkDisplayControl(draw_edge_);
-
-  if (!draw_vertex && !draw_edge) {
-    return;
-  }
-
-  painter.setPenAndBrush(gui::Painter::red, true);
+  const bool draw_vertex = draw_detail && checkDisplayControl(draw_vertex_);
+  const bool draw_edge = draw_detail && checkDisplayControl(draw_edge_);
 
   std::vector<RDLRouter::GridGraph::vertex_descriptor> vertex;
-  RDLRouter::GridGraph::vertex_iterator v, vend;
-  for (boost::tie(v, vend) = boost::vertices(router_->getGraph()); v != vend;
-       ++v) {
-    const odb::Point& pt = vertex_map.at(*v);
-    if (box.contains({pt, pt})) {
-      if (draw_vertex) {
-        painter.drawCircle(pt.x(), pt.y(), 100);
+  if (draw_vertex || draw_edge) {
+    RDLRouter::GridGraph::vertex_iterator v, vend;
+    for (boost::tie(v, vend) = boost::vertices(router_->getGraph()); v != vend;
+        ++v) {
+      const odb::Point& pt = vertex_map.at(*v);
+      if (box.contains({pt, pt})) {
+        vertex.push_back(*v);
       }
-      vertex.push_back(*v);
+    }
+  }
+
+  if (draw_vertex) {
+    painter.setPenAndBrush(gui::Painter::red, true);
+
+    for (const auto& v : vertex) {
+      const odb::Point& pt = vertex_map.at(v);
+      painter.drawCircle(pt.x(), pt.y(), 100);
     }
   }
 
@@ -1391,6 +1405,28 @@ void RDLGui::drawObjects(gui::Painter& painter)
       }
     }
   }
+
+  const bool draw_flywires = checkDisplayControl(draw_fly_wires_);
+  if (draw_flywires) {
+    painter.setPenAndBrush(gui::Painter::yellow, true, gui::Painter::Brush::SOLID, 3);
+
+    for (const auto& [net, pairs] : router_->getRoutingMap()) {
+      for (const auto& pair : pairs) {
+        painter.drawLine(pair.target0.center, pair.target1.center);
+      }
+    }
+  }
+}
+
+void RDLGui::setRouter(RDLRouter* router)
+{
+  router_ = router;
+  router_->setRDLGui(this);
+}
+
+void RDLGui::pause()
+{
+  gui::Gui::get()->pause();
 }
 
 }  // namespace pad

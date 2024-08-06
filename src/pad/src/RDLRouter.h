@@ -65,12 +65,15 @@ class RDLGui : public gui::Renderer
 {
  public:
   RDLGui();
+  ~RDLGui();
 
-  void setRouter(RDLRouter* router) { router_ = router; }
+  void setRouter(RDLRouter* router);
 
   void drawObjects(gui::Painter& painter) override;
 
   const char* getDisplayControlGroupName() override { return "RDL Router"; }
+
+  void pause();
 
  private:
   RDLRouter* router_ = nullptr;
@@ -78,6 +81,7 @@ class RDLGui : public gui::Renderer
   static constexpr const char* draw_vertex_ = "Vertices";
   static constexpr const char* draw_edge_ = "Edges";
   static constexpr const char* draw_obs_ = "Obstructions";
+  static constexpr const char* draw_fly_wires_ = "Routing fly wires";
 };
 
 class RDLRouter
@@ -144,6 +148,9 @@ class RDLRouter
     return vertex_point_map_;
   }
   const ObsTree& getObstructions() const { return obstructions_; }
+  const std::map<odb::dbNet*, std::vector<TargetPair>>& getRoutingMap() const { return routing_terminals_; }
+
+  void setRDLGui(RDLGui* gui) { gui_ = gui; }
 
  private:
   void makeGraph();
@@ -207,6 +214,8 @@ class RDLRouter
   std::vector<int> x_grid_;
   std::vector<int> y_grid_;
   std::map<odb::dbNet*, std::vector<TargetPair>> routing_terminals_;
+
+  RDLGui* gui_;
 };
 
 }  // namespace pad
