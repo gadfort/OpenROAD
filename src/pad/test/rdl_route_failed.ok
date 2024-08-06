@@ -6,16 +6,17 @@
 [INFO ODB-0132]     Created 4 special nets and 4706 connections.
 [INFO ODB-0133]     Created 354 nets and 627 connections.
 [INFO PAD-0005] Routing 139 nets
-[WARNING PAD-0006] Failed to route the following 24 nets:
+[WARNING PAD-0006] Failed to route the following 21 nets:
   DVDD
-    BUMP_14_12/PAD -> u_v18_16/DVDD
     BUMP_2_12/PAD -> u_v18_27/DVDD
+    BUMP_5_13/PAD -> u_v18_23/DVDD
     BUMP_11_3/PAD -> u_v18_6/DVDD
+    BUMP_12_5/PAD -> u_v18_11/DVDD
     BUMP_4_11/PAD -> u_v18_28/DVDD
     BUMP_9_4/PAD -> u_v18_5/DVDD
   DVSS
+    BUMP_9_2/PAD -> u_vzz_5/DVSS
     BUMP_4_13/PAD -> u_vzz_24/DVSS
-    BUMP_13_10/PAD -> u_vzz_14/DVSS
     BUMP_4_3/PAD -> u_vzz_1/DVSS
     BUMP_12_3/PAD -> u_vzz_7/DVSS
     BUMP_6_12/PAD -> u_vzz_23/DVSS
@@ -25,8 +26,10 @@
     BUMP_4_14/PAD -> u_vdd_11/VDD
     BUMP_9_3/PAD -> u_vdd_2/VDD
     BUMP_9_12/PAD -> u_vdd_pll/VDD
+    BUMP_11_12/PAD -> u_vdd_9/VDD
   VSS
     BUMP_14_9/PAD -> u_vss_6/VSS
+    BUMP_12_2/PAD -> u_vss_3/VSS
   p_bsg_tag_clk_o
     u_bsg_tag_clk_o/PAD -> BUMP_3_10/PAD
   p_bsg_tag_data_i
@@ -49,23 +52,17 @@
     u_co2_clk_o/PAD -> BUMP_3_12/PAD
   p_co_4_i
     u_co_4_i/PAD -> BUMP_5_12/PAD
-  p_ddr_addr_12_o
-    u_ddr_addr_12_o/PAD -> BUMP_5_3/PAD
   p_ddr_addr_13_o
     BUMP_4_4/PAD -> u_ddr_addr_13_o/PAD
-  p_ddr_addr_14_o
-    BUMP_4_2/PAD -> u_ddr_addr_14_o/PAD
   p_ddr_addr_1_o
     BUMP_8_4/PAD -> u_ddr_addr_1_o/PAD
+  p_ddr_cas_n_o
+    BUMP_10_2/PAD -> u_ddr_cas_n_o/PAD
   p_ddr_ck_n_o
     BUMP_11_4/PAD -> u_ddr_ck_n_o/PAD
-  p_ddr_dq_11_io
-    u_ddr_dq_11_io/PAD -> BUMP_4_5/PAD
-  p_ddr_dq_14_io
-    u_ddr_dq_14_io/PAD -> BUMP_4_6/PAD
-  p_ddr_dqs_n_0_io
-    u_ddr_dqs_n_0_io/PAD -> BUMP_4_7/PAD
+  p_ddr_cke_o
+    BUMP_11_2/PAD -> u_ddr_cke_o/PAD
   p_ddr_odt_o
     u_ddr_odt_o/PAD -> BUMP_10_3/PAD
-[ERROR PAD-0007] Failed to route 24 nets.
+[ERROR PAD-0007] Failed to route 21 nets.
 PAD-0007
