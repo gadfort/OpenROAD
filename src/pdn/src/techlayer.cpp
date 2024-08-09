@@ -107,6 +107,41 @@ int TechLayer::snapToGrid(int pos, int greater_than) const
   return pos;
 }
 
+int TechLayer::snapToGridInterval(odb::dbBlock* block, int pos) const
+{
+  odb::dbTechLayerDir dir = layer_->getDirection();
+
+  int origin = 0;
+  int num = 0;
+  int step = 0;
+  for (auto* grid : block->getTrackGrids()) {
+    if (grid->getTechLayer() != layer_) {
+      continue;
+    }
+
+    if (dir == odb::dbTechLayerDir::VERTICAL) {
+      if (grid->getNumGridPatternsX() <= 1) {
+        continue;
+      }
+
+      grid->getGridPatternX(0, origin, num, step);
+    } else {
+      if (grid->getNumGridPatternsY() <= 1) {
+        continue;
+      }
+
+      grid->getGridPatternY(0, origin, num, step);
+    }
+  }
+
+  if (num == 0 || step == 0) {
+    return pos;
+  }
+
+  const int count = (pos - origin) / step;
+  return count * step + origin;
+}
+
 int TechLayer::snapToManufacturingGrid(odb::dbTech* tech,
                                        int pos,
                                        bool round_up)
