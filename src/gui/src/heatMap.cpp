@@ -470,6 +470,16 @@ void HeatMapDataSource::setXYMapGrid(const std::vector<int>& x_grid,
 
 void HeatMapDataSource::destroyMap()
 {
+  if (destroy_map_) {
+    // no need to call for redraw
+    return;
+  }
+
+  if (!hasData()) {
+    // no data loaded, so no need to redraw
+    return;
+  }
+
   destroy_map_ = true;
 
   redraw();
