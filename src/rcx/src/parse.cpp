@@ -62,7 +62,6 @@ Ath__parser::~Ath__parser()
     _inFP = nullptr;
   }
   delete[] _inputFile;
-  delete[] _line;
   delete[] _wordSeparators;
 
   for (int ii = 0; ii < _maxWordCnt; ii++) {
@@ -78,8 +77,6 @@ Ath__parser::~Ath__parser()
 
 void Ath__parser::init()
 {
-  _line = ATH__allocCharWord(_lineSize, _logger);
-
   _wordArray = new char*[_maxWordCnt];
 
   for (int ii = 0; ii < _maxWordCnt; ii++) {
@@ -263,7 +260,7 @@ int Ath__parser::mkWords(const char* word, const char* sep)
     strcpy(_wordSeparators, sep);
   }
 
-  strcpy(_line, word);
+  _line = word;
   _currentWordCnt = mkWords(0);
 
   if (sep != nullptr) {
@@ -304,7 +301,7 @@ int Ath__parser::mkWords(int jj)
   }
 
   int ii = 0;
-  int len = strlen(_line);
+  int len = _line.length();
   while (ii < len) {
     int k = ii;
     for (; k < len; k++) {
@@ -348,10 +345,13 @@ void Ath__parser::reportProgress()
 
 int Ath__parser::readLineAndBreak(int prevWordCnt)
 {
-  if (fgets(_line, _lineSize, _inFP) == nullptr) {
+  char line[_lineSize];
+  if (fgets(line, _lineSize, _inFP) == nullptr) {
     _currentWordCnt = prevWordCnt;
     return prevWordCnt;
   }
+
+  _line = line;
 
   _lineNum++;
   reportProgress();

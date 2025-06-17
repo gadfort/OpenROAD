@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <string>
+
 #include "odb/array1.h"
 #include "utl/Logger.h"
 
@@ -52,7 +54,7 @@ class Ath__parser
   int mkWords(int jj);
   bool isSeparator(char a);
 
-  char* _line;
+  std::string _line;
   char* _wordSeparators;
   char** _wordArray;
   char _commentChar;
