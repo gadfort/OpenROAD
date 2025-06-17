@@ -751,7 +751,6 @@ class extRCModel
                  const char* name,
                  const char* suffix,
                  const char* permissions);
-  FILE* openSolverFile();
   void mkNet_prefix(extMeasure* m, const char* wiresNameSuffix);
   void mkFileNames(extMeasure* m, char* wiresNameSuffix);
   void writeWires2(FILE* fp, extMeasure* measure, uint wireCnt);

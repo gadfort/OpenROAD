@@ -2756,16 +2756,6 @@ FILE* extRCModel::mkPatternFile()
   return fp;
 }
 
-FILE* extRCModel::openSolverFile()
-{
-  FILE* fp = openFile(_wireDirName, _wireFileName, ".out", "r");
-  if (fp != nullptr) {
-    _parser->setInputFP(fp);
-  }
-
-  return fp;
-}
-
 bool extRCModel::openCapLogFile()
 {
   if (!_readSolver && !_runSolver) {
