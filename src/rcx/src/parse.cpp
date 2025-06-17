@@ -65,7 +65,6 @@ Ath__parser::~Ath__parser()
   }
   delete[] _inputFile;
   delete[] _line;
-  delete[] _tmpLine;
   delete[] _wordSeparators;
 
   for (int ii = 0; ii < _maxWordCnt; ii++) {
@@ -82,7 +81,6 @@ Ath__parser::~Ath__parser()
 void Ath__parser::init()
 {
   _line = ATH__allocCharWord(_lineSize, _logger);
-  _tmpLine = ATH__allocCharWord(_lineSize, _logger);
 
   _wordArray = new char*[_maxWordCnt];
 

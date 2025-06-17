@@ -53,7 +53,6 @@ class Ath__parser
   bool isSeparator(char a);
 
   char* _line;
-  char* _tmpLine;
   char* _wordSeparators;
   char** _wordArray;
   char _commentChar;
