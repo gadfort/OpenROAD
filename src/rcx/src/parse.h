@@ -64,11 +64,11 @@ class Ath__parser
   FILE* _inFP;
   char* _inputFile;
 
-  int _progressLineChunk;
   utl::Logger* _logger;
 
   static constexpr int _maxWordCnt = 100;
   static constexpr int _lineSize = 10000;
+  static constexpr int _progressLineChunk = 1000000;
 };
 
 }  // namespace rcx

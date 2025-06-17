@@ -94,8 +94,6 @@ void Ath__parser::init()
 
   _inFP = nullptr;
   _inputFile = ATH__allocCharWord(512, _logger);
-
-  _progressLineChunk = 1000000;
 }
 
 int Ath__parser::getLineNum()
