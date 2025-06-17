@@ -56,16 +56,17 @@ class Ath__parser
   char* _wordSeparators;
   char** _wordArray;
   char _commentChar;
-  int _maxWordCnt;
 
   int _lineNum;
   int _currentWordCnt;
-  int _lineSize;
   FILE* _inFP;
   char* _inputFile;
 
   int _progressLineChunk;
   utl::Logger* _logger;
+
+  static constexpr int _maxWordCnt = 100;
+  static constexpr int _lineSize = 10000;
 };
 
 }  // namespace rcx

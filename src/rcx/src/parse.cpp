@@ -45,8 +45,6 @@ static char* ATH__allocCharWord(int n, utl::Logger* logger)
 Ath__parser::Ath__parser(utl::Logger* logger)
 {
   _logger = logger;
-  _lineSize = 10000;
-  _maxWordCnt = 100;
   init();
 }
 
