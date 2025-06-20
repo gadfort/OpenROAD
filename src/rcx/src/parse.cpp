@@ -45,8 +45,6 @@ static char* ATH__allocCharWord(int n, utl::Logger* logger)
 Ath__parser::Ath__parser(utl::Logger* logger)
 {
   _logger = logger;
-  _lineSize = 10000;
-  _maxWordCnt = 100;
   init();
 }
 
@@ -65,7 +63,6 @@ Ath__parser::~Ath__parser()
   }
   delete[] _inputFile;
   delete[] _line;
-  delete[] _tmpLine;
   delete[] _wordSeparators;
 
   for (int ii = 0; ii < _maxWordCnt; ii++) {
@@ -82,7 +79,6 @@ Ath__parser::~Ath__parser()
 void Ath__parser::init()
 {
   _line = ATH__allocCharWord(_lineSize, _logger);
-  _tmpLine = ATH__allocCharWord(_lineSize, _logger);
 
   _wordArray = new char*[_maxWordCnt];
 
@@ -94,15 +90,11 @@ void Ath__parser::init()
 
   strcpy(_wordSeparators, " \n\t");
 
-  _commentChar = '#';
-
   _lineNum = 0;
   _currentWordCnt = -1;
 
   _inFP = nullptr;
   _inputFile = ATH__allocCharWord(512, _logger);
-
-  _progressLineChunk = 1000000;
 }
 
 int Ath__parser::getLineNum()
