@@ -1500,14 +1500,6 @@ void InstanceGrid::getGridLevelObstructions(ShapeVectorMap& obstructions) const
   ShapeVectorMap local_obs;
   Grid::getGridLevelObstructions(local_obs);
 
-  const odb::Rect inst_box = getGridArea();
-
-  // copy layer obs
-  for (const auto& [layer, shapes] : local_obs) {
-    auto obs = std::make_shared<GridObsShape>(layer, inst_box, this);
-    local_obs[layer].push_back(obs);
-  }
-
   // copy instance obstructions
   for (const auto& [layer, shapes] : getInstanceObstructions(inst_, halos_)) {
     for (const auto& shape : shapes) {
