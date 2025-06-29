@@ -125,6 +125,7 @@ class PdnGen
                 bool extend,
                 const std::vector<odb::dbTechLayer*>& pad_pin_layers,
                 const std::vector<odb::dbNet*>& nets,
+                bool is_blocking,
                 bool allow_out_of_die);
   void makeFollowpin(Grid* grid,
                      odb::dbTechLayer* layer,

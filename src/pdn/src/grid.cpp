@@ -954,17 +954,91 @@ void Grid::getGridLevelObstructions(ShapeVectorMap& obstructions) const
                               core.xMax() + ver_size + offset[2],
                               core.yMax() + hor_size + offset[3]);
     for (auto* layer : ring->getLayers()) {
-      auto obs = std::make_shared<GridObsShape>(layer, ring_rect, this);
-      obs->generateObstruction();
-      debugPrint(
-          getLogger(),
-          utl::PDN,
-          "Obs",
-          2,
-          "Adding obstruction on layer {} covering {}",
-          layer->getName(),
-          Shape::getRectText(ring_rect, getBlock()->getDbUnitsPerMicron()));
-      obstructions[layer].push_back(obs);
+      if (ring->isGridBlocking()) {
+        auto obs = std::make_shared<GridObsShape>(layer, ring_rect, this);
+        obs->generateObstruction();
+        debugPrint(
+            getLogger(),
+            utl::PDN,
+            "Obs",
+            2,
+            "Adding obstruction on layer {} covering {}",
+            layer->getName(),
+            Shape::getRectText(ring_rect, getBlock()->getDbUnitsPerMicron()));
+        obstructions[layer].push_back(obs);
+      } else {
+        if (layer->getDirection() == odb::dbTechLayerDir::VERTICAL) {
+          auto obs_l = std::make_shared<GridObsShape>(
+              layer,
+              odb::Rect(ring_rect.xMin(),
+                        ring_rect.yMin(),
+                        core.xMin() - offset[0],
+                        ring_rect.yMax()),
+              this);
+          obs_l->generateObstruction();
+          debugPrint(getLogger(),
+                     utl::PDN,
+                     "Obs",
+                     2,
+                     "Adding obstruction on layer {} covering {}",
+                     layer->getName(),
+                     Shape::getRectText(obs_l->getRect(),
+                                        getBlock()->getDbUnitsPerMicron()));
+          obstructions[layer].push_back(obs_l);
+          auto obs_r = std::make_shared<GridObsShape>(
+              layer,
+              odb::Rect(core.xMax() + offset[2],
+                        ring_rect.yMin(),
+                        ring_rect.xMax(),
+                        ring_rect.yMax()),
+              this);
+          obs_r->generateObstruction();
+          debugPrint(getLogger(),
+                     utl::PDN,
+                     "Obs",
+                     2,
+                     "Adding obstruction on layer {} covering {}",
+                     layer->getName(),
+                     Shape::getRectText(obs_r->getRect(),
+                                        getBlock()->getDbUnitsPerMicron()));
+          obstructions[layer].push_back(obs_r);
+        } else {
+          auto obs_b = std::make_shared<GridObsShape>(
+              layer,
+              odb::Rect(ring_rect.xMin(),
+                        ring_rect.yMin(),
+                        ring_rect.xMax(),
+                        core.yMin() - offset[1]),
+              this);
+          obs_b->generateObstruction();
+          debugPrint(getLogger(),
+                     utl::PDN,
+                     "Obs",
+                     2,
+                     "Adding obstruction on layer {} covering {}",
+                     layer->getName(),
+                     Shape::getRectText(obs_b->getRect(),
+                                        getBlock()->getDbUnitsPerMicron()));
+          obstructions[layer].push_back(obs_b);
+          auto obs_t = std::make_shared<GridObsShape>(
+              layer,
+              odb::Rect(ring_rect.xMin(),
+                        core.yMax() + offset[3],
+                        ring_rect.xMax(),
+                        ring_rect.yMax()),
+              this);
+          obs_t->generateObstruction();
+          debugPrint(getLogger(),
+                     utl::PDN,
+                     "Obs",
+                     2,
+                     "Adding obstruction on layer {} covering {}",
+                     layer->getName(),
+                     Shape::getRectText(obs_t->getRect(),
+                                        getBlock()->getDbUnitsPerMicron()));
+          obstructions[layer].push_back(obs_t);
+        }
+      }
     }
   }
 }

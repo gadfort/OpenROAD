@@ -148,6 +148,7 @@ void make_ring(const char* grid_name,
                bool extend,
                const std::vector<odb::dbTechLayer*>& pad_pin_layers,
                const std::vector<odb::dbNet*>& nets,
+               bool is_blocking,
                bool allow_outside_of_die)
 {
   PdnGen* pdngen = ord::getPdnGen();
@@ -169,6 +170,7 @@ void make_ring(const char* grid_name,
                      extend,
                      pad_pin_layers,
                      nets,
+                     is_blocking,
                      allow_outside_of_die);
   }
 }

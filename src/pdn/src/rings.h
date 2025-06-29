@@ -31,6 +31,9 @@ class Rings : public GridComponent
   const std::array<int, 4>& getOffset() const { return offset_; }
   void setPadOffset(const std::array<int, 4>& offset);
 
+  void setGridBlocking(bool value) { grid_blocking_ = value; }
+  bool isGridBlocking() const { return grid_blocking_; }
+
   void setExtendToBoundary(bool value);
   void setAllowOutsideDieArea() { allow_outside_die_ = true; }
 
@@ -59,6 +62,7 @@ class Rings : public GridComponent
   std::array<int, 4> offset_ = {0, 0, 0, 0};
   bool extend_to_boundary_ = false;
   bool allow_outside_die_ = false;
+  bool grid_blocking_ = true;
 
   void checkDieArea() const;
 

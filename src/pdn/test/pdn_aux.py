@@ -596,6 +596,7 @@ def add_pdn_ring(
     add_connect=False,
     extend_to_boundary=False,
     connect_to_pads=False,
+    is_blocking=True,
     allow_outside_of_die=False,
 ):
     pdngen = design.getPdnGen()
@@ -696,6 +697,7 @@ def add_pdn_ring(
             extend_to_boundary,
             connect_to_pad_layers,
             nets_list,
+            is_blocking,
             allow_outside_of_die,
         )
 
