@@ -278,6 +278,7 @@ int NesterovPlace::doNesterovPlace(int start_iter)
 
   // routability snapshot info
   bool is_routability_snapshot_saved = false;
+  int routability_snapshot_iteration = 0;
   float route_snapshotA = 0;
   float route_snapshot_WlCoefX = 0, route_snapshot_WlCoefY = 0;
   // bool isDivergeTriedRevert = false;
@@ -732,6 +733,7 @@ int NesterovPlace::doNesterovPlace(int start_iter)
         for (auto& nb : nbVec_) {
           nb->revertToSnapshot();
         }
+        iter = routability_snapshot_iteration;
         num_region_diverged_ = 0;
       } else {
         divergeMsg_
@@ -750,6 +752,7 @@ int NesterovPlace::doNesterovPlace(int start_iter)
       route_snapshot_WlCoefY = wireLengthCoefY_;
       route_snapshotA = curA;
       is_routability_snapshot_saved = true;
+      routability_snapshot_iteration = iter;
 
       for (auto& nb : nbVec_) {
         nb->snapshot();
@@ -819,6 +822,7 @@ int NesterovPlace::doNesterovPlace(int start_iter)
           nb->revertToSnapshot();
           nb->resetMinSumOverflow();
         }
+        iter = routability_snapshot_iteration;
         log_->info(
             GPL, 89, "Routability end iteration: revert back to snapshot");
       }
