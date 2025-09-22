@@ -368,6 +368,9 @@ class Polygon
   // returns a corrected Polygon with a closed form and counter-clockwise points
   Polygon bloat(int margin) const;
 
+  //  A polygon is contained in the interior of this polygon
+  bool contains(const Polygon& r) const;
+
   // Merge a collection of shapes
   static std::vector<Polygon> merge(const std::vector<Polygon>& polys);
   static std::vector<Polygon> merge(const std::vector<Rect>& rects);

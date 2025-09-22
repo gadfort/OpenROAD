@@ -161,6 +161,7 @@ class _dbBlock : public _dbObject
   char* _corner_name_list;
   char* _name;
   Polygon _die_area;
+  Polygon _core_area;
   std::vector<Rect> _blocked_regions_for_pins;
   dbId<_dbChip> _chip;
   dbId<_dbBox> _bbox;
@@ -328,6 +329,7 @@ class _dbBlock : public _dbObject
                           const dbNameUniquifyType& uniquify,
                           uint& unique_index,
                           const std::function<bool(const char*)>& exists);
+  odb::Rect computeCoreArea();
 };
 
 dbOStream& operator<<(dbOStream& stream, const _dbBlock& block);
