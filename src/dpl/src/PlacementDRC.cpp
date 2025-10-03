@@ -187,7 +187,7 @@ bool PlacementDRC::checkDRC(const Node* cell,
                             const dbOrientType& orient) const
 {
   return checkEdgeSpacing(cell, x, y, orient) && checkPadding(cell, x, y)
-         && checkBlockedLayers(cell, x, y) && checkOneSiteGap(cell, x, y);
+         && checkOneSiteGap(cell, x, y);
 }
 
 namespace {
