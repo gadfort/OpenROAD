@@ -67,6 +67,10 @@ bool _dbRow::operator==(const _dbRow& rhs) const
     return false;
   }
 
+  if (_next_entry != rhs._next_entry) {
+    return false;
+  }
+
   return true;
 }
 
@@ -135,6 +139,10 @@ bool _dbRow::operator<(const _dbRow& rhs) const
   }
 
   if (_flags._dir > rhs._flags._dir) {
+    return false;
+  }
+
+  if (_next_entry < rhs._next_entry) {
     return false;
   }
 
@@ -244,10 +252,15 @@ dbRow* dbRow::create(dbBlock* block_,
                      int spacing)
 {
   _dbBlock* block = (_dbBlock*) block_;
+  if (block->_row_hash.hasMember(name)) {
+    return nullptr;
+  }
+
   _dbSite* site = (_dbSite*) site_;
   _dbLib* lib = (_dbLib*) site->getOwner();
   _dbRow* row = block->_row_tbl->create();
   row->_name = safe_strdup(name);
+  block->_row_hash.insert(row);
   row->_lib = lib->getOID();
   row->_site = site->getOID();
   row->_flags._orient = orient;
@@ -266,6 +279,8 @@ void dbRow::destroy(dbRow* row_)
 {
   _dbRow* row = (_dbRow*) row_;
   _dbBlock* block = (_dbBlock*) row->getOwner();
+  block->_row_hash.remove(row);
+
   for (auto callback : block->_callbacks) {
     callback->inDbRowDestroy((dbRow*) row);
   }

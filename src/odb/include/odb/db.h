@@ -1086,6 +1086,12 @@ class dbBlock : public dbObject
   dbSet<dbRow> getRows();
 
   ///
+  /// Find a specific row of this block.
+  /// Returns nullptr if the object was not found.
+  ///
+  dbRow* findRow(const char* name);
+
+  ///
   /// Get the fills in this block
   ///
   dbSet<dbFill> getFills();

@@ -166,6 +166,7 @@ template class dbHashTable<_dbInst>;
 template class dbIntHashTable<_dbInstHdr>;
 template class dbHashTable<_dbBTerm>;
 template class dbHashTable<_dbMarkerCategory>;
+template class dbHashTable<_dbRow>;
 
 _dbBlock::_dbBlock(_dbDatabase* db)
 {
@@ -360,6 +361,7 @@ _dbBlock::_dbBlock(_dbDatabase* db)
   _inst_hdr_hash.setTable(_inst_hdr_tbl);
   _bterm_hash.setTable(_bterm_tbl);
   _marker_category_hash.setTable(_marker_categories_tbl);
+  _row_hash.setTable(_row_tbl);
 
   _net_bterm_itr = new dbNetBTermItr(_bterm_tbl);
 
@@ -793,6 +795,7 @@ dbOStream& operator<<(dbOStream& stream, const _dbBlock& block)
   stream << block._inst_hash;
   stream << block._module_hash;
   stream << block._modinst_hash;
+  stream << block._row_hash;
 
   stream << block._powerdomain_hash;
   stream << block._logicport_hash;
@@ -944,6 +947,9 @@ dbIStream& operator>>(dbIStream& stream, _dbBlock& block)
       stream >> unused_modnet_hash;
       stream >> unused_busport_hash;
     }
+  }
+  if (db->isSchema(db_schema_row_hash_table)) {
+    stream >> block._row_hash;
   }
   stream >> block._powerdomain_hash;
   stream >> block._logicport_hash;
@@ -1277,6 +1283,10 @@ bool _dbBlock::operator==(const _dbBlock& rhs) const
   }
 
   if (_bterm_hash != rhs._bterm_hash) {
+    return false;
+  }
+
+  if (_row_hash != rhs._row_hash) {
     return false;
   }
 
@@ -1915,6 +1925,12 @@ dbInst* dbBlock::findInst(const char* name)
 {
   _dbBlock* block = (_dbBlock*) this;
   return (dbInst*) block->_inst_hash.find(name);
+}
+
+dbRow* dbBlock::findRow(const char* name)
+{
+  _dbBlock* block = (_dbBlock*) this;
+  return (dbRow*) block->_row_hash.find(name);
 }
 
 dbModule* dbBlock::findModule(const char* name)
@@ -3676,6 +3692,7 @@ void _dbBlock::collectMemInfo(MemInfo& info)
   info.children_["group_hash"].add(_group_hash);
   info.children_["inst_hdr_hash"].add(_inst_hdr_hash);
   info.children_["bterm_hash"].add(_bterm_hash);
+  info.children_["_row_hash"].add(_row_hash);
 
   info.children_["children"].add(_children);
   info.children_["component_mask_shift"].add(_component_mask_shift);

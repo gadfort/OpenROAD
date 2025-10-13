@@ -181,6 +181,7 @@ class _dbBlock : public _dbObject
   dbHashTable<_dbPowerSwitch> _powerswitch_hash;
   dbHashTable<_dbIsolation> _isolation_hash;
   dbHashTable<_dbMarkerCategory> _marker_category_hash;
+  dbHashTable<_dbRow> _row_hash;
 
   dbHashTable<_dbLevelShifter> _levelshifter_hash;
   dbHashTable<_dbGroup> _group_hash;

@@ -5,8 +5,10 @@
 
 #include <cstdlib>
 
+#include "dbBlock.h"
 #include "dbCommon.h"
 #include "dbCore.h"
+#include "dbDatabase.h"
 #include "odb/dbId.h"
 #include "odb/dbTypes.h"
 #include "odb/odb.h"
@@ -39,6 +41,7 @@ class _dbRow : public _dbObject
   int _y;
   int _site_cnt;
   int _spacing;
+  dbId<_dbRow> _next_entry;
 
   _dbRow(_dbDatabase*, const _dbRow& r);
   _dbRow(_dbDatabase*);
@@ -58,7 +61,8 @@ inline _dbRow::_dbRow(_dbDatabase*, const _dbRow& r)
       _x(r._x),
       _y(r._y),
       _site_cnt(r._site_cnt),
-      _spacing(r._spacing)
+      _spacing(r._spacing),
+      _next_entry(r._next_entry)
 {
   if (r._name) {
     _name = safe_strdup(r._name);
@@ -75,6 +79,7 @@ inline _dbRow::_dbRow(_dbDatabase*)
   _y = 0;
   _site_cnt = 0;
   _spacing = 0;
+  _next_entry = 0;
 }
 
 inline _dbRow::~_dbRow()
@@ -95,11 +100,15 @@ inline dbOStream& operator<<(dbOStream& stream, const _dbRow& row)
   stream << row._y;
   stream << row._site_cnt;
   stream << row._spacing;
+  stream << row._next_entry;
+
   return stream;
 }
 
 inline dbIStream& operator>>(dbIStream& stream, _dbRow& row)
 {
+  _dbDatabase* db = row.getImpl()->getDatabase();
+
   uint* bit_field = (uint*) &row._flags;
   stream >> *bit_field;
   stream >> row._name;
@@ -109,6 +118,13 @@ inline dbIStream& operator>>(dbIStream& stream, _dbRow& row)
   stream >> row._y;
   stream >> row._site_cnt;
   stream >> row._spacing;
+  if (db->isSchema(db_schema_row_hash_table)) {
+    stream >> row._next_entry;
+  } else {
+    _dbBlock* owner = (_dbBlock*) row.getOwner();
+    owner->_row_hash.insert(&row);
+  }
+
   return stream;
 }
 
