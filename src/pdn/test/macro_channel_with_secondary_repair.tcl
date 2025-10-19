@@ -6,6 +6,13 @@ read_lef nangate_macros/fakeram45_256x16.lef
 
 read_def macro_channel_with_secondary_repair.def
 
+odb::dbInst_destroy \
+    [[ord::get_db_block] findInst \
+        {i_cache_subsystem.i_nbdcache/sram_block_4__tag_sram.genblk1_0__i_ram/macro_mem_1}]
+odb::dbInst_destroy \
+    [[ord::get_db_block] findInst \
+        {i_cache_subsystem.i_icache.sram_block_1__tag_sram.genblk1_0__i_ram/macro_mem_1}]
+
 ####################################
 # global connections
 ####################################

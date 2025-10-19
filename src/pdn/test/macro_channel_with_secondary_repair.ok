@@ -4,6 +4,4 @@
 [INFO ODB-0131]     Created 3 components and 183 component-terminals.
 [INFO PDN-0001] Inserting grid: grid
 [INFO PDN-0001] Inserting grid: CORE_macro_grid_1 - i_cache_subsystem.i_icache.sram_block_2__tag_sram.genblk1_0__i_ram/macro_mem_2
-[INFO PDN-0001] Inserting grid: CORE_macro_grid_1 - i_cache_subsystem.i_icache.sram_block_1__tag_sram.genblk1_0__i_ram/macro_mem_1
-[INFO PDN-0001] Inserting grid: CORE_macro_grid_1 - i_cache_subsystem.i_nbdcache/sram_block_4__tag_sram.genblk1_0__i_ram/macro_mem_1
 No differences found.
