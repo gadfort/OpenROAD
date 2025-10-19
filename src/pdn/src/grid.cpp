@@ -116,10 +116,10 @@ bool Grid::checkBuiltGrid() const
     return true;
   }
   getLogger()->warn(utl::PDN,
-                232,
-                "The grid \"{}\" ({}) does not contain any shapes or vias.",
-                getLongName(),
-                Grid::typeToString(type()));
+                    232,
+                    "The grid \"{}\" ({}) does not contain any shapes or vias.",
+                    getLongName(),
+                    Grid::typeToString(type()));
   return false;
 }
 
@@ -916,6 +916,13 @@ void Grid::getVias(std::vector<ViaPtr>& vias) const
   for (const auto& via : vias_) {
     vias.push_back(via);
   }
+}
+
+std::vector<ViaPtr> Grid::getVias() const
+{
+  std::vector<ViaPtr> vias;
+  getVias(vias);
+  return vias;
 }
 
 void Grid::removeVia(const ViaPtr& via)
@@ -1782,6 +1789,73 @@ void InstanceGrid::checkSetup() const
       }
     }
   }
+}
+
+bool InstanceGrid::checkBuiltGrid() const
+{
+  if (!Grid::checkBuiltGrid()) {
+    return false;
+  }
+
+  // Check for connections to external grids
+  std::set<odb::dbNet*> external_nets;
+  auto check_via_grid = [this](const ViaPtr& via) -> bool {
+    const auto& upper = via->getUpperShape();
+    if (upper) {
+      auto* grid_comp = upper->getGridComponent();
+      if (grid_comp && grid_comp->getGrid() != this) {
+        return true;
+      }
+    }
+    const auto& lower = via->getLowerShape();
+    if (lower) {
+      auto* grid_comp = lower->getGridComponent();
+      if (grid_comp && grid_comp->getGrid() != this) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (const auto& [layer, shapes] : getShapes()) {
+    for (const auto& shape : shapes) {
+      for (const auto& via : shape->getVias()) {
+        if (check_via_grid(via)) {
+          external_nets.insert(via->getNet());
+        }
+      }
+    }
+  }
+  for (const auto& via : getVias()) {
+    if (check_via_grid(via)) {
+      external_nets.insert(via->getNet());
+    }
+  }
+
+  std::set<odb::dbNet*> failed_nets;
+  for (auto* net : getNets(true)) {
+    if (external_nets.find(net) == external_nets.end()) {
+      failed_nets.insert(net);
+    }
+  }
+  if (!failed_nets.empty()) {
+    std::string nets;
+    for (auto* net : failed_nets) {
+      if (!nets.empty()) {
+        nets += ", ";
+      }
+      nets += net->getName();
+    }
+    getLogger()->warn(utl::PDN,
+                      241,
+                      "The grid \"{}\" ({}) has unconnected nets: {}",
+                      getLongName(),
+                      Grid::typeToString(type()),
+                      nets);
+    return false;
+  }
+
+  return true;
 }
 
 ////////

@@ -92,6 +92,7 @@ class Grid
                 Shape::ObstructionTreeMap& local_obstructions);
   void makeVias(const Shape::ShapeTreeMap& global_shapes,
                 const Shape::ObstructionTreeMap& obstructions);
+  std::vector<ViaPtr> getVias() const;
   void getVias(std::vector<ViaPtr>& vias) const;
   void clearVias() { vias_.clear(); }
   void removeVia(const ViaPtr& via);
@@ -254,6 +255,7 @@ class InstanceGrid : public Grid
 
   virtual bool isValid() const;
   void checkSetup() const override;
+  bool checkBuiltGrid() const override;
 
   static ShapeVectorMap getInstanceObstructions(odb::dbInst* inst,
                                                 const Halo& halo
