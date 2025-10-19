@@ -110,6 +110,19 @@ void Grid::addConnect(std::unique_ptr<Connect> connect)
   }
 }
 
+bool Grid::checkBuiltGrid() const
+{
+  if (hasShapes() || hasVias()) {
+    return true;
+  }
+  getLogger()->warn(utl::PDN,
+                232,
+                "The grid \"{}\" ({}) does not contain any shapes or vias.",
+                getLongName(),
+                Grid::typeToString(type()));
+  return false;
+}
+
 void Grid::makeShapes(const Shape::ShapeTreeMap& global_shapes,
                       const Shape::ObstructionTreeMap& obstructions)
 {

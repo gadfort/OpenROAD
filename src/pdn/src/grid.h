@@ -64,6 +64,8 @@ class Grid
   virtual void addStrap(std::unique_ptr<Straps> strap);
   virtual void addConnect(std::unique_ptr<Connect> connect);
 
+  virtual bool checkBuiltGrid() const;
+
   void removeStrap(Straps* strap);
 
   std::set<odb::dbTechLayer*> connectableLayers(odb::dbTechLayer* layer) const;

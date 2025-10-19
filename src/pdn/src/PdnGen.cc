@@ -124,15 +124,7 @@ void PdnGen::buildGrids(bool trim)
 
   bool failed = false;
   for (auto* grid : grids) {
-    if (grid->hasShapes() || grid->hasVias()) {
-      continue;
-    }
-    logger_->warn(utl::PDN,
-                  232,
-                  "The grid \"{}\" ({}) does not contain any shapes or vias.",
-                  grid->getLongName(),
-                  Grid::typeToString(grid->type()));
-    failed = true;
+    failed |= !grid->checkBuiltGrid();
   }
 
   updateRenderer();
