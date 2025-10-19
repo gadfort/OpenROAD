@@ -888,6 +888,13 @@ void PdnGen::setAllowRepairChannels(bool allow)
   }
 }
 
+void PdnGen::setAllowIncompleteGrids(bool allow)
+{
+  for (auto* grid : getGrids()) {
+    grid->setAllowIncompleteGrid(allow);
+  }
+}
+
 void PdnGen::filterVias(const std::string& filter)
 {
   for (auto* grid : getGrids()) {

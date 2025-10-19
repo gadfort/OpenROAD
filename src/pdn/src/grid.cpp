@@ -120,7 +120,7 @@ bool Grid::checkBuiltGrid() const
                     "The grid \"{}\" ({}) does not contain any shapes or vias.",
                     getLongName(),
                     Grid::typeToString(type()));
-  return false;
+  return allow_incomplete_grid_;
 }
 
 void Grid::makeShapes(const Shape::ShapeTreeMap& global_shapes,
@@ -1794,7 +1794,7 @@ void InstanceGrid::checkSetup() const
 bool InstanceGrid::checkBuiltGrid() const
 {
   if (!Grid::checkBuiltGrid()) {
-    return false;
+    return allowsIncompleteGrid();
   }
 
   // Check for connections to external grids
@@ -1852,7 +1852,7 @@ bool InstanceGrid::checkBuiltGrid() const
                       getLongName(),
                       Grid::typeToString(type()),
                       nets);
-    return false;
+    return allowsIncompleteGrid();
   }
 
   return true;

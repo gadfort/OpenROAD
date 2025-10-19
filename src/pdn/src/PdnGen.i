@@ -328,6 +328,12 @@ void allow_repair_channels(bool allow)
   pdngen->setAllowRepairChannels(allow);
 }
 
+void allow_incomplete_grids(bool allow)
+{
+  PdnGen* pdngen = ord::getPdnGen();
+  pdngen->setAllowIncompleteGrids(allow);
+}
+
 void filter_vias(const char* filter)
 {
   PdnGen* pdngen = ord::getPdnGen();

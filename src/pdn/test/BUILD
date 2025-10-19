@@ -90,6 +90,8 @@ COMPULSORY_TESTS = [
     "macros_narrow_channel_large_spacing",
     "macros_narrow_channel_overlap",
     "macros_narrow_channel_repair_overlap",
+    "macros_partial_grid",
+    "macros_partial_grid_allow",
     "macros_with_halo",
     "macros_with_rings",
     "max_width",

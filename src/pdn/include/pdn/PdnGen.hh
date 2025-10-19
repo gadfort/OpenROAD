@@ -163,6 +163,7 @@ class PdnGen
   void setDebugRenderer(bool on);
   void rendererRedraw();
   void setAllowRepairChannels(bool allow);
+  void setAllowIncompleteGrids(bool allow);
   void filterVias(const std::string& filter);
 
   void checkSetup() const;

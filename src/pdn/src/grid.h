@@ -104,6 +104,8 @@ class Grid
 
   void setAllowRepairChannels(bool allow) { allow_repair_channels_ = allow; }
   bool allowsRepairChannels() const { return allow_repair_channels_; }
+  void setAllowIncompleteGrid(bool allow) { allow_incomplete_grid_ = allow; }
+  bool allowsIncompleteGrid() const { return allow_incomplete_grid_; }
 
   // returns the ordered nets for this grid.
   virtual std::vector<odb::dbNet*> getNets(bool starts_with_power) const;
@@ -182,6 +184,7 @@ class Grid
   std::unique_ptr<GridSwitchedPower> switched_power_cell_;
 
   bool allow_repair_channels_ = false;
+  bool allow_incomplete_grid_ = false;
 
   std::vector<std::unique_ptr<Rings>> rings_;
   std::vector<std::unique_ptr<Straps>> straps_;
