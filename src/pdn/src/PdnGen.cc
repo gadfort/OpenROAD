@@ -134,11 +134,13 @@ void PdnGen::buildGrids(bool trim)
                   Grid::typeToString(grid->type()));
     failed = true;
   }
+
+  updateRenderer();
+
   if (failed) {
     logger_->error(utl::PDN, 233, "Failed to generate full power grid.");
   }
 
-  updateRenderer();
   debugPrint(logger_, utl::PDN, "Make", 1, "Build - end");
 }
 
