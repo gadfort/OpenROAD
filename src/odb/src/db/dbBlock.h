@@ -317,7 +317,7 @@ class _dbBlock : public _dbObject
   bool operator==(const _dbBlock& rhs) const;
   bool operator!=(const _dbBlock& rhs) const { return !operator==(rhs); }
 
-  int globalConnect(const std::vector<dbGlobalConnect*>& connects);
+  int globalConnect(const std::vector<dbGlobalConnect*>& connects, bool incremental);
   _dbTech* getTech();
 
   dbObjectTable* getObjectTable(dbObjectType type);

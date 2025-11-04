@@ -150,7 +150,7 @@ std::vector<dbInst*> dbGlobalConnect::getInsts() const
   return insts;
 }
 
-int dbGlobalConnect::connect(dbInst* inst)
+int dbGlobalConnect::connect(dbInst* inst, bool incremental)
 {
   if (inst->isDoNotTouch()) {
     return 0;
@@ -161,7 +161,7 @@ int dbGlobalConnect::connect(dbInst* inst)
     return 0;
   }
 
-  const auto connections = obj->connect({inst});
+  const auto connections = obj->connect({inst}, incremental);
   return connections.size();
 }
 
@@ -283,7 +283,7 @@ std::set<dbMTerm*> _dbGlobalConnect::getMTermMapping(
   return mterms;
 }
 
-std::set<dbITerm*> _dbGlobalConnect::connect(const std::vector<dbInst*>& insts)
+std::set<dbITerm*> _dbGlobalConnect::connect(const std::vector<dbInst*>& insts, bool incremental)
 {
   utl::Logger* logger = getImpl()->getLogger();
   dbBlock* block = (dbBlock*) getImpl()->getOwner();
@@ -318,6 +318,9 @@ std::set<dbITerm*> _dbGlobalConnect::connect(const std::vector<dbInst*>& insts)
       auto* iterm = inst->getITerm(mterm);
 
       auto* current_net = iterm->getNet();
+      if (current_net != nullptr && incremental) {
+        continue;
+      }
       if (current_net != nullptr && current_net->isDoNotTouch()) {
         logger->warn(utl::ODB,
                      380,

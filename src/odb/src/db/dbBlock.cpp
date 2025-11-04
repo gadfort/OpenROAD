@@ -3309,18 +3309,18 @@ void dbBlock::destroyNetWires()
   }
 }
 
-int dbBlock::globalConnect()
+int dbBlock::globalConnect(bool incremental)
 {
   dbSet<dbGlobalConnect> gcs = getGlobalConnects();
   const std::vector<dbGlobalConnect*> connects(gcs.begin(), gcs.end());
   _dbBlock* dbblock = (_dbBlock*) this;
-  return dbblock->globalConnect(connects);
+  return dbblock->globalConnect(connects, incremental);
 }
 
-int dbBlock::globalConnect(dbGlobalConnect* gc)
+int dbBlock::globalConnect(dbGlobalConnect* gc, bool incremental)
 {
   _dbBlock* dbblock = (_dbBlock*) this;
-  return dbblock->globalConnect({gc});
+  return dbblock->globalConnect({gc}, incremental);
 }
 
 void dbBlock::clearGlobalConnect()
@@ -3381,12 +3381,12 @@ int dbBlock::addGlobalConnect(dbRegion* region,
       = odb::dbGlobalConnect::create(net, region, instPattern, pinPattern);
 
   if (gc != nullptr && do_connect) {
-    return globalConnect(gc);
+    return globalConnect(gc, true);
   }
   return 0;
 }
 
-int _dbBlock::globalConnect(const std::vector<dbGlobalConnect*>& connects)
+int _dbBlock::globalConnect(const std::vector<dbGlobalConnect*>& connects, bool incremental)
 {
   _dbBlock* dbblock = (_dbBlock*) this;
   utl::Logger* logger = dbblock->getImpl()->getLogger();
@@ -3442,7 +3442,7 @@ int _dbBlock::globalConnect(const std::vector<dbGlobalConnect*>& connects)
     }
   }
 
-  if (!donottouchinsts.empty()) {
+  if (!incremental && !donottouchinsts.empty()) {
     for (dbInst* inst : donottouchinsts) {
       logger->warn(utl::ODB,
                    383,
@@ -3453,11 +3453,11 @@ int _dbBlock::globalConnect(const std::vector<dbGlobalConnect*>& connects)
   }
 
   for (_dbGlobalConnect* connect : non_region_rules) {
-    const auto connections = connect->connect(inst_map[connect->inst_pattern_]);
+    const auto connections = connect->connect(inst_map[connect->inst_pattern_], incremental);
     connected_iterms.insert(connections.begin(), connections.end());
   }
   for (_dbGlobalConnect* connect : region_rules) {
-    const auto connections = connect->connect(inst_map[connect->inst_pattern_]);
+    const auto connections = connect->connect(inst_map[connect->inst_pattern_], incremental);
     connected_iterms.insert(connections.begin(), connections.end());
   }
 
