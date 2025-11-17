@@ -281,6 +281,7 @@ class InstanceGrid : public Grid
                              bool rect_is_min,
                              bool apply_horizontal,
                              bool apply_vertical);
+  bool hasHalo() const;
 };
 
 class BumpGrid : public InstanceGrid

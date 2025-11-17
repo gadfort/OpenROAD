@@ -53,14 +53,11 @@ define_pdn_grid \
   -default \
   -name macro \
   -starts_with POWER \
-  -halo "5 5"
+  -halo "10 10"
 
 add_pdn_connect \
   -grid macro \
   -layers "met4 met5"
 
-pdngen
-
-set def_file [make_result_file sky130_spm_floating_bpin.def]
-write_def $def_file
-diff_files sky130_spm_floating_bpin.defok $def_file
+catch {pdngen} err
+puts $err

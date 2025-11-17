@@ -1691,9 +1691,65 @@ bool InstanceGrid::isValid() const
   return true;
 }
 
+bool InstanceGrid::hasHalo() const
+{
+  for (int margin : halos_) {
+    if (margin != 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void InstanceGrid::checkSetup() const
 {
   Grid::checkSetup();
+
+  // check if halo overlaps rows
+  if (hasHalo() && !inst_->getMaster()->isCover()) {
+    const odb::Rect halo_inst
+        = applyHalo(inst_->getBBox()->getBox(), true, true, true);
+    int bloat = 0;
+    for (Grid* grid : getDomain()->getPDNGen()->getGrids()) {
+      if (this == grid) {
+        continue;
+      }
+      for (const auto& strap : grid->getStraps()) {
+        if (strap->type() == GridComponent::Followpin) {
+          bloat = std::max(strap->getWidth() / 2, bloat);
+        }
+      }
+    }
+    for (auto* row : getBlock()->getRows()) {
+      const odb::Rect row_bbox
+          = row->getBBox().bloat(bloat, odb::Orientation2D::Vertical);
+      if (row_bbox.overlaps(halo_inst)) {
+        // Halo will block row
+        const double dbus = getBlock()->getDbUnitsPerMicron();
+        std::array<int, 4> new_halo = halos_;
+        new_halo[0] -= std::max(0, halo_inst.xMin() - row_bbox.xMax());
+        new_halo[1] -= std::max(0, halo_inst.yMin() - row_bbox.yMax());
+        new_halo[2] -= std::max(0, halo_inst.xMax() - row_bbox.xMin());
+        new_halo[3] -= std::max(0, halo_inst.yMax() - row_bbox.yMin());
+        for (int i = 0; i < new_halo.size(); i++) {
+          if (new_halo[i] < 0) {
+            new_halo[i] = halos_[i];
+          }
+        }
+        // Suggest new halo
+        getLogger()->error(utl::PDN,
+                           8,
+                           "{} grid overlaps {}, consider adjusting the halo "
+                           "to: {:.4f}um, {:.4f}um, {:.4f}um, {:.4f}um",
+                           getLongName(),
+                           row->getName(),
+                           new_halo[0] / dbus,
+                           new_halo[1] / dbus,
+                           new_halo[2] / dbus,
+                           new_halo[3] / dbus);
+      }
+    }
+  }
 
   // check blockages above pins
   const auto nets = getNets(startsWithPower());
