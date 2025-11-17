@@ -148,6 +148,9 @@ class Grid
                                       const std::set<odb::dbInst*>& skip_insts,
                                       const std::set<odb::dbNet*>& skip_nets,
                                       utl::Logger* logger);
+  static void makeInitialRoutingObstructions(odb::dbBlock* block,
+                                      ShapeVectorMap& obs,
+                                      utl::Logger* logger);
   static void makeInitialShapes(odb::dbBlock* block,
                                 ShapeVectorMap& shapes,
                                 utl::Logger* logger);

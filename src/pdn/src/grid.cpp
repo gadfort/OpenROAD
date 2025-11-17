@@ -1084,13 +1084,11 @@ void Grid::getGridLevelObstructions(ShapeVectorMap& obstructions) const
   }
 }
 
-void Grid::makeInitialObstructions(odb::dbBlock* block,
+void Grid::makeInitialRoutingObstructions(odb::dbBlock* block,
                                    ShapeVectorMap& obs,
-                                   const std::set<odb::dbInst*>& skip_insts,
-                                   const std::set<odb::dbNet*>& skip_nets,
                                    utl::Logger* logger)
 {
-  debugPrint(logger, utl::PDN, "Make", 2, "Get initial obstructions - begin");
+  debugPrint(logger, utl::PDN, "Make", 2, "Get initial routing obstructions - begin");
   // routing obs
   for (auto* ob : block->getObstructions()) {
     if (ob->isSlotObstruction() || ob->isFillObstruction()) {
@@ -1114,6 +1112,19 @@ void Grid::makeInitialObstructions(odb::dbBlock* block,
       obs[box->getTechLayer()].push_back(std::move(shape));
     }
   }
+
+  debugPrint(logger, utl::PDN, "Make", 2, "Get initial routing obstructions - end");
+}
+
+void Grid::makeInitialObstructions(odb::dbBlock* block,
+                                   ShapeVectorMap& obs,
+                                   const std::set<odb::dbInst*>& skip_insts,
+                                   const std::set<odb::dbNet*>& skip_nets,
+                                   utl::Logger* logger)
+{
+  debugPrint(logger, utl::PDN, "Make", 2, "Get initial obstructions - begin");
+
+  Grid::makeInitialRoutingObstructions(block, obs, logger);
 
   // placed instances obs
   for (auto* inst : block->getInsts()) {

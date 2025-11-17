@@ -3024,6 +3024,18 @@ void Via::writeToDb(odb::dbSWire* wire,
   }
   ripup_shapes.insert(ripup_vias_middle.begin(), ripup_vias_middle.end());
 
+  // Remove middle shapes with violations
+  for (const auto& [middle_rect, box] : shapes.middle) {
+    auto* layer = box->getTechLayer();
+    if (layer != nullptr && obstructions.find(layer) != obstructions.end()) {
+      const auto& obs = obstructions.at(layer);
+      getLogger()->report("middle {} / {}", layer ? layer->getName() : "null", obs.size());
+      if (obs.qbegin(bgi::intersects(middle_rect)) != obs.qend()) {
+        ripup_shapes.insert(box);
+      }
+    }
+  }
+
   if (!ripup_shapes.empty()) {
     const TechLayer tech_layer(lower_->getLayer());
     int x = 0;
@@ -3041,20 +3053,18 @@ void Via::writeToDb(odb::dbSWire* wire,
       odb::dbSBox::destroy(shape);
     }
 
-    if (ripup_count == 0) {
-      // this really should not happen but makes clang-tidy happier
-      ripup_count = 1;
+    if (ripup_count > 0) {
+      getLogger()->warn(
+          utl::PDN,
+          195,
+          "Removing {} via(s) between {} and {} at ({:.4f} um, {:.4f} um) for {}",
+          ripup_count,
+          lower_->getLayer()->getName(),
+          upper_->getLayer()->getName(),
+          tech_layer.dbuToMicron(x / ripup_count),
+          tech_layer.dbuToMicron(y / ripup_count),
+          lower_->getNet()->getName());
     }
-    getLogger()->warn(
-        utl::PDN,
-        195,
-        "Removing {} via(s) between {} and {} at ({:.4f} um, {:.4f} um) for {}",
-        ripup_count,
-        lower_->getLayer()->getName(),
-        upper_->getLayer()->getName(),
-        tech_layer.dbuToMicron(x / ripup_count),
-        tech_layer.dbuToMicron(y / ripup_count),
-        lower_->getNet()->getName());
     markFailed(failedViaReason::RIPUP);
   }
 }

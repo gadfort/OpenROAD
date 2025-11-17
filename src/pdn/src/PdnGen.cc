@@ -754,6 +754,7 @@ void PdnGen::writeToDb(bool add_pins, const std::string& report_file) const
   // collect all the SWires from the block
   auto* block = db_->getChip()->getBlock();
   ShapeVectorMap net_shapes_vec;
+  Grid::makeInitialRoutingObstructions(block, net_shapes_vec, logger_);
   for (auto* net : block->getNets()) {
     Shape::populateMapFromDb(net, net_shapes_vec);
   }
