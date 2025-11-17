@@ -53,6 +53,17 @@ void TechLayer::populateGrid(odb::dbBlock* block, odb::dbTechLayerDir dir)
   } else {
     tracks->getGridY(grid_);
   }
+
+  std::vector<OneDimValue> values;
+  values.reserve(grid_.size());
+  for (int pos : grid_) {
+    OneDimValue v;
+    v.first = OneDimPoint(pos);
+    v.second = pos;
+    values.push_back(v);
+  }
+
+  grid_tree_ = GridTree(values.begin(), values.end());
 }
 
 int TechLayer::snapToGrid(int pos, int greater_than) const
@@ -61,28 +72,38 @@ int TechLayer::snapToGrid(int pos, int greater_than) const
     return pos;
   }
 
-  std::optional<int> delta_pos;
-  int delta = std::numeric_limits<int>::max();
-  for (const int grid_pos : grid_) {
-    if (grid_pos < greater_than) {
-      // ignore since it is lower than the minimum
-      continue;
-    }
+  std::vector<OneDimValue> result_k_nearest;
+  grid_tree_.query(boost::geometry::index::satisfies([&greater_than](const OneDimValue& other) {
+    return greater_than >= other.second;
+  }) && boost::geometry::index::nearest(OneDimPoint(pos), 1), std::back_inserter(result_k_nearest));
 
-    // look for smallest delta
-    const int new_delta = std::abs(pos - grid_pos);
-    if (new_delta < delta) {
-      delta_pos = grid_pos;
-      delta = new_delta;
-    } else {
-      break;
-    }
+  if (result_k_nearest.empty()) {
+    return pos;
   }
+  return result_k_nearest[0].second;
 
-  if (delta_pos.has_value()) {
-    return delta_pos.value();
-  }
-  return pos;
+  // std::optional<int> delta_pos;
+  // int delta = std::numeric_limits<int>::max();
+  // for (const int grid_pos : grid_) {
+  //   if (grid_pos < greater_than) {
+  //     // ignore since it is lower than the minimum
+  //     continue;
+  //   }
+
+  //   // look for smallest delta
+  //   const int new_delta = std::abs(pos - grid_pos);
+  //   if (new_delta < delta) {
+  //     delta_pos = grid_pos;
+  //     delta = new_delta;
+  //   } else {
+  //     break;
+  //   }
+  // }
+
+  // if (delta_pos.has_value()) {
+  //   return delta_pos.value();
+  // }
+  // return pos;
 }
 
 int TechLayer::snapToGridInterval(odb::dbBlock* block, int dist) const

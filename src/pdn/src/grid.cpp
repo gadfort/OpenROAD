@@ -1002,7 +1002,18 @@ std::map<Shape*, std::vector<odb::dbBox*>> Grid::writeToDb(
     return std::tie(l_low_level, l_high_level, l_area)
            < std::tie(r_low_level, r_high_level, r_area);
   });
+  int via_count = 0;
   for (const auto& via : vias) {
+    via_count++;
+    if (via_count % 1000 == 0) {
+      debugPrint(getLogger(),
+                 utl::PDN,
+                 "Write",
+                 2,
+                 "Via Write {} / {}",
+                 via_count,
+                 vias.size());
+    }
     auto net = net_map.find(via->getNet());
     if (net == net_map.end()) {
       continue;

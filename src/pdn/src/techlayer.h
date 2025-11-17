@@ -9,6 +9,8 @@
 #include "odb/db.h"
 #include "odb/dbTypes.h"
 #include "odb/geom.h"
+#include "boost/geometry/geometry.hpp"
+#include "boost/geometry/index/rtree.hpp"
 
 namespace utl {
 class Logger;
@@ -66,8 +68,15 @@ class TechLayer
   std::vector<MinCutRule> getMinCutRules() const;
 
  private:
+  using OneDimPoint = boost::geometry::model::point<int, 1, boost::geometry::cs::cartesian>;
+  using OneDimBox = boost::geometry::model::box<OneDimPoint>;
+  using OneDimValue = std::pair<OneDimPoint, int>;
+  using GridTree
+      = boost::geometry::index::rtree<OneDimValue, boost::geometry::index::quadratic<16>>;
+
   odb::dbTechLayer* layer_;
   std::vector<int> grid_;
+  GridTree grid_tree_;
 };
 
 }  // namespace pdn
