@@ -30,6 +30,10 @@ class _dbTrackGrid : public _dbObject
   dbVector<int> _first_mask;
   dbVector<bool> _samemask;
   dbId<_dbTechLayer> _next_grid;
+  
+  // Transient
+  std::vector<int> grid_x_;
+  std::vector<int> grid_y_;
 
   _dbTrackGrid(_dbDatabase*, const _dbTrackGrid& g);
   _dbTrackGrid(_dbDatabase*);
