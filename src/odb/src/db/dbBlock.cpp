@@ -3333,18 +3333,18 @@ void dbBlock::destroyNetWires()
   }
 }
 
-int dbBlock::globalConnect()
+int dbBlock::globalConnect(bool force)
 {
   dbSet<dbGlobalConnect> gcs = getGlobalConnects();
   const std::vector<dbGlobalConnect*> connects(gcs.begin(), gcs.end());
   _dbBlock* dbblock = (_dbBlock*) this;
-  return dbblock->globalConnect(connects);
+  return dbblock->globalConnect(connects, force);
 }
 
-int dbBlock::globalConnect(dbGlobalConnect* gc)
+int dbBlock::globalConnect(dbGlobalConnect* gc, bool force)
 {
   _dbBlock* dbblock = (_dbBlock*) this;
-  return dbblock->globalConnect({gc});
+  return dbblock->globalConnect({gc}, force);
 }
 
 void dbBlock::clearGlobalConnect()
@@ -3405,12 +3405,13 @@ int dbBlock::addGlobalConnect(dbRegion* region,
       = odb::dbGlobalConnect::create(net, region, instPattern, pinPattern);
 
   if (gc != nullptr && do_connect) {
-    return globalConnect(gc);
+    return globalConnect(gc, false);
   }
   return 0;
 }
 
-int _dbBlock::globalConnect(const std::vector<dbGlobalConnect*>& connects)
+int _dbBlock::globalConnect(const std::vector<dbGlobalConnect*>& connects,
+                            bool force)
 {
   _dbBlock* dbblock = (_dbBlock*) this;
   utl::Logger* logger = dbblock->getImpl()->getLogger();
@@ -3477,11 +3478,13 @@ int _dbBlock::globalConnect(const std::vector<dbGlobalConnect*>& connects)
   }
 
   for (_dbGlobalConnect* connect : non_region_rules) {
-    const auto connections = connect->connect(inst_map[connect->inst_pattern_]);
+    const auto connections
+        = connect->connect(inst_map[connect->inst_pattern_], force);
     connected_iterms.insert(connections.begin(), connections.end());
   }
   for (_dbGlobalConnect* connect : region_rules) {
-    const auto connections = connect->connect(inst_map[connect->inst_pattern_]);
+    const auto connections
+        = connect->connect(inst_map[connect->inst_pattern_], force);
     connected_iterms.insert(connections.begin(), connections.end());
   }
 
