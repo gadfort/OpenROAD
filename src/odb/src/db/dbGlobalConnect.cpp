@@ -161,7 +161,7 @@ int dbGlobalConnect::connect(dbInst* inst, bool force)
     return 0;
   }
 
-  const auto connections = obj->connect({inst}, force);
+  const auto& [connections, skipped] = obj->connect({inst}, force);
   return connections.size();
 }
 
@@ -283,12 +283,16 @@ std::set<dbMTerm*> _dbGlobalConnect::getMTermMapping(
   return mterms;
 }
 
-std::set<dbITerm*> _dbGlobalConnect::connect(const std::vector<dbInst*>& insts,
-                                             bool force)
+std::pair<std::set<dbITerm*>, std::set<dbITerm*>> _dbGlobalConnect::connect(
+    const std::vector<dbInst*>& insts,
+    bool force)
 {
   utl::Logger* logger = getImpl()->getLogger();
   dbBlock* block = (dbBlock*) getImpl()->getOwner();
   dbNet* net = odb::dbNet::getNet(block, net_);
+
+  std::set<dbITerm*> iterms;
+  std::set<dbITerm*> iterms_skipped;
 
   if (net->isDoNotTouch()) {
     logger->warn(
@@ -296,12 +300,11 @@ std::set<dbITerm*> _dbGlobalConnect::connect(const std::vector<dbInst*>& insts,
         379,
         "{} is marked do not touch, will be skipped for global connections",
         net->getName());
-    return {};
+    return {iterms, iterms_skipped};
   }
 
   const auto mterm_map = getMTermMapping();
 
-  std::set<dbITerm*> iterms;
   for (dbInst* inst : insts) {
     _dbInst* dbinst = (_dbInst*) inst;
     if (region_ != 0 && region_ != dbinst->_region) {
@@ -319,11 +322,7 @@ std::set<dbITerm*> _dbGlobalConnect::connect(const std::vector<dbInst*>& insts,
       auto* iterm = inst->getITerm(mterm);
 
       auto* current_net = iterm->getNet();
-      if (current_net != nullptr && !force) {
-        // Already connected, so dont update unless force
-        continue;
-      }
-      if (current_net != nullptr && current_net->isDoNotTouch()) {
+      if (!force && current_net != nullptr && current_net->isDoNotTouch()) {
         logger->warn(utl::ODB,
                      380,
                      "{}/{} is connected to {} which is marked do not touch, "
@@ -336,6 +335,11 @@ std::set<dbITerm*> _dbGlobalConnect::connect(const std::vector<dbInst*>& insts,
       if (current_net == net) {
         continue;
       }
+      if (current_net != nullptr && !force) {
+        // Already connected, so dont update unless force
+        iterms_skipped.insert(iterm);
+        continue;
+      }
       iterm->connect(net);
       if (net->isSpecial()) {
         iterm->setSpecial();
@@ -343,7 +347,7 @@ std::set<dbITerm*> _dbGlobalConnect::connect(const std::vector<dbInst*>& insts,
       iterms.insert(iterm);
     }
   }
-  return iterms;
+  return {iterms, iterms_skipped};
 }
 
 bool _dbGlobalConnect::appliesTo(dbInst* inst) const
