@@ -553,4 +553,7 @@
 [WARNING ODB-0380] TAP_543/VSS is connected to VSS which is marked do not touch, this connection will not be modified.
 [WARNING ODB-0380] TAP_544/VSS is connected to VSS which is marked do not touch, this connection will not be modified.
 [WARNING ODB-0380] frontend.icache.data_arrays_0.data_arrays_0_0_ext.mem/VSS is connected to VSS which is marked do not touch, this connection will not be modified.
-No differences found.
+[WARNING ODB-0379] VSS is marked do not touch, will be skipped for global connections
+[WARNING ODB-0379] VSS is marked do not touch, will be skipped for global connections
+[ERROR ODB-1105] Attempt to disconnect iterm PHY_0/VSS of dont_touch net VSS
+Error: macros_cells_dont_touch.tcl, 26 ODB-1105
