@@ -348,7 +348,7 @@ IRNetwork::generatePolygonsFromBTerms(std::vector<TerminalNode*>& terminals)
         auto pin_node = std::make_unique<BPinNode>(bpin, geom, layer);
 
         connections_.push_back(
-            std::make_unique<TermConnection>(term.get(), pin_node.get()));
+            std::make_unique<BPinTermConnection>(pin_node.get(), term.get()));
 
         nodes_[layer].push_back(std::move(term));
         bpin_nodes_.push_back(std::move(pin_node));

@@ -204,15 +204,20 @@ TermConnection::TermConnection(Node* node0, Node* node1)
 {
 }
 
-Connection::Resistance TermConnection::getResistance(
-    const ResistanceMap& res_map) const
-{
-  return kResistance;
-}
-
 std::string TermConnection::describe() const
 {
   return "Terminal Connection";
 }
 
+/////////////////////////////
+
+BPinTermConnection::BPinTermConnection(BPinNode* node0, Node* node1)
+    : Connection(node0, node1)
+{
+}
+
+std::string BPinTermConnection::describe() const
+{
+  return "BPin Terminal Connection";
+}
 }  // namespace psm
