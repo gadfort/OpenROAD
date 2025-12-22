@@ -28,6 +28,7 @@
 #include "shape.h"
 #include "utl/Logger.h"
 #include "utl/timer.h"
+#include "omp.h"
 
 namespace psm {
 
@@ -807,7 +808,16 @@ void IRNetwork::sortNodes()
   const utl::DebugScopedTimer timer(
       logger_, utl::PSM, "timer", 1, "Sorting nodes: {}");
 
+  std::vector<odb::dbTechLayer*> layers;
+  layers.reserve(nodes_.size());
   for (auto& [layer, nodes] : nodes_) {
+    layers.push_back(layer);
+  }
+
+  omp_set_num_threads(32);
+#pragma omp parallel for schedule(dynamic)
+  for (int i = 0; i < layers.size(); i++) {
+    auto& nodes = nodes_[layers[i]];
     std::stable_sort(
         nodes.begin(), nodes.end(), [](const auto& lhs, const auto& rhs) {
           return lhs->compare(rhs);

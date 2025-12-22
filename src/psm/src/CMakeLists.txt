@@ -3,6 +3,7 @@
 
 include("openroad")
 
+find_package(OpenMP REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 swig_lib(NAME      psm
@@ -41,6 +42,7 @@ target_link_libraries(psm
     Eigen3::Eigen
     gui
     Boost::boost
+    OpenMP::OpenMP_CXX
 )
 
 messages(
