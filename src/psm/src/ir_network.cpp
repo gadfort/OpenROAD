@@ -91,6 +91,8 @@ void IRNetwork::reset()
 
 void IRNetwork::construct()
 {
+  omp_set_num_threads(32);
+
   const utl::DebugScopedTimer timer(
       logger_, utl::PSM, "timer", 1, "Construct: {}");
 
@@ -489,7 +491,6 @@ void IRNetwork::generateRoutingLayerShapesAndNodes()
     layers.push_back(layer);
   }
 
-  omp_set_num_threads(32);
 #pragma omp parallel for schedule(dynamic)
   for (int i = 0; i < layers.size(); i++) {
     odb::dbTechLayer* layer = layers[i];
@@ -806,7 +807,16 @@ void IRNetwork::sortShapes()
   const utl::DebugScopedTimer timer(
       logger_, utl::PSM, "timer", 1, "Sorting shapes: {}");
 
+  std::vector<odb::dbTechLayer*> layers;
+  layers.reserve(shapes_.size());
   for (auto& [layer, shapes] : shapes_) {
+    layers.push_back(layer);
+  }
+
+#pragma omp parallel for schedule(dynamic)
+  for (int i = 0; i < layers.size(); i++) {
+    auto& shapes = shapes_[layers[i]];
+
     shapes.shrink_to_fit();
 
     std::stable_sort(
@@ -827,7 +837,6 @@ void IRNetwork::sortNodes()
     layers.push_back(layer);
   }
 
-  omp_set_num_threads(32);
 #pragma omp parallel for schedule(dynamic)
   for (int i = 0; i < layers.size(); i++) {
     auto& nodes = nodes_[layers[i]];
@@ -900,7 +909,17 @@ void IRNetwork::cleanupOverlappingNodes(NodePtrMap<Connection>& connection_map)
   const utl::DebugScopedTimer timer(
       logger_, utl::PSM, "timer", 1, "Cleanup overlapping nodes: {}");
 
+  std::vector<odb::dbTechLayer*> layers;
+  layers.reserve(nodes_.size());
   for (auto& [layer, nodes] : nodes_) {
+    layers.push_back(layer);
+  }
+
+#pragma omp parallel for schedule(dynamic)
+  for (int i = 0; i < layers.size(); i++) {
+    odb::dbTechLayer* layer = layers[i];
+    auto& nodes = nodes_[layer];
+
     std::set<Node*> removes;
 
     // remove duplicate/overlapping nodes
