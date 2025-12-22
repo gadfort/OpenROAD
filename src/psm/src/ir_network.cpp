@@ -482,7 +482,19 @@ void IRNetwork::generateRoutingLayerShapesAndNodes()
 
   // Simplify shapes
   std::vector<std::pair<odb::dbTechLayer*, Polygon90>> all_poly_shapes;
-  for (auto& [layer, shapes] : shapes_by_layer) {
+
+  std::vector<odb::dbTechLayer*> layers;
+  layers.reserve(nodes_.size());
+  for (auto& [layer, nodes] : shapes_by_layer) {
+    layers.push_back(layer);
+  }
+
+  omp_set_num_threads(32);
+#pragma omp parallel for schedule(dynamic)
+  for (int i = 0; i < layers.size(); i++) {
+    odb::dbTechLayer* layer = layers[i];
+    const auto& shapes = shapes_by_layer[layer];
+
     const utl::DebugScopedTimer layer_timer(
         logger_,
         utl::PSM,
@@ -511,6 +523,7 @@ void IRNetwork::generateRoutingLayerShapesAndNodes()
                shapes.size(),
                shape_polygons.size());
 
+#pragma omp critical
     for (const auto& shape_poly : shape_polygons) {
       all_poly_shapes.emplace_back(layer, shape_poly);
     }
