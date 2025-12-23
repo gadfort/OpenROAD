@@ -37,6 +37,9 @@ cc_library(
         "include/psm/MakePDNSim.hh",
         "include/psm/pdnsim.h",
     ],
+    copts = [
+        "-fopenmp",
+    ],
     includes = [
         "include",
     ],
@@ -55,6 +58,7 @@ cc_library(
         "@boost.stacktrace",
         "@eigen",
         "@tk_tcl//:tcl",
+        "@openmp",
     ],
 )
 
