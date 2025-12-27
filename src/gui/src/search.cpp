@@ -4,7 +4,7 @@
 #include "search.h"
 
 #include <atomic>
-#include <mutex>
+#include <shared_mutex>
 #include <vector>
 
 #include "boost/geometry/geometry.hpp"
@@ -267,7 +267,7 @@ Search::BlockData& Search::getData(odb::dbBlock* block)
 void Search::updateShapes(odb::dbBlock* block)
 {
   BlockData& data = getData(block);
-  std::lock_guard<std::mutex> lock(data.shapes_init_mutex);
+  std::unique_lock<std::shared_mutex> lock(data.shapes_mutex);
   if (data.shapes_init) {
     return;  // already done by another thread
   }
@@ -324,7 +324,7 @@ void Search::updateShapes(odb::dbBlock* block)
 void Search::updateBPins(odb::dbBlock* block)
 {
   BlockData& data = getData(block);
-  std::lock_guard<std::mutex> lock(data.bpins_init_mutex);
+  std::unique_lock<std::shared_mutex> lock(data.bpins_mutex);
   if (data.bpins_init) {
     return;  // already done by another thread
   }
@@ -359,7 +359,7 @@ void Search::updateBPins(odb::dbBlock* block)
 void Search::updateFills(odb::dbBlock* block)
 {
   BlockData& data = getData(block);
-  std::lock_guard<std::mutex> lock(data.fills_init_mutex);
+  std::unique_lock<std::shared_mutex> lock(data.fills_mutex);
   if (data.fills_init) {
     return;  // already done by another thread
   }
@@ -380,7 +380,7 @@ void Search::updateFills(odb::dbBlock* block)
 void Search::updateInsts(odb::dbBlock* block)
 {
   BlockData& data = getData(block);
-  std::lock_guard<std::mutex> lock(data.insts_init_mutex);
+  std::unique_lock<std::shared_mutex> lock(data.insts_mutex);
   if (data.insts_init) {
     return;  // already done by another thread
   }
@@ -401,7 +401,7 @@ void Search::updateInsts(odb::dbBlock* block)
 void Search::updateBlockages(odb::dbBlock* block)
 {
   BlockData& data = getData(block);
-  std::lock_guard<std::mutex> lock(data.blockages_init_mutex);
+  std::unique_lock<std::shared_mutex> lock(data.blockages_mutex);
   if (data.blockages_init) {
     return;  // already done by another thread
   }
@@ -424,7 +424,7 @@ void Search::updateBlockages(odb::dbBlock* block)
 void Search::updateObstructions(odb::dbBlock* block)
 {
   BlockData& data = getData(block);
-  std::lock_guard<std::mutex> lock(data.obstructions_init_mutex);
+  std::unique_lock<std::shared_mutex> lock(data.obstructions_mutex);
   if (data.obstructions_init) {
     return;  // already done by another thread
   }
@@ -450,7 +450,7 @@ void Search::updateObstructions(odb::dbBlock* block)
 void Search::updateRows(odb::dbBlock* block)
 {
   BlockData& data = getData(block);
-  std::lock_guard<std::mutex> lock(data.rows_init_mutex);
+  std::unique_lock<std::shared_mutex> lock(data.rows_mutex);
   if (data.rows_init) {
     return;  // already done by another thread
   }
@@ -658,6 +658,7 @@ Search::RoutingRange Search::searchBoxShapes(odb::dbBlock* block,
   if (!data.shapes_init) {
     updateShapes(block);
   }
+  std::shared_lock<std::shared_mutex> lock(data.shapes_mutex);
 
   auto it = data.box_shapes.find(layer);
   if (it == data.box_shapes.end()) {
@@ -672,10 +673,12 @@ Search::RoutingRange Search::searchBoxShapes(odb::dbBlock* block,
         rtree.qbegin(
             bgi::intersects(query)
             && bgi::satisfies(MinSizePredicate<odb::dbNet*>(min_size))),
-        rtree.qend());
+        rtree.qend(),
+        data.shapes_mutex);
   }
 
-  return RoutingRange(rtree.qbegin(bgi::intersects(query)), rtree.qend());
+  return RoutingRange(
+      rtree.qbegin(bgi::intersects(query)), rtree.qend(), data.shapes_mutex);
 }
 
 Search::SNetSBoxRange Search::searchSNetViaShapes(odb::dbBlock* block,
@@ -690,6 +693,7 @@ Search::SNetSBoxRange Search::searchSNetViaShapes(odb::dbBlock* block,
   if (!data.shapes_init) {
     updateShapes(block);
   }
+  std::shared_lock<std::shared_mutex> lock(data.shapes_mutex);
 
   auto it = data.snet_via_shapes.find(layer);
   if (it == data.snet_via_shapes.end()) {
@@ -704,10 +708,12 @@ Search::SNetSBoxRange Search::searchSNetViaShapes(odb::dbBlock* block,
         rtree.qbegin(
             bgi::intersects(query)
             && bgi::satisfies(MinSizePredicate<odb::dbNet*>(min_size))),
-        rtree.qend());
+        rtree.qend(),
+        data.shapes_mutex);
   }
 
-  return SNetSBoxRange(rtree.qbegin(bgi::intersects(query)), rtree.qend());
+  return SNetSBoxRange(
+      rtree.qbegin(bgi::intersects(query)), rtree.qend(), data.shapes_mutex);
 }
 
 Search::SNetShapeRange Search::searchSNetShapes(odb::dbBlock* block,
@@ -722,6 +728,7 @@ Search::SNetShapeRange Search::searchSNetShapes(odb::dbBlock* block,
   if (!data.shapes_init) {
     updateShapes(block);
   }
+  std::shared_lock<std::shared_mutex> lock(data.shapes_mutex);
 
   auto it = data.snet_shapes.find(layer);
   if (it == data.snet_shapes.end()) {
@@ -737,14 +744,16 @@ Search::SNetShapeRange Search::searchSNetShapes(odb::dbBlock* block,
             bgi::intersects(query)
             && bgi::satisfies(MinSizePredicate<odb::dbNet*>(min_size))
             && bgi::satisfies(PolygonIntersectPredicate<odb::dbNet*>(query))),
-        rtree.qend());
+        rtree.qend(),
+        data.shapes_mutex);
   }
 
   return SNetShapeRange(
       rtree.qbegin(
           bgi::intersects(query)
           && bgi::satisfies(PolygonIntersectPredicate<odb::dbNet*>(query))),
-      rtree.qend());
+      rtree.qend(),
+      data.shapes_mutex);
 }
 
 Search::FillRange Search::searchFills(odb::dbBlock* block,
@@ -759,6 +768,7 @@ Search::FillRange Search::searchFills(odb::dbBlock* block,
   if (!data.fills_init) {
     updateFills(block);
   }
+  std::shared_lock<std::shared_mutex> lock(data.fills_mutex);
 
   auto it = data.fills.find(layer);
   if (it == data.fills.end()) {
@@ -772,10 +782,12 @@ Search::FillRange Search::searchFills(odb::dbBlock* block,
         rtree.qbegin(
             bgi::intersects(query)
             && bgi::satisfies(MinSizePredicate<odb::dbFill*>(min_size))),
-        rtree.qend());
+        rtree.qend(),
+        data.fills_mutex);
   }
 
-  return FillRange(rtree.qbegin(bgi::intersects(query)), rtree.qend());
+  return FillRange(
+      rtree.qbegin(bgi::intersects(query)), rtree.qend(), data.fills_mutex);
 }
 
 Search::InstRange Search::searchInsts(odb::dbBlock* block,
@@ -789,6 +801,7 @@ Search::InstRange Search::searchInsts(odb::dbBlock* block,
   if (!data.insts_init) {
     updateInsts(block);
   }
+  std::shared_lock<std::shared_mutex> lock(data.insts_mutex);
 
   const odb::Rect query(x_lo, y_lo, x_hi, y_hi);
   if (min_height > 0) {
@@ -796,11 +809,13 @@ Search::InstRange Search::searchInsts(odb::dbBlock* block,
         data.insts.qbegin(
             bgi::intersects(query)
             && bgi::satisfies(MinHeightPredicate<odb::dbInst*>(min_height))),
-        data.insts.qend());
+        data.insts.qend(),
+        data.insts_mutex);
   }
 
   return InstRange(data.insts.qbegin(bgi::intersects(query)),
-                   data.insts.qend());
+                   data.insts.qend(),
+                   data.insts_mutex);
 }
 
 Search::BlockageRange Search::searchBlockages(odb::dbBlock* block,
@@ -814,6 +829,7 @@ Search::BlockageRange Search::searchBlockages(odb::dbBlock* block,
   if (!data.blockages_init) {
     updateBlockages(block);
   }
+  std::shared_lock<std::shared_mutex> lock(data.blockages_mutex);
 
   const odb::Rect query(x_lo, y_lo, x_hi, y_hi);
   if (min_height > 0) {
@@ -822,11 +838,13 @@ Search::BlockageRange Search::searchBlockages(odb::dbBlock* block,
             bgi::intersects(query)
             && bgi::satisfies(
                 MinHeightPredicate<odb::dbBlockage*>(min_height))),
-        data.blockages.qend());
+        data.blockages.qend(),
+        data.blockages_mutex);
   }
 
   return BlockageRange(data.blockages.qbegin(bgi::intersects(query)),
-                       data.blockages.qend());
+                       data.blockages.qend(),
+                       data.blockages_mutex);
 }
 
 Search::ObstructionRange Search::searchObstructions(odb::dbBlock* block,
@@ -841,6 +859,7 @@ Search::ObstructionRange Search::searchObstructions(odb::dbBlock* block,
   if (!data.obstructions_init) {
     updateObstructions(block);
   }
+  std::shared_lock<std::shared_mutex> lock(data.obstructions_mutex);
 
   auto it = data.obstructions.find(layer);
   if (it == data.obstructions.end()) {
@@ -854,10 +873,13 @@ Search::ObstructionRange Search::searchObstructions(odb::dbBlock* block,
         rtree.qbegin(
             bgi::intersects(query)
             && bgi::satisfies(MinSizePredicate<odb::dbObstruction*>(min_size))),
-        rtree.qend());
+        rtree.qend(),
+        data.obstructions_mutex);
   }
 
-  return ObstructionRange(rtree.qbegin(bgi::intersects(query)), rtree.qend());
+  return ObstructionRange(rtree.qbegin(bgi::intersects(query)),
+                          rtree.qend(),
+                          data.obstructions_mutex);
 }
 
 Search::RowRange Search::searchRows(odb::dbBlock* block,
@@ -871,6 +893,7 @@ Search::RowRange Search::searchRows(odb::dbBlock* block,
   if (!data.rows_init) {
     updateRows(block);
   }
+  std::shared_lock<std::shared_mutex> lock(data.rows_mutex);
 
   const odb::Rect query(x_lo, y_lo, x_hi, y_hi);
   if (min_height > 0) {
@@ -878,10 +901,13 @@ Search::RowRange Search::searchRows(odb::dbBlock* block,
         data.rows.qbegin(
             bgi::intersects(query)
             && bgi::satisfies(MinHeightPredicate<odb::dbRow*>(min_height))),
-        data.rows.qend());
+        data.rows.qend(),
+        data.rows_mutex);
   }
 
-  return RowRange(data.rows.qbegin(bgi::intersects(query)), data.rows.qend());
+  return RowRange(data.rows.qbegin(bgi::intersects(query)),
+                  data.rows.qend(),
+                  data.rows_mutex);
 }
 
 Search::BPinRange Search::searchBPins(odb::dbBlock* block,
@@ -896,6 +922,7 @@ Search::BPinRange Search::searchBPins(odb::dbBlock* block,
   if (!data.bpins_init) {
     updateBPins(block);
   }
+  std::shared_lock<std::shared_mutex> lock(data.bpins_mutex);
 
   auto it = data.bpins.find(layer);
   if (it == data.bpins.end()) {
@@ -909,10 +936,12 @@ Search::BPinRange Search::searchBPins(odb::dbBlock* block,
         rtree.qbegin(
             bgi::intersects(query)
             && bgi::satisfies(MinSizePredicate<odb::dbBPin*>(min_size))),
-        rtree.qend());
+        rtree.qend(),
+        data.bpins_mutex);
   }
 
-  return BPinRange(rtree.qbegin(bgi::intersects(query)), rtree.qend());
+  return BPinRange(
+      rtree.qbegin(bgi::intersects(query)), rtree.qend(), data.bpins_mutex);
 }
 
 }  // namespace gui

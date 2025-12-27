@@ -6,7 +6,7 @@
 #include <QObject>
 #include <atomic>
 #include <map>
-#include <mutex>
+#include <shared_mutex>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -119,7 +119,10 @@ class Search : public QObject, public odb::dbBlockCallBackObj
     using Iterator = typename Tree::const_query_iterator;
 
     Range() = default;
-    Range(const Iterator& begin, const Iterator& end) : begin_(begin), end_(end)
+    Range(const Iterator& begin, const Iterator& end, std::shared_mutex& mutex)
+        : begin_(begin),
+          end_(end),
+          lock_(mutex)
     {
     }
 
@@ -129,6 +132,7 @@ class Search : public QObject, public odb::dbBlockCallBackObj
    private:
     Iterator begin_;
     Iterator end_;
+    std::shared_lock<std::shared_mutex> lock_;
   };
   using InstRange = Range<RtreeDBox<odb::dbInst*>>;
   using RoutingRange = Range<RtreeRoutingShapes<odb::dbNet*>>;
@@ -310,13 +314,13 @@ class Search : public QObject, public odb::dbBlockCallBackObj
     RtreeDBox<odb::dbBlockage*> blockages;
     RtreeRect<odb::dbRow*> rows;
 
-    std::mutex shapes_init_mutex;
-    std::mutex fills_init_mutex;
-    std::mutex insts_init_mutex;
-    std::mutex blockages_init_mutex;
-    std::mutex obstructions_init_mutex;
-    std::mutex rows_init_mutex;
-    std::mutex bpins_init_mutex;
+    std::shared_mutex shapes_mutex;
+    std::shared_mutex fills_mutex;
+    std::shared_mutex insts_mutex;
+    std::shared_mutex blockages_mutex;
+    std::shared_mutex obstructions_mutex;
+    std::shared_mutex rows_mutex;
+    std::shared_mutex bpins_mutex;
 
     // The net is used for filter shapes by net type
     LayerMap<RtreeRoutingShapes<odb::dbNet*>> box_shapes;
