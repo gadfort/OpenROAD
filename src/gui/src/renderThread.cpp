@@ -1689,16 +1689,24 @@ void RenderThread::drawIOPins(Painter& painter,
   };
   std::vector<PinText> pin_text_spec;
 
+  const int min_bpin_size = viewer_->options_->isDetailedVisibility()
+                                ? viewer_->fineViewableResolution()
+                                : viewer_->nominalViewableResolution();
+  const int64_t max_lin_bpins = bounds.minDXDY() / min_bpin_size;
+  const int64_t max_bpins
+      = std::min(kMaxBPinsPerLayer, max_lin_bpins * max_lin_bpins);
+
   painter.setPen(layer);
   painter.setBrush(layer);
 
+  auto bpins = viewer_->search_.searchBPins(
+      block, layer, bounds.xMin(), bounds.yMin(), bounds.xMax(), bounds.yMax());
+  if (bpins.size() > max_bpins) {
+    return;
+  }
+
   std::vector<odb::Rect> pin_text_spec_shape_rects;
-  for (const auto& [box, pin] : viewer_->search_.searchBPins(block,
-                                                             layer,
-                                                             bounds.xMin(),
-                                                             bounds.yMin(),
-                                                             bounds.xMax(),
-                                                             bounds.yMax())) {
+  for (const auto& [box, pin] : bpins) {
     if (restart_) {
       break;
     }
