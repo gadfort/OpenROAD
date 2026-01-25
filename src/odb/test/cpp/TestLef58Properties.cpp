@@ -619,5 +619,12 @@ TEST_F(Fixture, test_default)
   layer = dbTech->findLayer("metal5");
   EXPECT_EQ(layer->getMinWidth(), 280);
   EXPECT_EQ(layer->getWrongWayMinWidth(), 560);
+
+  // LEF58_SPACING SAMEMASK
+  layer = dbTech->findLayer("metal1");
+  EXPECT_EQ(layer->getSamemaskSpacing(), 120);
+
+  layer = dbTech->findLayer("metal2");
+  EXPECT_EQ(layer->getSamemaskSpacing(), 0);
 }
 }  // namespace odb

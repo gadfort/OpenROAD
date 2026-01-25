@@ -138,6 +138,12 @@
       "schema" : "kSchemaTechLayerMinWidthWrongway"
     },
     {
+      "type": "uint32_t",
+      "default": "0",
+      "name": "samemask_spacing_",
+      "schema" : "kSchemaTechLayerSameMaskSpacing"
+    },
+    {
       "name":"layer_adjustment_",
       "default": "0",
       "type":"float",

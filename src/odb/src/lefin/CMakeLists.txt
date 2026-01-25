@@ -4,8 +4,7 @@
 add_library(lefin
     lefin.cpp
     reader.cpp
-    lefTechLayerSpacingEolParser.cpp
-    lefTechLayerWrongDirSpacingParser.cpp
+    lefTechLayerSpacingParser.cpp
     lefTechLayerMinStepParser.cpp
     lefTechLayerMinWidthParser.cpp
     lefTechLayerCornerSpacingParser.cpp

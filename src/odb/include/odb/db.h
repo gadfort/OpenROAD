@@ -9074,6 +9074,10 @@ class dbTechLayer : public dbObject
 
   uint32_t getWrongWayMinWidth() const;
 
+  void setSamemaskSpacing(uint32_t samemask_spacing);
+
+  uint32_t getSamemaskSpacing() const;
+
   void setLayerAdjustment(float layer_adjustment);
 
   float getLayerAdjustment() const;

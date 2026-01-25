@@ -25,13 +25,7 @@ class lefiLayer;
 
 namespace odb {
 
-class lefTechLayerSpacingEolParser
-{
- public:
-  static void parse(const std::string&, dbTechLayer*, lefinReader*);
-};
-
-class lefTechLayerWrongDirSpacingParser
+class lefTechLayerSpacingParser
 {
  public:
   static void parse(const std::string&, dbTechLayer*, lefinReader*);

@@ -90,6 +90,7 @@ class _dbTechLayer : public _dbObject
   dbTechLayerFlags flags_;
   uint32_t wrong_way_width_;
   uint32_t wrong_way_min_width_;
+  uint32_t samemask_spacing_;
   float layer_adjustment_;
   std::vector<std::pair<int, int>> orth_spacing_tbl_;
   dbTable<_dbTechLayerCutClassRule>* cut_class_rules_tbl_;
