@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <regex>
 #include <set>
 #include <tuple>
@@ -453,11 +454,12 @@ void Connect::makeVia(odb::dbSWire* wire,
                       const ShapePtr& lower,
                       const ShapePtr& upper,
                       const odb::dbWireShapeType& type,
-                      DbVia::ViaLayerShape& shapes)
+                      DbVia::ViaLayerShape& shapes,
+                      const std::optional<odb::Rect>& via_area)
 {
   const odb::Rect& lower_rect = lower->getRect();
   const odb::Rect& upper_rect = upper->getRect();
-  odb::Rect intersection = lower_rect.intersect(upper_rect);
+  odb::Rect intersection = via_area.value_or(lower_rect.intersect(upper_rect));
 
   auto* tech = layer0_->getTech();
 
@@ -582,14 +584,15 @@ void Connect::makeVia(odb::dbSWire* wire,
         }
       }
 
-      auto* new_via = makeSingleLayerVia(wire->getNet(),
-                                         wire->getBlock(),
-                                         l0,
-                                         via_lower_rects,
-                                         lower_constraint,
-                                         l1,
-                                         via_upper_rects,
-                                         upper_constraint);
+      auto* new_via = makeSingleLayerVia(
+          wire->getNet(),
+          wire->getBlock(),
+          l0,
+          via_area.has_value() ? ViaLayerRects{intersection} : via_lower_rects,
+          lower_constraint,
+          l1,
+          via_area.has_value() ? ViaLayerRects{intersection} : via_upper_rects,
+          upper_constraint);
       if (new_via == nullptr) {
         // no via made, so build dummy via for warning
         for (auto* stack_via : stack) {
@@ -597,7 +600,7 @@ void Connect::makeVia(odb::dbSWire* wire,
           delete stack_via;
         }
         stack.clear();
-        odb::dbTransform xfm({-x, -y});
+        const odb::dbTransform xfm({-x, -y});
         odb::Rect area = intersection;
         xfm.apply(area);
         stack.push_back(

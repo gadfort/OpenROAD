@@ -730,14 +730,18 @@ class Via
 
   odb::dbNet* getNet() const { return net_; }
   const odb::Rect& getArea() const { return area_; }
+  odb::Rect getCheckArea() const;
   void setLowerShape(const ShapePtr& shape) { lower_ = shape; }
   const ShapePtr& getLowerShape() const { return lower_; }
   void setUpperShape(const ShapePtr& shape) { upper_ = shape; }
   const ShapePtr& getUpperShape() const { return upper_; }
   odb::dbTechLayer* getLowerLayer() const;
   odb::dbTechLayer* getUpperLayer() const;
+  bool isModifiable() const { return is_modifiable_; }
 
   void removeShape(Shape* shape);
+
+  std::vector<ViaPtr> splitVia(const std::vector<odb::Rect>& split_rect) const;
 
   bool isValid() const;
 
@@ -771,6 +775,7 @@ class Via
   Connect* connect_;
 
   bool failed_ = false;
+  bool is_modifiable_ = true;
 
   utl::Logger* getLogger() const;
 };

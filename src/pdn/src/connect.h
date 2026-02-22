@@ -5,6 +5,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -79,7 +80,8 @@ class Connect
                const ShapePtr& lower,
                const ShapePtr& upper,
                const odb::dbWireShapeType& type,
-               DbVia::ViaLayerShape& via_shapes);
+               DbVia::ViaLayerShape& via_shapes,
+               const std::optional<odb::Rect>& via_area);
 
   void setGrid(Grid* grid) { grid_ = grid; }
   Grid* getGrid() const { return grid_; }

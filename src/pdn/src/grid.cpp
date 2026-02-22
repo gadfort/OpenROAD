@@ -821,6 +821,14 @@ void Grid::makeVias(const Shape::ShapeTreeMap& global_shapes,
     }
   }
 
+  auto break_filter = [this](const ShapePtr& other) -> bool {
+    if (other->shapeType() != Shape::GRID_OBS) {
+      return false;
+    }
+    const GridObsShape* shape = static_cast<GridObsShape*>(other.get());
+    return !shape->belongsTo(this);
+  };
+
   auto obs_filter = [this](const ShapePtr& other) -> bool {
     if (other->shapeType() != Shape::GRID_OBS) {
       return true;
@@ -840,6 +848,12 @@ void Grid::makeVias(const Shape::ShapeTreeMap& global_shapes,
   // get possible vias
   std::vector<ViaPtr> vias;
   getIntersections(vias, search_shapes);
+  debugPrint(getLogger(),
+             utl::PDN,
+             "Via",
+             2,
+             "Starting potential vias are {}.",
+             vias.size());
 
   auto remove_set_of_vias = [&vias](std::set<ViaPtr>& remove_vias) {
     std::erase_if(vias,
@@ -848,11 +862,61 @@ void Grid::makeVias(const Shape::ShapeTreeMap& global_shapes,
   };
 
   std::set<ViaPtr> remove_vias;
+  std::vector<ViaPtr> new_vias;
+
+  // Try to break vias obstructed by grid obs
+  for (const auto& via : vias) {
+    // Start with supported just a single layer
+    if (via->getConnect()->getIntermediteLayers().size() != 1) {
+      continue;
+    }
+
+    odb::dbTechLayer* layer = via->getConnect()->getIntermediteLayers().front();
+    const auto& search_obs = search_obstructions[layer];
+
+    std::vector<odb::Rect> break_areas;
+    for (auto it = search_obs.qbegin(bgi::intersects(via->getCheckArea())
+                                     && bgi::satisfies(break_filter));
+         it != search_obs.qend();
+         it++) {
+      const auto& obs_shape = *it;
+      break_areas.push_back(obs_shape->getRect());
+    }
+
+    if (break_areas.empty()) {
+      continue;
+    }
+
+    std::vector<odb::Rect> final_break_areas;
+    for (const odb::Polygon& break_poly : odb::Polygon::merge(break_areas)) {
+      final_break_areas.push_back(break_poly.getEnclosingRect());
+    }
+
+    const auto adjusted_vias = via->splitVia(final_break_areas);
+    if (adjusted_vias.empty()) {
+      continue;
+    }
+    remove_vias.insert(via);
+    new_vias.insert(new_vias.end(), adjusted_vias.begin(), adjusted_vias.end());
+  }
+  int remove_vias_size = remove_vias.size();
+  remove_set_of_vias(remove_vias);
+  vias.insert(vias.end(), new_vias.begin(), new_vias.end());
+  debugPrint(getLogger(),
+             utl::PDN,
+             "Via",
+             2,
+             "Removing {} vias due to grid adjustments, replacing with {} new "
+             "vias, new size of all vias is {}.",
+             remove_vias_size,
+             new_vias.size(),
+             vias.size());
+
   // remove vias with obstructions in their stack
   for (const auto& via : vias) {
     for (auto* layer : via->getConnect()->getIntermediteLayers()) {
       auto& search_obs = search_obstructions[layer];
-      if (search_obs.qbegin(bgi::intersects(via->getArea())
+      if (search_obs.qbegin(bgi::intersects(via->getCheckArea())
                             && bgi::satisfies(obs_filter))
           != search_obs.qend()) {
         remove_vias.insert(via);
@@ -861,13 +925,16 @@ void Grid::makeVias(const Shape::ShapeTreeMap& global_shapes,
       }
     }
   }
-  debugPrint(getLogger(),
-             utl::PDN,
-             "Via",
-             2,
-             "Removing {} vias due to obstructions.",
-             remove_vias.size());
+  remove_vias_size = remove_vias.size();
   remove_set_of_vias(remove_vias);
+  debugPrint(
+      getLogger(),
+      utl::PDN,
+      "Via",
+      2,
+      "Removing {} vias due to obstructions, new size of all vias is {}.",
+      remove_vias_size,
+      vias.size());
 
   // Remove overlapping vias and keep largest
   Via::ViaTree overlapping_via_tree;
@@ -906,13 +973,15 @@ void Grid::makeVias(const Shape::ShapeTreeMap& global_shapes,
       via->markFailed(failedViaReason::OVERLAPPING);
     }
   }
+  remove_vias_size = remove_vias.size();
+  remove_set_of_vias(remove_vias);
   debugPrint(getLogger(),
              utl::PDN,
              "Via",
              2,
-             "Removing {} vias due to overlaps.",
-             remove_vias.size());
-  remove_set_of_vias(remove_vias);
+             "Removing {} vias due to overlaps, new size of all vias is {}.",
+             remove_vias_size,
+             vias.size());
 
   // build via tree
   vias_.clear();

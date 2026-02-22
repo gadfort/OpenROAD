@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -2934,7 +2935,11 @@ void Via::writeToDb(odb::dbSWire* wire,
   }
 
   DbVia::ViaLayerShape shapes;
-  connect_->makeVia(wire, lower_, upper_, type, shapes);
+  std::optional<odb::Rect> area;
+  if (!is_modifiable_) {
+    area = area_;
+  }
+  connect_->makeVia(wire, lower_, upper_, type, shapes, area);
 
   if (shapes.bottom.empty() && shapes.middle.empty() && shapes.top.empty()) {
     markFailed(failedViaReason::BUILD);
@@ -3177,6 +3182,82 @@ Via::ViaTree Via::convertVectorToTree(std::vector<ViaPtr>& vec)
   vec = std::vector<ViaPtr>();
 
   return tree;
+}
+
+std::vector<ViaPtr> Via::splitVia(
+    const std::vector<odb::Rect>& split_rect) const
+{
+  using boost::polygon::operators::operator-=;
+  using Rectangle = boost::polygon::rectangle_data<int>;
+  using Polygon90 = boost::polygon::polygon_90_with_holes_data<int>;
+  using Polygon90Set = boost::polygon::polygon_90_set_data<int>;
+  using Pt = Polygon90::point_type;
+
+  // if (split_rect.contains(area_)) {
+  //   // if the split rect overlaps the via, return an empty vector since the
+  //   via the via cannot be split. return {};
+  // }
+  // if (split_rect.intersects(area_)) {
+  //   // if the split rect overlaps the via, return an empty vector since the
+  //   via the via cannot be split. return {};
+  // }
+
+  const std::array<Pt, 4> pts = {Pt(area_.xMin(), area_.yMin()),
+                                 Pt(area_.xMax(), area_.yMin()),
+                                 Pt(area_.xMax(), area_.yMax()),
+                                 Pt(area_.xMin(), area_.yMax())};
+
+  Polygon90 poly;
+  poly.set(pts.begin(), pts.end());
+  std::array<Polygon90, 1> arr{poly};
+
+  Polygon90Set new_shape(boost::polygon::HORIZONTAL, arr.begin(), arr.end());
+
+  for (const auto& rect : split_rect) {
+    odb::Rect overlap_rect = rect.intersect(area_);
+
+    if (overlap_rect.dx() == area_.dx() || overlap_rect.dy() == area_.dy()) {
+      // total overlap, so we can safely use overlap rect instead of split rect
+    } else {
+      // partial overlap, so we need to adjust the overlap rect
+      if (overlap_rect.dx() < overlap_rect.dy()) {
+        // split along y, so we can adjust the overlap rect to be the full width
+        // of the via
+        overlap_rect.set_xlo(area_.xMin());
+        overlap_rect.set_xhi(area_.xMax());
+      } else {
+        // split along x, so we can adjust the overlap rect to be the full
+        // height of the via
+        overlap_rect.set_ylo(area_.yMin());
+        overlap_rect.set_yhi(area_.yMax());
+      }
+    }
+
+    // remove all violations from the shape
+    new_shape -= overlap_rect;
+  }
+
+  std::vector<Rectangle> rects;
+  new_shape.get_rectangles(rects);
+
+  std::vector<ViaPtr> new_vias;
+  for (auto& r : rects) {
+    // new vias
+    ViaPtr new_via(copy());
+    new_via->area_ = odb::Rect(xl(r), yl(r), xh(r), yh(r));
+    new_via->failed_ = false;
+    new_via->is_modifiable_ = false;
+    new_vias.push_back(new_via);
+  }
+
+  return new_vias;
+}
+
+odb::Rect Via::getCheckArea() const
+{
+  odb::Rect check_area = area_;
+  area_.bloat(-1, check_area);
+  return check_area;
 }
 
 }  // namespace pdn
