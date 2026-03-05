@@ -99,7 +99,7 @@ void ICeWall::makeBumpArray(odb::dbMaster* master,
       auto* inst = odb::dbInst::create(block, master, name.c_str());
 
       inst->setOrigin(pos.x(), pos.y());
-      inst->setPlacementStatus(odb::dbPlacementStatus::FIRM);
+      inst->setPlacementStatus(odb::dbPlacementStatus::COVER);
     }
   }
 }
@@ -1088,7 +1088,7 @@ void ICeWall::placeBondPads(odb::dbMaster* bond,
     odb::dbInst* bond_inst = odb::dbInst::create(block, bond, name.c_str());
     bond_inst->setOrient(pad_orient);
     bond_inst->setOrigin(pad_loc.x(), pad_loc.y());
-    bond_inst->setPlacementStatus(odb::dbPlacementStatus::FIRM);
+    bond_inst->setPlacementStatus(odb::dbPlacementStatus::COVER);
 
     const odb::dbTransform xform = bond_inst->getTransform();
     odb::Rect bpin_shape = bond_rect;

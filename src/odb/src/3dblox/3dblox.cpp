@@ -489,7 +489,7 @@ void ThreeDBlox::createBump(const BumpMapEntry& entry,
           + chip->getOffset().y();
 
   inst->setOrigin(x, y);
-  inst->setPlacementStatus(dbPlacementStatus::FIRM);
+  inst->setPlacementStatus(dbPlacementStatus::COVER);
 
   dbNet* net = nullptr;
   if (entry.net_name != "-") {
