@@ -3,6 +3,8 @@
 
 #include "ir_solver.h"
 
+#include <omp.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -150,59 +152,92 @@ bool IRSolver::checkOpen()
   const std::size_t total_nodes = network_->getNodeCount(true);
   const auto connections_map = network_->getConnectionMap();
 
-  std::queue<Node*> queue;
-
-  // grab any node to start, choose one on the highest metal layer
+  // Start with a single node on the highest metal layer
+  std::vector<Node*> current_frontier;
   Node* start = network_->getTopLayerNodes().begin()->get();
-  debugPrint(
-      logger_, utl::PSM, "check", 1, "Starting at: {}", start->describe(""));
-  queue.push(start);
+  current_frontier.push_back(start);
+  start->setVisited(true);
 
-  std::size_t visited = 0;
+  debugPrint(logger_,
+             utl::PSM,
+             "check",
+             1,
+             "Starting level-sync BFS from: {}",
+             start->describe(""));
+
   const bool print_progress = logger_->debugCheck(utl::PSM, "check", 2);
-  // walk nodes
-  while (!queue.empty()) {
-    Node* node = queue.front();
-    queue.pop();
-    if (node->isVisited()) {
-      // already been here, so we can continue to next node
-      continue;
+  std::size_t total_visited = current_frontier.size();
+
+  // Level-synchronous BFS: process all nodes at current level in parallel
+  while (!current_frontier.empty()) {
+    // Prepare thread-local storage for candidates
+    int num_threads = 1;
+#pragma omp parallel shared(num_threads, current_frontier)
+    {
+#pragma omp single
+      num_threads = omp_get_num_threads();
     }
 
-    visited++;
+    std::vector<std::vector<Node*>> thread_candidates(num_threads);
 
-    if (print_progress && visited % 1000 == 0) {
+    // Parallel expansion: each thread explores its assigned nodes and collects
+    // candidates
+#pragma omp parallel shared( \
+        thread_candidates, connections_map, current_frontier)
+    {
+      int tid = omp_get_thread_num();
+
+#pragma omp for
+      for (std::size_t i = 0; i < current_frontier.size(); ++i) {
+        Node* node = current_frontier[i];
+
+        for (const auto* conn : connections_map.at(node)) {
+          Node* next = conn->getOtherNode(node);
+          thread_candidates[tid].push_back(next);
+        }
+      }
+    }  // Implicit barrier here - all threads have finished
+
+    // Deduplicate and mark as visited (sequential, single check per candidate)
+    std::vector<Node*> next_frontier;
+    for (const auto& thread_vec : thread_candidates) {
+      for (Node* node : thread_vec) {
+        if (!node->isVisited()) {
+          node->setVisited(true);
+          next_frontier.push_back(node);
+          total_visited++;
+        }
+      }
+    }
+
+    if (print_progress && total_visited % 1000 == 0) {
       debugPrint(logger_,
                  utl::PSM,
                  "check",
                  2,
                  "Checked {} nodes of {}",
-                 visited,
+                 total_visited,
                  total_nodes);
     }
 
-    node->setVisited(true);
-
-    for (const auto* conn : connections_map.at(node)) {
-      Node* next = conn->getOtherNode(node);
-      if (next->isVisited()) {
-        // already been here, so we do not need to add it to the queue
-        continue;
-      }
-      queue.push(next);
-    }
+    current_frontier = std::move(next_frontier);
   }
 
+  // Verify all nodes were visited
+  return checkVisitedComplete();
+}
+
+// Helper: Sequential check that all nodes were visited
+bool IRSolver::checkVisitedComplete() const
+{
   for (const auto& [layer, layer_nodes] : network_->getNodes()) {
     for (const auto& node : layer_nodes) {
       if (node->isVisited()) {
         continue;
       }
-
       return false;
     }
   }
-
   return true;
 }
 

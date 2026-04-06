@@ -4,6 +4,7 @@
 include("openroad")
 
 find_package(Eigen3 REQUIRED)
+find_package(OpenMP REQUIRED)
 
 swig_lib(NAME      psm
          NAMESPACE psm
@@ -47,6 +48,7 @@ target_link_libraries(psm
     gui
     gui_heatmap_core
     Boost::boost
+    OpenMP::OpenMP_CXX
 )
 
 messages(

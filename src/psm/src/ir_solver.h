@@ -134,6 +134,7 @@ class IRSolver
   odb::dbTech* getTech() const;
 
   bool checkOpen();
+  bool checkVisitedComplete() const;
   bool checkBTerms() const;
   bool checkShort() const;
 

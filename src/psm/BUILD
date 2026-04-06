@@ -55,6 +55,7 @@ cc_library(
         "@boost.polygon",
         "@boost.stacktrace",
         "@eigen",
+        "@openmp",
         "@tcl_lang//:tcl",
     ],
 )
