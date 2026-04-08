@@ -772,29 +772,60 @@ void IRNetwork::mergeNodes(NodePtrMap<Connection>& connection_map)
 
   const auto shared_nodes = getSharedShapeNodes();
 
+  // Phase: Collect (keep, remove) pairs from all shapes in parallel
+  // WITHOUT modifying connection_map during parallel phase
+  std::vector<std::pair<odb::dbTechLayer*, size_t>> layer_shape_pairs;
+  for (auto& [layer, shapes] : shapes_) {
+    for (size_t shape_idx = 0; shape_idx < shapes.size(); ++shape_idx) {
+      layer_shape_pairs.emplace_back(layer, shape_idx);
+    }
+  }
+
+  // Thread-local storage for merge pairs to avoid contention
+  std::vector<std::vector<std::pair<Node*, Node*>>> thread_merge_pairs(
+      omp_get_max_threads());
+  std::vector<std::set<Node*>> thread_removes(omp_get_max_threads());
+
+  // Pre-compute NodeTrees to avoid recomputation per thread
+  std::map<odb::dbTechLayer*, IRNetwork::NodeTree> layer_node_trees;
+  for (const auto& [layer, shapes] : shapes_) {
+    layer_node_trees[layer] = getNodeTree(layer);
+  }
+
+  // Parallel phase: collect merge pairs without modifying connection_map
+#pragma omp parallel for schedule(dynamic)
+  for (size_t pair_idx = 0; pair_idx < layer_shape_pairs.size(); ++pair_idx) {
+    auto [layer, shape_idx] = layer_shape_pairs[pair_idx];
+    const auto& shape = shapes_[layer][shape_idx];
+    const auto& node_trees = layer_node_trees[layer];
+    const int min_distance = floorplanning_
+                                 ? (2 * shape->getShape().maxDXDY())
+                                 : min_node_pitch_[shape->getLayer()];
+
+    int thread_id = omp_get_thread_num();
+
+    // Collect pairs instead of modifying connection_map
+    const auto shape_remove = shape->cleanupNodes(
+        min_distance,
+        node_trees,
+        [&thread_merge_pairs, thread_id](Node* keep, Node* remove) {
+          thread_merge_pairs[thread_id].emplace_back(keep, remove);
+        },
+        shared_nodes);
+    thread_removes[thread_id].insert(shape_remove.begin(), shape_remove.end());
+  }
+
+  debugPrint(logger_, utl::PSM, "timer", 1, "Shape cleanups completed");
+
+  // Serial phase: apply all collected merges to connection_map
   const utl::Timer perform_timer;
   std::set<Node*> removes;
-  for (auto& [layer, shapes] : shapes_) {
-    debugPrint(logger_,
-               utl::PSM,
-               "timer",
-               1,
-               "Total shapes to check for merging on {}: {}",
-               layer->getName(),
-               shapes.size());
-
-    const auto node_trees = getNodeTree(layer);
-    for (const auto& shape : shapes) {
-      const int min_distance = floorplanning_
-                                   ? (2 * shape->getShape().maxDXDY())
-                                   : min_node_pitch_[shape->getLayer()];
-      const auto shape_remove = shape->cleanupNodes(
-          min_distance,
-          node_trees,
-          [&](Node* keep, Node* remove) { copy(keep, remove, connection_map); },
-          shared_nodes);
-      removes.insert(shape_remove.begin(), shape_remove.end());
+  for (int thread_id = 0; thread_id < omp_get_max_threads(); ++thread_id) {
+    for (const auto& [keep, remove] : thread_merge_pairs[thread_id]) {
+      copy(keep, remove, connection_map);
     }
+    removes.insert(thread_removes[thread_id].begin(),
+                   thread_removes[thread_id].end());
   }
 
   debugPrint(
