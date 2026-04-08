@@ -11,6 +11,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <omp.h>
 #include <set>
 #include <string>
 #include <utility>
@@ -650,12 +651,36 @@ void IRNetwork::generateCutLayerNodes()
     }
   }
 
+  // Phase 3: Parallel reduction - via processing is fully independent
   std::vector<std::unique_ptr<Node>> loop_via_nodes;
   Connections loop_via_connections;
-  for (odb::dbSBox* box : boxes) {
+
+  // Thread-local storage for nodes and connections
+  std::vector<std::vector<std::unique_ptr<Node>>> thread_via_nodes(
+      omp_get_max_threads());
+  std::vector<Connections> thread_via_connections(omp_get_max_threads());
+
+#pragma omp parallel for schedule(dynamic)
+  for (size_t box_idx = 0; box_idx < boxes.size(); ++box_idx) {
+    odb::dbSBox* box = boxes[box_idx];
+    int thread_id = omp_get_thread_num();
     generateCutNodesForSBox(
-        box, use_single_via, loop_via_nodes, loop_via_connections);
+        box, use_single_via, thread_via_nodes[thread_id], thread_via_connections[thread_id]);
   }
+
+  // Critical section: reduction - merge all thread-local results
+#pragma omp critical(merge_via_results)
+  {
+    for (int thread_id = 0; thread_id < omp_get_max_threads(); ++thread_id) {
+      for (auto& node : thread_via_nodes[thread_id]) {
+        loop_via_nodes.push_back(std::move(node));
+      }
+      for (auto& conn : thread_via_connections[thread_id]) {
+        loop_via_connections.push_back(std::move(conn));
+      }
+    }
+  }
+
   boxes.clear();
 
   LayerMap<std::vector<std::unique_ptr<Node>>> via_nodes;
@@ -692,9 +717,27 @@ void IRNetwork::generateTopLayerFillerNodes()
 
   const int max_distance = min_node_pitch_[top];
 
-  for (const auto& shape : shapes_[top]) {
-    for (auto& node : shape->createFillerNodes(max_distance, top_nodes)) {
-      nodes_[node->getLayer()].push_back(std::move(node));
+  // Phase 2: Minimal locks - per-shape work is independent
+  // Thread-local storage for each thread's nodes
+  std::vector<std::unique_ptr<Node>> all_nodes;
+#pragma omp parallel
+  {
+    std::vector<std::unique_ptr<Node>> thread_local_nodes;
+
+#pragma omp for nowait
+    for (size_t shape_idx = 0; shape_idx < shapes_[top].size(); ++shape_idx) {
+      const auto& shape = shapes_[top][shape_idx];
+      for (auto& node : shape->createFillerNodes(max_distance, top_nodes)) {
+        thread_local_nodes.push_back(std::move(node));
+      }
+    }
+
+    // Critical section: merge thread-local results into global storage
+#pragma omp critical(add_filler_nodes)
+    {
+      for (auto& node : thread_local_nodes) {
+        nodes_[node->getLayer()].push_back(std::move(node));
+      }
     }
   }
 }
@@ -788,12 +831,22 @@ void IRNetwork::sortShapes()
   const utl::DebugScopedTimer timer(
       logger_, utl::PSM, "timer", 1, "Sorting shapes: {}");
 
-  for (auto& [layer, shapes] : shapes_) {
-    shapes.shrink_to_fit();
+  // Phase 1: Zero-lock parallelization - each layer sorts independently
+  size_t layer_count = shapes_.size();
+#pragma omp parallel
+  {
+    size_t idx = 0;
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < layer_count; ++i) {
+      auto it = shapes_.begin();
+      std::advance(it, i);
+      auto& [layer, shapes] = *it;
+      shapes.shrink_to_fit();
 
-    std::ranges::stable_sort(shapes, [](const auto& lhs, const auto& rhs) {
-      return lhs->getShape() < rhs->getShape();
-    });
+      std::ranges::stable_sort(shapes, [](const auto& lhs, const auto& rhs) {
+        return lhs->getShape() < rhs->getShape();
+      });
+    }
   }
 }
 
@@ -802,10 +855,20 @@ void IRNetwork::sortNodes()
   const utl::DebugScopedTimer timer(
       logger_, utl::PSM, "timer", 1, "Sorting nodes: {}");
 
-  for (auto& [layer, nodes] : nodes_) {
-    std::ranges::stable_sort(nodes, [](const auto& lhs, const auto& rhs) {
-      return lhs->compare(rhs) < 0;
-    });
+  // Phase 1: Zero-lock parallelization - each layer sorts independently
+  size_t layer_count = nodes_.size();
+#pragma omp parallel
+  {
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < layer_count; ++i) {
+      auto it = nodes_.begin();
+      std::advance(it, i);
+      auto& [layer, nodes] = *it;
+
+      std::ranges::stable_sort(nodes, [](const auto& lhs, const auto& rhs) {
+        return lhs->compare(rhs) < 0;
+      });
+    }
   }
 }
 
@@ -993,13 +1056,16 @@ void IRNetwork::removeConnections(std::set<Connection*>& removes)
   std::erase_if(cleanup, [&](const auto& other) {
     return removes.find(other.get()) != removes.end();
   });
+  removes.clear();
 
   for (auto& conn : cleanup) {
-    conn->ensureNodeOrder();
     connections_.emplace_back(std::move(conn));
   }
 
-  removes.clear();
+#pragma omp parallel for schedule(static)
+  for (size_t i = 0; i < connections_.size(); ++i) {
+    connections_[i]->ensureNodeOrder();
+  }
 
   const std::size_t final_connection_size = connections_.size();
 
@@ -1085,12 +1151,43 @@ void IRNetwork::connectLayerNodes()
   const utl::DebugScopedTimer timer(
       logger_, utl::PSM, "timer", 1, "Connect nodes: {}");
 
+  // Phase 2: Minimal locks - per-layer per-shape work is independent
+  // Collect all layer-shape pairs for parallel processing
+  std::vector<std::pair<odb::dbTechLayer*, size_t>> layer_shape_pairs;
+  for (const auto& [layer, layer_shapes] : shapes_) {
+    for (size_t shape_idx = 0; shape_idx < layer_shapes.size(); ++shape_idx) {
+      layer_shape_pairs.emplace_back(layer, shape_idx);
+    }
+  }
+
   const std::size_t start_connections = connections_.size();
 
+  // Build layer->NodeTree mapping to avoid recomputation per thread
+  std::map<odb::dbTechLayer*, IRNetwork::NodeTree> layer_node_trees;
   for (const auto& [layer, layer_shapes] : shapes_) {
-    const auto layer_nodes = getNodeTree(layer);
-    for (const auto& shape : layer_shapes) {
-      for (auto& conn : shape->connectNodes(layer_nodes)) {
+    layer_node_trees[layer] = getNodeTree(layer);
+  }
+
+  // Thread-local storage for connections
+  std::vector<Connections> thread_local_conns(omp_get_max_threads());
+
+#pragma omp parallel for schedule(dynamic)
+  for (size_t pair_idx = 0; pair_idx < layer_shape_pairs.size(); ++pair_idx) {
+    auto [layer, shape_idx] = layer_shape_pairs[pair_idx];
+    const auto& shape = shapes_[layer][shape_idx];
+    const auto& layer_nodes = layer_node_trees[layer];
+
+    int thread_id = omp_get_thread_num();
+    for (auto& conn : shape->connectNodes(layer_nodes)) {
+      thread_local_conns[thread_id].push_back(std::move(conn));
+    }
+  }
+
+  // Critical section: merge all thread-local connections
+#pragma omp critical(add_connections)
+  {
+    for (int thread_id = 0; thread_id < omp_get_max_threads(); ++thread_id) {
+      for (auto& conn : thread_local_conns[thread_id]) {
         connections_.push_back(std::move(conn));
       }
     }

@@ -230,15 +230,27 @@ bool IRSolver::checkOpen()
 // Helper: Sequential check that all nodes were visited
 bool IRSolver::checkVisitedComplete() const
 {
+  // Flatten node hierarchy for parallel iteration
+  std::vector<Node*> all_nodes;
   for (const auto& [layer, layer_nodes] : network_->getNodes()) {
     for (const auto& node : layer_nodes) {
-      if (node->isVisited()) {
-        continue;
-      }
-      return false;
+      all_nodes.push_back(node.get());
     }
   }
-  return true;
+
+  // Phase 1: Zero-lock parallelization - find any unvisited node
+  // Use logical OR reduction to check if any node is unvisited
+  bool found_unvisited = false;
+
+#pragma omp parallel for schedule(static) reduction(||:found_unvisited)
+  for (size_t i = 0; i < all_nodes.size(); ++i) {
+    if (!all_nodes[i]->isVisited()) {
+      found_unvisited = true;
+    }
+  }
+
+  // Return true if NO unvisited nodes found (all visited)
+  return !found_unvisited;
 }
 
 bool IRSolver::checkBTerms() const
