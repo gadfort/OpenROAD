@@ -15,6 +15,7 @@ import { createMenuBar } from './menu-bar.js';
 import { RulerManager } from './ruler.js';
 import { SchematicWidget } from './schematic-widget.js';
 import { DrcWidget } from './drc-widget.js';
+import { SdcWidget } from './sdc-widget.js';
 import { TclCompleter } from './tcl-completer.js';
 import { setCookie, applyGLTheme } from './theme.js';
 import { updateDocumentTitle } from './title.js';
@@ -424,6 +425,11 @@ function createDRCWidget(container) {
     container.element.appendChild(app.drcWidget.element);
 }
 
+function createSdcWidget(container) {
+    app.sdcWidget = new SdcWidget(app);
+    container.element.appendChild(app.sdcWidget.element);
+}
+
 function createClockWidget(container) {
     app.clockTreeWidget = new ClockTreeWidget(container, app, redrawAllLayers);
 }
@@ -548,6 +554,11 @@ const defaultLayoutConfig = {
                         componentType: 'HelpWidget',
                         title: 'Help',
                     },
+                    {
+                        type: 'component',
+                        componentType: 'SdcWidget',
+                        title: 'SDC',
+                    },
                 ],
             },
         ],
@@ -570,6 +581,7 @@ app.goldenLayout.registerComponentFactoryFunction('ChartsWidget', createChartsWi
 app.goldenLayout.registerComponentFactoryFunction('SchematicWidget', createSchematicWidget);
 app.goldenLayout.registerComponentFactoryFunction('HelpWidget', createHelpWidget);
 app.goldenLayout.registerComponentFactoryFunction('SelectHighlight', createSelectHighlight);
+app.goldenLayout.registerComponentFactoryFunction('SdcWidget', createSdcWidget);
 
 // Layout version — bump this to force a layout reset when components change.
 const LAYOUT_VERSION = 3;
@@ -629,6 +641,7 @@ const componentTitles = {
     SchematicWidget: 'Schematic',
     HelpWidget: 'Help',
     SelectHighlight: 'Select Highlight',
+    SdcWidget: 'SDC',
 };
 
 // Focus a Golden Layout component tab, or re-create it if it was closed.

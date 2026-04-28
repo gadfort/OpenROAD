@@ -581,6 +581,11 @@ void SelectHandler::registerRequests(RequestDispatcher& d)
         [this](const WebSocketRequest& req, SessionState& state) {
           return handleInspect(req, state);
         });
+  d.add("inspect_by_odb",
+        WebSocketRequest::kInspectByOdb,
+        [this](const WebSocketRequest& req, SessionState& state) {
+          return handleInspectByOdb(req, state);
+        });
   d.add("inspect_back",
         WebSocketRequest::kInspectBack,
         [this](const WebSocketRequest& req, SessionState& state) {
@@ -711,22 +716,85 @@ WebSocketResponse SelectHandler::handleSelect(const WebSocketRequest& req,
   return resp;
 }
 
-WebSocketResponse SelectHandler::handleInspect(const WebSocketRequest& req,
-                                               SessionState& state)
+// Resolve a "previously-stored selectable by index" — the path the
+// SELECT handler uses to pre-populate state.selectables[] from a
+// canvas pick. The follow-on `inspect` request carries select_id
+// pointing into that array.
+static gui::Selected resolveBySelectId(const WebSocketRequest& req,
+                                       SessionState& state)
+{
+  const int select_id = extract_int(req.raw_json, "select_id");
+  std::lock_guard<std::mutex> lock(state.selectables_mutex);
+  if (select_id < 0
+      || select_id >= static_cast<int>(state.selectables.size())) {
+    return {};
+  }
+  return state.selectables[select_id];
+}
+
+// Resolve a target identified directly by an ODB reference — used by
+// callers that already know the object (e.g. the SDC widget clicking
+// a pin name where the rendered JSON carried odb_type+odb_id). Skips
+// the selectables[] round-trip the canvas-pick path needs.
+static gui::Selected resolveByOdb(const WebSocketRequest& req,
+                                  odb::dbBlock* block)
+{
+  const std::string odb_type = extract_string(req.raw_json, "odb_type");
+  if (odb_type.empty() || block == nullptr) {
+    return {};
+  }
+  auto* registry = gui::DescriptorRegistry::instance();
+  const uint32_t id
+      = static_cast<uint32_t>(extract_int_or(req.raw_json, "odb_id", -1));
+  if (odb_type == "bterm") {
+    if (auto* x = odb::dbBTerm::getBTerm(block, id)) {
+      return registry->makeSelected(x);
+    }
+  } else if (odb_type == "iterm") {
+    if (auto* x = odb::dbITerm::getITerm(block, id)) {
+      return registry->makeSelected(x);
+    }
+  } else if (odb_type == "moditerm") {
+    // Hierarchical module-interface pin: pin on a dbModule boundary
+    // rather than a leaf cell.
+    if (auto* x = odb::dbModITerm::getModITerm(block, id)) {
+      return registry->makeSelected(x);
+    }
+  } else if (odb_type == "inst") {
+    if (auto* x = odb::dbInst::getInst(block, id)) {
+      return registry->makeSelected(x);
+    }
+  } else if (odb_type == "modinst") {
+    // Hierarchical instance — set_false_path -through u_top/u_core
+    // and similar exception scopes resolve to one of these.
+    if (auto* x = odb::dbModInst::getModInst(block, id)) {
+      return registry->makeSelected(x);
+    }
+  } else if (odb_type == "net") {
+    // Top-level signal net. Used by the CDC tab's path-detail view so
+    // a user can click the wire between two stages and inspect it.
+    if (auto* x = odb::dbNet::getNet(block, id)) {
+      return registry->makeSelected(x);
+    }
+  }
+  return {};
+}
+
+// Run the standard inspect pipeline against a resolved target:
+// collect highlight shapes, push the previous inspected onto the
+// navigation history, emit the JSON envelope, and replace
+// state.selectables with anything the payload writer surfaced.
+//
+// Both handleInspect (selectables-based) and handleInspectByOdb
+// (ODB-based) call this — the only thing they own individually is
+// resolution.
+WebSocketResponse SelectHandler::buildInspectResponse(uint32_t req_id,
+                                                      const gui::Selected& sel,
+                                                      SessionState& state)
 {
   WebSocketResponse resp;
-  resp.id = req.id;
+  resp.id = req_id;
   try {
-    gui::Selected sel;
-    {
-      const int select_id = extract_int(req.raw_json, "select_id");
-      std::lock_guard<std::mutex> lock(state.selectables_mutex);
-      if (select_id >= 0
-          && select_id < static_cast<int>(state.selectables.size())) {
-        sel = state.selectables[select_id];
-      }
-    }
-
     // STA's highlight() and getProperties() are not thread-safe;
     // serialize with other STA callers (timing, clock tree, tcl eval).
     std::lock_guard<std::mutex> sta_lock(tcl_eval_->mutex);
@@ -765,6 +833,19 @@ WebSocketResponse SelectHandler::handleInspect(const WebSocketRequest& req,
     resp.payload.assign(err.begin(), err.end());
   }
   return resp;
+}
+
+WebSocketResponse SelectHandler::handleInspect(const WebSocketRequest& req,
+                                               SessionState& state)
+{
+  return buildInspectResponse(req.id, resolveBySelectId(req, state), state);
+}
+
+WebSocketResponse SelectHandler::handleInspectByOdb(const WebSocketRequest& req,
+                                                    SessionState& state)
+{
+  return buildInspectResponse(
+      req.id, resolveByOdb(req, gen_->getBlock()), state);
 }
 
 WebSocketResponse SelectHandler::handleInspectBack(const WebSocketRequest& req,

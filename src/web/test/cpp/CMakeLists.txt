@@ -49,6 +49,32 @@ gtest_discover_tests(TestSaveReport
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
+add_executable(TestSdcHandler TestSdcHandler.cpp)
+
+target_link_libraries(TestSdcHandler ${TEST_LIBS} gui_descriptors dbSta_lib)
+
+target_include_directories(TestSdcHandler
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src
+)
+
+gtest_discover_tests(TestSdcHandler
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
+add_executable(TestCdcHandler TestCdcHandler.cpp)
+
+target_link_libraries(TestCdcHandler ${TEST_LIBS} gui_descriptors dbSta_lib)
+
+target_include_directories(TestCdcHandler
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src
+)
+
+gtest_discover_tests(TestCdcHandler
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
 add_executable(TestDebugGraphics TestDebugGraphics.cpp)
 
 target_link_libraries(TestDebugGraphics ${TEST_LIBS})
@@ -79,6 +105,8 @@ add_dependencies(build_and_test
   TestTileGenerator
   TestRequestHandler
   TestSaveReport
+  TestSdcHandler
+  TestCdcHandler
   TestDebugGraphics
   TestGlyphCache
 )

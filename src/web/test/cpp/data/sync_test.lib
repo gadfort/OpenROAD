@@ -1,0 +1,96 @@
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2026, The OpenROAD Authors
+ *
+ * Synthetic Liberty file used by TestCdcHandler.cpp to exercise the
+ * CDC walker's `liberty_sync` depth extraction. Each statetable
+ * cell's count of `internal_node` pins drives the reported
+ * synchroniser depth on the path-list "Sync chain" cell:
+ *
+ *   - SYNC2_X1 — 2 internal nodes → reported as 2FF
+ *   - SYNC3_X1 — 3 internal nodes → reported as 3FF
+ *
+ * Statetable contents are minimal — the walker only inspects
+ * `internal_ports`, not the table rows. The latch-style table
+ * shape mirrors the sg13 clock-gate cells (which are known to
+ * parse cleanly in OpenSTA).
+ */
+
+library (sync_test_lib) {
+  technology (cmos);
+  delay_model : table_lookup;
+  voltage_unit : "1V";
+  current_unit : "1mA";
+  time_unit : "1ns";
+  pulling_resistance_unit : "1kohm";
+  capacitive_load_unit (1, ff);
+  leakage_power_unit : "1nW";
+  default_max_transition : 1.0;
+
+  cell (SYNC2_X1) {
+    pin (D) {
+      direction : input;
+      capacitance : 0.001;
+    }
+    pin (CK) {
+      direction : input;
+      capacitance : 0.001;
+      clock : true;
+    }
+    pin (Q) {
+      direction : output;
+      function : "int_S2";
+      max_capacitance : 0.1;
+    }
+    pin (int_S1) {
+      direction : internal;
+      internal_node : "int_S1";
+    }
+    pin (int_S2) {
+      direction : internal;
+      internal_node : "int_S2";
+    }
+    statetable ("D CK", "int_S1 int_S2") {
+      table : "L L : - - : N N ,\
+               H L : - - : N N ,\
+               L H : - - : L L ,\
+               H H : - - : H H ";
+    }
+    area : 1.0;
+  }
+
+  cell (SYNC3_X1) {
+    pin (D) {
+      direction : input;
+      capacitance : 0.001;
+    }
+    pin (CK) {
+      direction : input;
+      capacitance : 0.001;
+      clock : true;
+    }
+    pin (Q) {
+      direction : output;
+      function : "int_S3";
+      max_capacitance : 0.1;
+    }
+    pin (int_S1) {
+      direction : internal;
+      internal_node : "int_S1";
+    }
+    pin (int_S2) {
+      direction : internal;
+      internal_node : "int_S2";
+    }
+    pin (int_S3) {
+      direction : internal;
+      internal_node : "int_S3";
+    }
+    statetable ("D CK", "int_S1 int_S2 int_S3") {
+      table : "L L : - - - : N N N ,\
+               H L : - - - : N N N ,\
+               L H : - - - : L L L ,\
+               H H : - - - : H H H ";
+    }
+    area : 1.5;
+  }
+}

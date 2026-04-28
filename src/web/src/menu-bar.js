@@ -36,6 +36,7 @@ export function createMenuBar(app) {
             { label: 'DRC Viewer', action: () => app.focusComponent('DRCWidget') },
             { label: 'Clock Tree', action: () => app.focusComponent('ClockWidget') },
             { label: 'Charts', action: () => app.focusComponent('ChartsWidget') },
+            { label: 'SDC', action: () => app.focusComponent('SdcWidget') },
             { label: 'Help', action: () => app.focusComponent('HelpWidget') },
         ]},
         { label: 'Help', items: [

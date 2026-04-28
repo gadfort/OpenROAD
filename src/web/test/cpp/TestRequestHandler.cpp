@@ -586,6 +586,68 @@ TEST_F(SelectHandlerTest, InspectBackWithoutHistoryKeepsCurrentObject)
 }
 
 //------------------------------------------------------------------------------
+// Inspect via ODB-ref tests (skip state.selectables lookup)
+//------------------------------------------------------------------------------
+
+TEST_F(SelectHandlerTest, InspectByOdbInstOverridesSelectId)
+{
+  // When select_odb_type is set, handleInspect must take the ODB path and
+  // ignore any populated state.selectables[select_id].  We verify by seeding
+  // selectables with a FakeInspectable at index 0: if the ODB path is
+  // honored the response must NOT mention the fake's name; if the fallback
+  // to select_id leaked through it would.
+  odb::dbInst* inst = block_->findInst("buf1");
+  ASSERT_NE(inst, nullptr);
+
+  {
+    std::lock_guard<std::mutex> lock(state_.selectables_mutex);
+    state_.selectables = {makeFakeSelected(&fake_current_)};
+  }
+
+  // The select_id field is also present here just to confirm that
+  // handleInspectByOdb ignores it — it picks the target purely from
+  // the ODB ref, not from selectables[].
+  WebSocketRequest req;
+  req.id = 30;
+  req.type = WebSocketRequest::kInspectByOdb;
+  req.raw_json = R"({"select_id":0,"odb_type":"inst","odb_id":)"
+                 + std::to_string(inst->getId()) + "}";
+
+  auto resp = handler_->handleInspectByOdb(req, state_);
+  EXPECT_EQ(resp.id, 30u);
+  EXPECT_EQ(resp.type, WebSocketResponse::kJson);
+  EXPECT_EQ(payloadStr(resp).find(fake_current_.name), std::string::npos)
+      << "ODB inspect should not touch selectables[0]";
+}
+
+TEST_F(SelectHandlerTest, InspectByOdbBadIdFallsBackToEmpty)
+{
+  // Unknown ODB id: handleInspectByOdb doesn't throw, just produces
+  // the "nothing inspected" payload (no properties).
+  WebSocketRequest req;
+  req.id = 31;
+  req.type = WebSocketRequest::kInspectByOdb;
+  req.raw_json = R"({"odb_type":"inst","odb_id":999999})";
+
+  auto resp = handler_->handleInspectByOdb(req, state_);
+  EXPECT_EQ(resp.id, 31u);
+  EXPECT_EQ(resp.type, WebSocketResponse::kJson);
+}
+
+TEST_F(SelectHandlerTest, InspectByOdbUnknownTypeIsIgnored)
+{
+  // Invalid type strings are silently ignored — the response is valid JSON
+  // but carries no inspected object.
+  WebSocketRequest req;
+  req.id = 32;
+  req.type = WebSocketRequest::kInspectByOdb;
+  req.raw_json = R"({"odb_type":"frobnicate","odb_id":1})";
+
+  auto resp = handler_->handleInspectByOdb(req, state_);
+  EXPECT_EQ(resp.type, WebSocketResponse::kJson);
+}
+
+//------------------------------------------------------------------------------
 // Focus nets tests
 //------------------------------------------------------------------------------
 

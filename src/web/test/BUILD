@@ -150,6 +150,13 @@ js_test(
 )
 
 js_test(
+    name = "sdc_widget_js_test",
+    data = DOM_TEST_DATA,
+    entry_point = "js/test-sdc-widget.js",
+    no_copy_to_bin = JS_FILES,
+)
+
+js_test(
     name = "title_test",
     data = JS_FILES,
     entry_point = "js/test-title.js",
@@ -302,6 +309,53 @@ cc_test(
         "//src/utl",
         "//src/web",
         "//third-party/lodepng",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "sdc_widget_test",
+    srcs = ["cpp/TestSdcHandler.cpp"],
+    copts = ["-Isrc/web/src"],
+    data = [
+        "//test:nangate45_data",
+    ],
+    features = ["-layering_check"],
+    deps = [
+        "//src/dbSta",
+        "//src/gui",
+        "//src/odb",
+        "//src/tst",
+        "//src/tst:nangate45_fixture",
+        "//src/utl",
+        "//src/web",
+        "//third-party/lodepng",
+        "@boost.json",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cdc_handler_test",
+    srcs = ["cpp/TestCdcHandler.cpp"],
+    copts = ["-Isrc/web/src"],
+    data = [
+        "cpp/data/sync_test.lib",
+        "//test:nangate45_data",
+    ],
+    features = ["-layering_check"],
+    deps = [
+        "//src/dbSta",
+        "//src/gui",
+        "//src/odb",
+        "//src/tst",
+        "//src/tst:nangate45_fixture",
+        "//src/utl",
+        "//src/web",
+        "//third-party/lodepng",
+        "@boost.json",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],

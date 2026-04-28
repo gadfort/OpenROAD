@@ -57,6 +57,65 @@ html[data-theme="dark"] {
     --spinner-head: #ccc;
 
     --ruler-label-bg: rgba(0, 0, 0, 0.75);
+
+    /* ── SDC widget palette ────────────────────────────────────────────────
+       Categorical colors used by badges (clock type, exception type, group
+       type, port direction) and by the clock-groups relationship matrix.
+       Backgrounds are bright enough to be distinguishable from the page
+       background while still carrying the category color; foregrounds are
+       high-contrast against their paired background. Tuned for WCAG AA. */
+    --sdc-async-bg:       #4a2060;
+    --sdc-async-fg:       #e0a8ff;
+    --sdc-lexcl-bg:       #244a28;
+    --sdc-lexcl-fg:       #9fe47c;
+    --sdc-pexcl-bg:       #1a3a6a;
+    --sdc-pexcl-fg:       #8fc8ff;
+    --sdc-sync-bg:        #3a3a3a;
+    --sdc-sync-fg:        #c8c8c8;
+
+    --sdc-false-bg:       #602828;
+    --sdc-false-fg:       #ff9a9a;
+    --sdc-mcp-bg:         #1a4a6a;
+    --sdc-mcp-fg:         #8fd0fc;
+    --sdc-pd-bg:          #3a5a24;
+    --sdc-pd-fg:          #b0e06c;
+    --sdc-group-bg:       #5a4028;
+    --sdc-group-fg:       #f0d090;
+
+    --sdc-master-bg:      #244a24;
+    --sdc-master-fg:      #9fe47c;
+    --sdc-generated-bg:   #1a3a60;
+    --sdc-generated-fg:   #8fc0ff;
+    --sdc-virtual-bg:     #4a2a60;
+    --sdc-virtual-fg:     #dca8f5;
+    --sdc-propagated-bg:  #1a3a55;
+    --sdc-propagated-fg:  #a8d0f0;
+
+    --sdc-input-bg:       #1a4a6a;
+    --sdc-input-fg:       #8fc8ff;
+    --sdc-output-bg:      #244a28;
+    --sdc-output-fg:      #9fe47c;
+    --sdc-inout-bg:       #5a4028;
+    --sdc-inout-fg:       #f5d890;
+
+    /* Waveform / timing-diagram palette — fills are applied at partial
+       opacity (BAR_OPACITY ≈ 0.65) so saturated, bright hues produce
+       muted but still-readable bands against the dark canvas. */
+    --sdc-wf-valid:        #4fbf70;   /* data stable */
+    --sdc-wf-invalid:      #aaaaaa;   /* data not yet / no longer valid */
+    --sdc-wf-uncert:       #f0b020;   /* arrival spread (dMin..dMax) */
+    --sdc-wf-setup-unc:    #e07050;   /* setup clock uncertainty band */
+    --sdc-wf-hold-unc:     #7aa8e8;   /* hold clock uncertainty band  */
+    --sdc-wf-lib-setup:    #cc5030;   /* library setup time (tsu)     */
+    --sdc-wf-lib-hold:     #4f7ac0;   /* library hold time (|th|)     */
+    --sdc-wf-marker-fill:  #ff60a8;   /* rise-edge marker (magenta — reads on amber)   */
+    --sdc-wf-marker-line:  #000000;   /* marker outline contrast (legacy single-lane)  */
+    --sdc-wf-fall-fill:    #5dd8e8;   /* fall-edge marker (cyan, complementary)        */
+
+    /* Text variants of the setup/hold axis color so labels stay readable
+       on their own (no opacity) against the dark canvas. */
+    --sdc-text-setup:      #e07050;
+    --sdc-text-hold:       #7aa8e8;
 }
 
 html[data-theme="light"] {
@@ -116,6 +175,58 @@ html[data-theme="light"] {
     --spinner-head: #333;
 
     --ruler-label-bg: rgba(255, 255, 255, 0.85);
+
+    /* SDC widget palette — light-theme variants (darker text on tinted
+       backgrounds). Same category set as the dark theme. */
+    --sdc-async-bg:       #f0e0f8;
+    --sdc-async-fg:       #6a2080;
+    --sdc-lexcl-bg:       #d8f0c8;
+    --sdc-lexcl-fg:       #205a2a;
+    --sdc-pexcl-bg:       #d8e6ff;
+    --sdc-pexcl-fg:       #1a4070;
+    --sdc-sync-bg:        #e8e8e8;
+    --sdc-sync-fg:        #606060;
+
+    --sdc-false-bg:       #ffd8d8;
+    --sdc-false-fg:       #8a2020;
+    --sdc-mcp-bg:         #d8ebf5;
+    --sdc-mcp-fg:         #1a4a6a;
+    --sdc-pd-bg:          #e4f0c8;
+    --sdc-pd-fg:          #3a5a1e;
+    --sdc-group-bg:       #f5e8c8;
+    --sdc-group-fg:       #6a5020;
+
+    --sdc-master-bg:      #d8f0c8;
+    --sdc-master-fg:      #205a2a;
+    --sdc-generated-bg:   #d8e6ff;
+    --sdc-generated-fg:   #1a4070;
+    --sdc-virtual-bg:     #f0e0f8;
+    --sdc-virtual-fg:     #6a2080;
+    --sdc-propagated-bg:  #d8e8f5;
+    --sdc-propagated-fg:  #2a4a6a;
+
+    --sdc-input-bg:       #d8e6ff;
+    --sdc-input-fg:       #1a4a6a;
+    --sdc-output-bg:      #d8f0c8;
+    --sdc-output-fg:      #205a2a;
+    --sdc-inout-bg:       #f5e8c8;
+    --sdc-inout-fg:       #6a5020;
+
+    /* Waveform / timing-diagram palette (light theme: darker, less bright
+       hues stay readable against the white canvas). */
+    --sdc-wf-valid:        #2d8f50;
+    --sdc-wf-invalid:      #888888;
+    --sdc-wf-uncert:       #b8840a;
+    --sdc-wf-setup-unc:    #c05030;
+    --sdc-wf-hold-unc:     #3060a0;
+    --sdc-wf-lib-setup:    #8b2010;
+    --sdc-wf-lib-hold:     #203060;
+    --sdc-wf-marker-fill:  #c03070;   /* rise-edge marker (deep magenta, light theme) */
+    --sdc-wf-marker-line:  #000000;
+    --sdc-wf-fall-fill:    #2a8898;   /* fall-edge marker (deep cyan, light theme)    */
+
+    --sdc-text-setup:      #c05030;
+    --sdc-text-hold:       #3060a0;
 }
 
 /* ─── Ruler overlay ──────────────────────────────────────────────────────── */

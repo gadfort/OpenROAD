@@ -67,6 +67,7 @@ struct WebSocketRequest
     kTech,
     kSelect,
     kInspect,
+    kInspectByOdb,
     kInspectBack,
     kHover,
     kTclEval,
@@ -96,6 +97,23 @@ struct WebSocketRequest
     kDrcUpdateMarker,
     kDrcUpdateCategoryVisibility,
     kDrcHighlight,
+    kSdcClocks,
+    kSdcClockModes,
+    kSdcPortDelays,
+    kSdcExceptions,
+    kSdcLimits,
+    kSdcClockGroups,
+    kSdcEndpoint,
+    kSdcEndpointList,
+    kSdcListModes,
+    kSdcSetMode,
+    kSdcResolveGenClocks,
+    kCdcOverview,
+    kCdcPaths,
+    kCdcPathDetail,
+    kCdcPinFanIn,
+    kCdcSetWhitelist,
+    kCdcGetWhitelist,
     kDebugContinue,
     kDebugCharts,
     kUnknown
@@ -180,6 +198,12 @@ class SelectHandler
                                  SessionState& state);
   WebSocketResponse handleInspect(const WebSocketRequest& req,
                                   SessionState& state);
+  // Variant of handleInspect for callers that already hold an ODB ref
+  // (e.g. the SDC widget clicking a pin name) — bypasses the
+  // selectables[] lookup since the target is identified directly by
+  // {odb_type, odb_id} in the request.
+  WebSocketResponse handleInspectByOdb(const WebSocketRequest& req,
+                                       SessionState& state);
   WebSocketResponse handleInspectBack(const WebSocketRequest& req,
                                       SessionState& state);
   WebSocketResponse handleHover(const WebSocketRequest& req,
@@ -195,6 +219,15 @@ class SelectHandler
                                            SessionState& state);
 
  private:
+  // Shared inspect pipeline used by both handleInspect (resolves the
+  // target via state.selectables[select_id]) and handleInspectByOdb
+  // (resolves via {odb_type, odb_id}). Owns highlight collection,
+  // navigation-history bookkeeping, JSON envelope emission, and the
+  // selectables[] replacement.
+  WebSocketResponse buildInspectResponse(uint32_t req_id,
+                                         const gui::Selected& sel,
+                                         SessionState& state);
+
   std::shared_ptr<TileGenerator> gen_;
   std::shared_ptr<TclEvaluator> tcl_eval_;
 };
@@ -337,5 +370,75 @@ class DRCHandler
 
 // Handles LIST_DIR requests (server-side file browsing).
 WebSocketResponse handleListDir(const WebSocketRequest& req);
+
+// Handles every kSdc* request — clocks, clock modes, port delays,
+// exceptions, limits, clock groups, endpoint browse + detail, mode
+// switching, and generated-clock resolution. Each is registered with
+// the dispatcher in registerRequests().
+class SdcHandler
+{
+ public:
+  explicit SdcHandler(std::shared_ptr<TileGenerator> gen);
+  void registerRequests(RequestDispatcher& dispatcher);
+
+  WebSocketResponse handleSdcClocks(const WebSocketRequest& req);
+  WebSocketResponse handleSdcClockModes(const WebSocketRequest& req);
+  WebSocketResponse handleSdcPortDelays(const WebSocketRequest& req);
+  WebSocketResponse handleSdcExceptions(const WebSocketRequest& req);
+  WebSocketResponse handleSdcLimits(const WebSocketRequest& req);
+  WebSocketResponse handleSdcClockGroups(const WebSocketRequest& req);
+  WebSocketResponse handleSdcEndpoint(const WebSocketRequest& req);
+  WebSocketResponse handleSdcEndpointList(const WebSocketRequest& req);
+  WebSocketResponse handleSdcListModes(const WebSocketRequest& req);
+  WebSocketResponse handleSdcSetMode(const WebSocketRequest& req);
+  WebSocketResponse handleSdcResolveGenClocks(const WebSocketRequest& req);
+
+ private:
+  std::shared_ptr<TileGenerator> gen_;
+};
+
+// Handles every kCdc* request — the cross-domain crossing visualizer
+// tab. Owns the session-scoped synchroniser whitelist (instance and
+// master pattern lists) so re-classification doesn't need to round-trip
+// through SDC. Each request type is registered with the dispatcher in
+// registerRequests().
+class CdcHandler
+{
+ public:
+  CdcHandler(std::shared_ptr<TileGenerator> gen);
+  ~CdcHandler();
+  void registerRequests(RequestDispatcher& dispatcher);
+
+  WebSocketResponse handleCdcOverview(const WebSocketRequest& req);
+  WebSocketResponse handleCdcPaths(const WebSocketRequest& req);
+  WebSocketResponse handleCdcPathDetail(const WebSocketRequest& req);
+  WebSocketResponse handleCdcPinFanIn(const WebSocketRequest& req);
+  WebSocketResponse handleCdcSetWhitelist(const WebSocketRequest& req);
+  WebSocketResponse handleCdcGetWhitelist(const WebSocketRequest& req);
+
+ private:
+  std::shared_ptr<TileGenerator> gen_;
+
+  // pImpl-style cache of the per-mode CdcPair lists. The structure is
+  // defined inside cdc_handler.cpp because CdcPair carries STA pointer
+  // types we don't want to leak into this header. cdc_overview
+  // populates it for every mode in one walk; cdc_paths reads from it
+  // on every per-cell drill-in (so paginating + filtering by category
+  // is just an O(N) scan of an in-memory vector instead of a fresh
+  // endpoint walk per click). cdc_set_whitelist invalidates it.
+  struct PairCache;
+  std::unique_ptr<PairCache> pair_cache_;
+
+  // Session-scoped synchroniser whitelist. Two glob-pattern lists,
+  // each independently maintained:
+  //   instance_patterns_ — matched against network->pathName(capture_inst)
+  //   master_patterns_   — matched against LibertyCell::name() of the
+  //                        capture flop's master cell
+  // A path is tagged "whitelisted" when *either* list matches. Empty
+  // by default; populated via cdc_set_whitelist; never persisted.
+  std::mutex whitelist_mutex_;
+  std::vector<std::string> instance_patterns_;
+  std::vector<std::string> master_patterns_;
+};
 
 }  // namespace web

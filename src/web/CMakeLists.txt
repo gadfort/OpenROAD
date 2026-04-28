@@ -34,6 +34,7 @@ set(WEB_ASSET_FILES
     src/charts-widget.js
     src/timing-widget.js
     src/drc-widget.js
+    src/sdc-widget.js
     src/main.js
 )
 
@@ -68,6 +69,7 @@ add_custom_command(
         ${CMAKE_CURRENT_SOURCE_DIR}/src/charts-widget.js
         ${CMAKE_CURRENT_SOURCE_DIR}/src/timing-widget.js
         ${CMAKE_CURRENT_SOURCE_DIR}/src/drc-widget.js
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sdc-widget.js
         ${CMAKE_CURRENT_SOURCE_DIR}/src/main.js
   DEPENDS
     src/embed_report_assets.py
@@ -93,6 +95,8 @@ target_sources(web
     src/color.cpp
     src/hierarchy_report.cpp
     src/request_handler.cpp
+    src/sdc_handler.cpp
+    src/cdc_handler.cpp
     src/search.cpp
     src/font_data.cpp
     src/glyph_cache.cpp

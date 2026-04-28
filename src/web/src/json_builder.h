@@ -202,6 +202,21 @@ class JsonBuilder
     buf_ += val ? "true" : "false";
   }
 
+  // Emit a named field with a JSON null value.
+  void nullField(const char* key)
+  {
+    writeKey(key);
+    buf_ += "null";
+  }
+  void nullField(const std::string& key) { nullField(key.c_str()); }
+
+  // Emit a null value inside an array.
+  void nullValue()
+  {
+    maybeComma();
+    buf_ += "null";
+  }
+
   // -- Output --
 
   const std::string& str() const { return buf_; }

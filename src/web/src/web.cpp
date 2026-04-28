@@ -126,6 +126,8 @@ class WebSocketSession : public std::enable_shared_from_this<WebSocketSession>
   ClockTreeHandler clock_tree_handler_;
   TileHandler tile_handler_;
   DRCHandler drc_handler_;
+  SdcHandler sdc_handler_;
+  CdcHandler cdc_handler_;
 
   // Registration-based request dispatcher (replaces parse/dispatch switches)
   RequestDispatcher dispatcher_;
@@ -188,6 +190,8 @@ WebSocketSession::WebSocketSession(
       clock_tree_handler_(generator, std::move(clock_report), tcl_eval),
       tile_handler_(generator),
       drc_handler_(generator),
+      sdc_handler_(generator),
+      cdc_handler_(generator),
       strand_(net::make_strand(websocket_.get_executor())),
       generator_(std::move(generator)),
       viewer_hook_(viewer_hook)
@@ -203,6 +207,8 @@ WebSocketSession::WebSocketSession(
   clock_tree_handler_.registerRequests(dispatcher_);
   tile_handler_.registerRequests(dispatcher_);
   drc_handler_.registerRequests(dispatcher_);
+  sdc_handler_.registerRequests(dispatcher_);
+  cdc_handler_.registerRequests(dispatcher_);
 
   // Free function handler
   dispatcher_.add("list_dir",
