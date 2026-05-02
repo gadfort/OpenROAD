@@ -1503,6 +1503,9 @@ void dbNetwork::net(const Pin* pin,
 
   if (moditerm) {
     db_modnet = moditerm->getModNet();
+    if (db_modnet) {
+      db_net = db_modnet->findRelatedNet();
+    }
   }
 }
 
@@ -2075,8 +2078,13 @@ dbNet* dbNetwork::flatNet(const Term* term) const
   staToDb(term, iterm, bterm, modbterm);
 
   if (bterm) {
-    dbNet* dnet = bterm->getNet();
-    return dnet;
+    return bterm->getNet();
+  }
+  if (modbterm) {
+    if (odb::dbModNet* modnet = modbterm->getModNet()) {
+      return modnet->findRelatedNet();
+    }
+    return nullptr;
   }
   logger_->error(
       ORD, 2029, "Illegal term for getting a flat net, must be bterm");
@@ -3007,6 +3015,9 @@ dbNet* dbNetwork::flatNet(const Net* net) const
     dbObjectType type = obj->getObjectType();
     if (type == odb::dbNetObj) {
       return static_cast<dbNet*>(obj);
+    }
+    if (type == odb::dbModNetObj) {
+      return static_cast<odb::dbModNet*>(obj)->findRelatedNet();
     }
   }
   return nullptr;
