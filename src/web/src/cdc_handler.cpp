@@ -2573,72 +2573,118 @@ WebSocketResponse CdcHandler::handleCdcPinFanIn(const WebSocketRequest& req)
 // Clock-mix tracer
 // =====================================================================
 //
-// Walks upstream from a pin carrying multiple clocks to find the gate
-// where those clocks first merge. Conceptually different from the
-// data-fan-in walker (`walkLaunchSide`):
+// Walks upstream from a pin carrying multiple clocks to find every
+// gate where those clocks merge. Returns a TREE — each Mixer node has
+// per-input branches that recurse to ports / registers / depth limit.
+// User feedback drove the BFS-vs-greedy switch (2026-05-02 round 4):
+// the greedy single-path walker missed muxes that lived on
+// non-followed input paths, and required the user to manually click
+// through every branch to find them.
 //
-//   - Walk decisions are driven by the clock SET intersection with
-//     each input's `clockDomains()`, not by following one chosen
-//     input. No `strict_clock_match` cuts.
-//   - Stops at the first MIXER (≥2 inputs each contributing a strict
-//     subset of the requested clocks). Manual recursion: the user
-//     clicks a contributing input's "↑ trace mix" link to walk back
-//     through that branch with its narrower clock set.
-//   - Multi-clock-CK sequentials are NOT terminators. The walk hops
-//     through CK to find where the multi-clock convergence happened
-//     on the clock net upstream.
-//   - Pass-through cells (one input ⊇ cur_clocks) compress into
-//     `passthroughs_after` for buffers/inverters; for other cells
-//     they emit a `comb_transit` card so the user sees the cell.
-struct ClockMixStage
+// `on_clock_path` flips to true as soon as the walk hops through a
+// register's CK. Mixers found while it's true are clock-network
+// convergences (clock muxes); mixers found while it's false are
+// data-path convergences (the actual CDC bug shape — different
+// clock-domain data signals merging at a comb gate).
+//
+// Buffers / inverters compress into `passthroughs_after` exactly like
+// today's data-path walker. Multi-input pass-through cells (one input
+// ⊇ cur_clocks AND only that input contributes) emit a CombTransit
+// node so the user sees the cell on the diagram.
+struct ClockMixNode
 {
   enum class Kind
   {
-    Mixer,           // ≥2 contributing inputs at a comb cell
-    NetMixer,        // ≥2 drivers on the same flat net (no inst)
+    Mixer,           // ≥2 contributing inputs at a comb cell — fan out
+    NetMixer,        // ≥2 drivers on the same flat net — fan out
     RegisterTransit, // hopped through a sequential cell's CK pin
-    CombTransit,     // single-input pass-through that's not a buf/inv
-    Port,            // top-level port (clock source)
+    CombTransit,     // single-input pass-through (cell ⊇ cur_clocks)
+    Port,            // top-level port (terminal)
     Stuck,           // no input intersects cur_clocks (phantom propagation)
-    Feedback,        // cycle detected
-    DepthLimit,      // depth cap hit without a terminal
-    Unresolved       // no driver
+    Feedback,        // cycle detected (terminal)
+    DepthLimit,      // depth cap hit (terminal)
+    Unresolved       // no driver / no liberty cell (terminal)
   };
-  // One contributing input on a Mixer stage (or every input listed
-  // for diagnostic Stuck stages).
-  struct Contributor
+  // One contributing input on a mixer-kind node — its pin and the
+  // recursive subtree representing the upstream walk for that
+  // branch's narrowed clock set.
+  struct Branch
   {
     const sta::Pin* pin = nullptr;
-    std::vector<std::string> clocks;  // clock subset on this input
+    std::vector<std::string> clocks;  // intersection ∩ cur_clocks
+    std::unique_ptr<ClockMixNode> subtree;
   };
   Kind kind;
   const sta::Instance* inst = nullptr;
-  // For RegisterTransit / CombTransit: pin we hopped to (CK or input).
-  const sta::Pin* via_pin = nullptr;
-  // Driver pin: cell output for register/comb stages, port pin for Port.
-  const sta::Pin* out_pin = nullptr;
-  // The clock set being traced WHEN this stage was emitted.
-  std::vector<std::string> clocks;
-  // Mixer / Stuck contributors (per-input pin + clocks).
-  std::vector<Contributor> contributors;
-  // Buffer/inverter pass-throughs traversed since the last emitted stage.
+  const sta::Pin* via_pin = nullptr;  // CK pin (RegisterTransit) or
+                                      // followed input (CombTransit) or
+                                      // the cur_pin we were walking from
+                                      // when DepthLimit fired
+  const sta::Pin* out_pin = nullptr;  // driver pin / port pin
+  std::vector<std::string> clocks;    // cur_clocks at this node
+  bool on_clock_path = false;         // walked through a register's CK
+                                      // anywhere on the way here?
+  bool degenerate = false;            // single-contributor mixer
+                                      // (subset, STA edge case)
+  // Mixer / NetMixer fan-out: each branch recurses upward.
+  std::vector<Branch> branches;
+  // RegisterTransit / CombTransit: a single upstream subtree.
+  std::unique_ptr<ClockMixNode> child;
+  // Buf/inv silent compressions that live between this node's output
+  // and the NEXT temporal stage downstream (matches the launch-side
+  // walker convention).
   std::vector<LaunchStage::PassThrough> passthroughs_after;
-  // Single-contributor mixer where the contributor's clock set is a
-  // strict subset of cur_clocks. STA edge case worth flagging.
-  bool degenerate = false;
+  // Terminal-only diagnostics. `actual_clocks` is the intersection of
+  // cur_clocks with the terminal pin's *real* clockDomains (the
+  // clocks that actually originate / propagate through here);
+  // `unaccounted_clocks` is `cur_clocks - actual_clocks` — the clocks
+  // we were tracing but that don't terminate at this point. A
+  // non-empty unaccounted list means the walk on THIS branch missed
+  // those clocks (they reach cur_pin via some other path the walker
+  // didn't follow). The frontend renders a warning band on the
+  // terminal card so the user can see the discrepancy.
+  std::vector<std::string> actual_clocks;
+  std::vector<std::string> unaccounted_clocks;
 };
 
-static std::vector<ClockMixStage> walkClockMix(
-    const sta::Pin* start_pin,
-    const std::set<std::string>& start_clocks,
+// Recursive BFS walker. Builds a tree rooted at `pin` representing the
+// clock-mix structure upstream. `seen` is passed by value so each
+// branch has its own cycle-guard set — two branches converging on the
+// same upstream cell are NOT misclassified as feedback.
+//
+// Termination:
+//   - depth >= max_depth          → DepthLimit (carries cur_pin via via_pin)
+//   - no flat-net driver          → Unresolved
+//   - cycle (drv_inst in seen)    → Feedback
+//   - top-level port              → Port (with actual_clocks /
+//                                          unaccounted_clocks computed)
+//   - sequential w/ CK ⊇ clocks   → RegisterTransit (recurses on CK
+//                                    with on_clock_path=true)
+//   - sequential w/ CK ⊉ clocks   → Stuck (with diagnostics)
+//   - 0 contributing comb inputs  → Stuck
+//   - 1 contributing input AND it
+//     covers cur_clocks            → CombTransit (single child)
+//   - ≥2 contributors / single
+//     contributor with subset      → Mixer (one branch per contrib)
+//   - >1 flat-net drivers (no
+//     covering driver)             → NetMixer (one branch per driver)
+//
+// Buf/inv pass-through cells are silently recursed through — the
+// child subtree absorbs them into its passthroughs_after.
+static std::unique_ptr<ClockMixNode> walkClockMixNode(
+    const sta::Pin* pin,
+    std::set<std::string> cur_clocks,
     sta::dbSta* sta_eng,
     sta::Network* network,
-    sta::Mode* mode)
+    sta::Mode* mode,
+    int depth,
+    int max_depth,
+    bool on_clock_path,
+    std::unordered_set<const sta::Instance*> seen)
 {
-  std::vector<ClockMixStage> stages;
-  if (!start_pin || start_clocks.empty() || !network) {
-    return stages;
-  }
+  auto node = std::make_unique<ClockMixNode>();
+  node->on_clock_path = on_clock_path;
+  node->clocks.assign(cur_clocks.begin(), cur_clocks.end());
 
   auto pinClockSet = [&](const sta::Pin* p) -> std::set<std::string> {
     std::set<std::string> s;
@@ -2653,326 +2699,79 @@ static std::vector<ClockMixStage> walkClockMix(
     }
     return s;
   };
+  auto setIntersection = [](const std::set<std::string>& a,
+                             const std::set<std::string>& b) {
+    std::set<std::string> r;
+    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(),
+                          std::inserter(r, r.begin()));
+    return r;
+  };
+  auto setMinus = [](const std::set<std::string>& a,
+                      const std::set<std::string>& b) {
+    std::vector<std::string> r;
+    for (const auto& x : a) {
+      if (b.count(x) == 0) {
+        r.push_back(x);
+      }
+    }
+    return r;
+  };
 
-  std::unordered_set<const sta::Instance*> seen;
-  if (sta::Instance* start_inst = network->instance(start_pin)) {
-    seen.insert(start_inst);
+  if (depth >= max_depth) {
+    node->kind = ClockMixNode::Kind::DepthLimit;
+    node->via_pin = pin;
+    return node;
+  }
+  if (!pin || cur_clocks.empty() || !network) {
+    node->kind = ClockMixNode::Kind::Unresolved;
+    return node;
   }
 
-  std::vector<LaunchStage::PassThrough> pending;
-  auto attachPending = [&](ClockMixStage& s) {
-    std::reverse(pending.begin(), pending.end());
-    s.passthroughs_after = std::move(pending);
-    pending.clear();
-  };
-  auto setClocks = [&](ClockMixStage& s, const std::set<std::string>& cs) {
-    s.clocks.assign(cs.begin(), cs.end());
-  };
+  auto drivers = collectFlatNetDrivers(pin, network);
+  if (drivers.empty()) {
+    node->kind = ClockMixNode::Kind::Unresolved;
+    return node;
+  }
 
-  std::set<std::string> cur_clocks = start_clocks;
-  const sta::Pin* cur_pin = start_pin;
-
-  constexpr int kMaxDepth = 12;
-  bool terminated = false;
-  for (int step = 0; step < kMaxDepth && !terminated; ++step) {
-    // Collect ALL drivers of the flat net containing cur_pin.
-    // Single-driver is the common case (handled below); multi-
-    // driver means the net itself is a convergence point (two
-    // clocks tied to the same physical net via hierarchy or
-    // tristate). Treat that as a NetMixer so the user can
-    // recurse into either driver — without this, the walk
-    // emitted "unresolved" the moment it hit any multi-driven
-    // clock net, which routinely happens on real designs and
-    // made the trace useless past the first FF (user feedback
-    // 2026-05-02 round 3).
-    auto drivers = collectFlatNetDrivers(cur_pin, network);
-    if (drivers.empty()) {
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::Unresolved;
-      setClocks(s, cur_clocks);
-      attachPending(s);
-      stages.push_back(s);
-      terminated = true;
-      break;
-    }
-
-    // Multi-driver net → net-level convergence. Apply the same
-    // pass-through / mixer / stuck classification as a comb
-    // gate, but with the drivers playing the role of inputs.
-    if (drivers.size() > 1) {
-      struct DriverInfo
-      {
-        const sta::Pin* pin = nullptr;
-        std::set<std::string> clocks;
-        std::set<std::string> intersection;
-      };
-      std::vector<DriverInfo> infos;
-      infos.reserve(drivers.size());
-      for (const sta::Pin* dp : drivers) {
-        DriverInfo di;
-        di.pin = dp;
-        di.clocks = pinClockSet(dp);
-        std::set_intersection(
-            di.clocks.begin(), di.clocks.end(),
-            cur_clocks.begin(), cur_clocks.end(),
-            std::inserter(di.intersection, di.intersection.begin()));
-        infos.push_back(std::move(di));
-      }
-      // Cover check: if any driver's clock set ⊇ cur_clocks, it's
-      // a pass-through net (one true source, others routed
-      // separately). Follow that driver as if there'd been only one.
-      size_t cover_idx = SIZE_MAX;
-      for (size_t i = 0; i < infos.size(); ++i) {
-        if (std::includes(infos[i].clocks.begin(), infos[i].clocks.end(),
-                          cur_clocks.begin(), cur_clocks.end())) {
-          cover_idx = i;
-          break;
-        }
-      }
-      if (cover_idx != SIZE_MAX) {
-        // Fall through to the single-driver path with this driver.
-        drivers.assign({infos[cover_idx].pin});
-      } else {
-        // 0 / 1 / 2+ drivers contributing to cur_clocks (no covers).
-        std::vector<size_t> contrib_idx;
-        for (size_t i = 0; i < infos.size(); ++i) {
-          if (!infos[i].intersection.empty()) {
-            contrib_idx.push_back(i);
-          }
-        }
-        if (contrib_idx.empty()) {
-          ClockMixStage s;
-          s.kind = ClockMixStage::Kind::Stuck;
-          setClocks(s, cur_clocks);
-          for (auto& di : infos) {
-            ClockMixStage::Contributor c;
-            c.pin = di.pin;
-            c.clocks.assign(di.clocks.begin(), di.clocks.end());
-            s.contributors.push_back(std::move(c));
-          }
-          attachPending(s);
-          stages.push_back(s);
-          terminated = true;
-          break;
-        }
-        ClockMixStage s;
-        s.kind = ClockMixStage::Kind::NetMixer;
-        setClocks(s, cur_clocks);
-        s.degenerate = (contrib_idx.size() == 1);
-        for (size_t i : contrib_idx) {
-          ClockMixStage::Contributor c;
-          c.pin = infos[i].pin;
-          c.clocks.assign(infos[i].intersection.begin(),
-                          infos[i].intersection.end());
-          s.contributors.push_back(std::move(c));
-        }
-        attachPending(s);
-        stages.push_back(s);
-        terminated = true;
-        break;
-      }
-    }
-
-    const sta::Pin* driver = drivers.front();
-
-    if (network->isTopLevelPort(driver)) {
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::Port;
-      s.out_pin = driver;
-      setClocks(s, cur_clocks);
-      attachPending(s);
-      stages.push_back(s);
-      terminated = true;
-      break;
-    }
-
-    sta::Instance* drv_inst = network->instance(driver);
-    if (!drv_inst) {
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::Unresolved;
-      s.out_pin = driver;
-      setClocks(s, cur_clocks);
-      attachPending(s);
-      stages.push_back(s);
-      terminated = true;
-      break;
-    }
-    if (seen.count(drv_inst)) {
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::Feedback;
-      s.inst = drv_inst;
-      s.out_pin = driver;
-      setClocks(s, cur_clocks);
-      attachPending(s);
-      stages.push_back(s);
-      terminated = true;
-      break;
-    }
-    seen.insert(drv_inst);
-
-    sta::LibertyCell* lc = network->libertyCell(drv_inst);
-    if (!lc) {
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::Unresolved;
-      s.inst = drv_inst;
-      s.out_pin = driver;
-      setClocks(s, cur_clocks);
-      attachPending(s);
-      stages.push_back(s);
-      terminated = true;
-      break;
-    }
-
-    // Buffer / inverter — silent compression into `pending`.
-    if (isPassThroughCell(lc)) {
-      auto inputs = findCombInputPins(drv_inst, network);
-      if (inputs.empty()) {
-        ClockMixStage s;
-        s.kind = ClockMixStage::Kind::Unresolved;
-        s.inst = drv_inst;
-        s.out_pin = driver;
-        setClocks(s, cur_clocks);
-        attachPending(s);
-        stages.push_back(s);
-        terminated = true;
-        break;
-      }
-      LaunchStage::PassThrough pt;
-      pt.inst = drv_inst;
-      pt.in_pin = inputs.front();
-      pt.out_pin = driver;
-      pending.push_back(pt);
-      cur_pin = inputs.front();
-      continue;
-    }
-
-    // Sequential (non-ICG) — hop through CK.
-    if (lc->hasSequentials() && !lc->isClockGate()) {
-      const sta::Pin* ck_pin = findRegisterClockInput(drv_inst, network);
-      if (!ck_pin) {
-        ClockMixStage s;
-        s.kind = ClockMixStage::Kind::Stuck;
-        s.inst = drv_inst;
-        s.out_pin = driver;
-        setClocks(s, cur_clocks);
-        attachPending(s);
-        stages.push_back(s);
-        terminated = true;
-        break;
-      }
-      std::set<std::string> ck_clocks = pinClockSet(ck_pin);
-      const bool ck_covers
-          = std::includes(ck_clocks.begin(), ck_clocks.end(),
-                          cur_clocks.begin(), cur_clocks.end());
-      if (ck_covers) {
-        ClockMixStage s;
-        s.kind = ClockMixStage::Kind::RegisterTransit;
-        s.inst = drv_inst;
-        s.via_pin = ck_pin;
-        s.out_pin = driver;
-        setClocks(s, cur_clocks);
-        attachPending(s);
-        stages.push_back(s);
-        cur_pin = ck_pin;
-        continue;
-      }
-      // CK doesn't carry every clock in cur_clocks. Surface the
-      // breakdown so the user can see what's missing.
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::Stuck;
-      s.inst = drv_inst;
-      s.via_pin = ck_pin;
-      s.out_pin = driver;
-      setClocks(s, cur_clocks);
-      ClockMixStage::Contributor ck_contrib;
-      ck_contrib.pin = ck_pin;
-      ck_contrib.clocks.assign(ck_clocks.begin(), ck_clocks.end());
-      s.contributors.push_back(std::move(ck_contrib));
-      attachPending(s);
-      stages.push_back(s);
-      terminated = true;
-      break;
-    }
-
-    // Combinational (or ICG) — classify by per-input intersections.
-    auto inputs = findCombInputPins(drv_inst, network);
-    if (inputs.empty()) {
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::Unresolved;
-      s.inst = drv_inst;
-      s.out_pin = driver;
-      setClocks(s, cur_clocks);
-      attachPending(s);
-      stages.push_back(s);
-      terminated = true;
-      break;
-    }
-
-    struct InputInfo
+  // Multi-driver net handling. Apply the same cover/contributor
+  // analysis as a comb cell, but with drivers playing the role of
+  // inputs. Single covering driver → fall through to single-driver
+  // path; otherwise emit a NetMixer with each contributing driver
+  // as a branch.
+  if (drivers.size() > 1) {
+    struct DriverInfo
     {
       const sta::Pin* pin = nullptr;
       std::set<std::string> clocks;
       std::set<std::string> intersection;
     };
-    std::vector<InputInfo> infos;
-    infos.reserve(inputs.size());
-    for (const sta::Pin* in : inputs) {
-      InputInfo info;
-      info.pin = in;
-      info.clocks = pinClockSet(in);
-      std::set_intersection(
-          info.clocks.begin(), info.clocks.end(),
-          cur_clocks.begin(), cur_clocks.end(),
-          std::inserter(info.intersection, info.intersection.begin()));
-      infos.push_back(std::move(info));
+    std::vector<DriverInfo> infos;
+    infos.reserve(drivers.size());
+    for (const sta::Pin* dp : drivers) {
+      DriverInfo di;
+      di.pin = dp;
+      di.clocks = pinClockSet(dp);
+      di.intersection = setIntersection(di.clocks, cur_clocks);
+      infos.push_back(std::move(di));
     }
-
     std::vector<size_t> contrib_idx;
-    contrib_idx.reserve(infos.size());
     for (size_t i = 0; i < infos.size(); ++i) {
       if (!infos[i].intersection.empty()) {
         contrib_idx.push_back(i);
       }
     }
-
     if (contrib_idx.empty()) {
-      // Phantom propagation — output claims clocks no input carries.
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::Stuck;
-      s.inst = drv_inst;
-      s.out_pin = driver;
-      setClocks(s, cur_clocks);
-      for (auto& info : infos) {
-        ClockMixStage::Contributor c;
-        c.pin = info.pin;
-        c.clocks.assign(info.clocks.begin(), info.clocks.end());
-        s.contributors.push_back(std::move(c));
+      node->kind = ClockMixNode::Kind::Stuck;
+      node->actual_clocks.clear();
+      node->unaccounted_clocks.assign(cur_clocks.begin(), cur_clocks.end());
+      for (auto& di : infos) {
+        ClockMixNode::Branch b;
+        b.pin = di.pin;
+        b.clocks.assign(di.clocks.begin(), di.clocks.end());
+        node->branches.push_back(std::move(b));
       }
-      attachPending(s);
-      stages.push_back(s);
-      terminated = true;
-      break;
+      return node;
     }
-
-    // PASS-THROUGH check (must run BEFORE any mixer detection).
-    // A cell is a pass-through, not a mixer, when at least one
-    // input's clock set ⊇ cur_clocks. The cell isn't doing any
-    // narrowing — the requested clocks are already merged
-    // upstream of this gate, and at least one input route
-    // carries the full set. Common shapes that hit this:
-    //   - A 4-input gate where every input is fed (directly or
-    //     via routing) from the same upstream multi-clock net.
-    //     STA reports the same clock set on all inputs; without
-    //     this check, the walker wrongly declared it a
-    //     "4-clock mixer" and stopped.
-    //   - A redundant tie (`AND2(x, x)` used as a buffer).
-    //
-    // Pick the FIRST covering input — when multiple inputs
-    // cover, they all eventually trace back to the same upstream
-    // multi-clock net, so the choice is just a routing
-    // preference. Buf/inv pass-throughs are already compressed
-    // earlier in the walk via `pending`; here we emit a
-    // CombTransit card so the user sees the cell on the diagram.
     size_t cover_idx = SIZE_MAX;
     for (size_t i = 0; i < infos.size(); ++i) {
       if (std::includes(infos[i].clocks.begin(), infos[i].clocks.end(),
@@ -2982,87 +2781,228 @@ static std::vector<ClockMixStage> walkClockMix(
       }
     }
     if (cover_idx != SIZE_MAX) {
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::CombTransit;
-      s.inst = drv_inst;
-      s.via_pin = infos[cover_idx].pin;
-      s.out_pin = driver;
-      setClocks(s, cur_clocks);
-      attachPending(s);
-      stages.push_back(s);
-      cur_pin = infos[cover_idx].pin;
-      continue;
+      // Any covering driver → behave like a single-driver net,
+      // for the same reason combinational cells fall through on
+      // any cover (the net isn't actually narrowing cur_clocks).
+      drivers.assign({infos[cover_idx].pin});
+    } else {
+      node->kind = ClockMixNode::Kind::NetMixer;
+      node->degenerate = (contrib_idx.size() == 1);
+      for (size_t i : contrib_idx) {
+        ClockMixNode::Branch b;
+        b.pin = infos[i].pin;
+        b.clocks.assign(infos[i].intersection.begin(),
+                        infos[i].intersection.end());
+        std::set<std::string> branch_clocks(infos[i].intersection.begin(),
+                                             infos[i].intersection.end());
+        b.subtree = walkClockMixNode(infos[i].pin, std::move(branch_clocks),
+                                     sta_eng, network, mode, depth + 1,
+                                     max_depth, on_clock_path, seen);
+        node->branches.push_back(std::move(b));
+      }
+      return node;
     }
+  }
 
-    // No single input covers cur_clocks. Now we know at least
-    // one clock comes from elsewhere — the cell IS narrowing the
-    // set, so it's a mixer (or a degenerate edge case).
-    if (contrib_idx.size() == 1) {
-      // Single contributor whose set ⊊ cur_clocks (we just
-      // ruled out ⊇ via the cover_idx check). The remaining
-      // clocks must reach the output by some path STA accounts
-      // for but the topology doesn't expose on a real input —
-      // typically a clock attribute or a propagation edge case.
-      // Emit as a degenerate mixer with the diagnostic flag.
-      const auto& info = infos[contrib_idx[0]];
-      ClockMixStage s;
-      s.kind = ClockMixStage::Kind::Mixer;
-      s.inst = drv_inst;
-      s.out_pin = driver;
-      setClocks(s, cur_clocks);
-      s.degenerate = true;
-      ClockMixStage::Contributor c;
-      c.pin = info.pin;
-      c.clocks.assign(info.intersection.begin(), info.intersection.end());
-      s.contributors.push_back(std::move(c));
-      attachPending(s);
-      stages.push_back(s);
-      terminated = true;
+  // Single driver path.
+  const sta::Pin* driver = drivers.front();
+
+  if (network->isTopLevelPort(driver)) {
+    node->kind = ClockMixNode::Kind::Port;
+    node->out_pin = driver;
+    auto port_clocks = pinClockSet(driver);
+    auto intersect = setIntersection(port_clocks, cur_clocks);
+    node->actual_clocks.assign(intersect.begin(), intersect.end());
+    node->unaccounted_clocks = setMinus(cur_clocks, intersect);
+    return node;
+  }
+
+  sta::Instance* drv_inst = network->instance(driver);
+  if (!drv_inst) {
+    node->kind = ClockMixNode::Kind::Unresolved;
+    node->out_pin = driver;
+    return node;
+  }
+  if (seen.count(drv_inst)) {
+    node->kind = ClockMixNode::Kind::Feedback;
+    node->inst = drv_inst;
+    node->out_pin = driver;
+    return node;
+  }
+
+  sta::LibertyCell* lc = network->libertyCell(drv_inst);
+  if (!lc) {
+    node->kind = ClockMixNode::Kind::Unresolved;
+    node->inst = drv_inst;
+    node->out_pin = driver;
+    return node;
+  }
+
+  // Buf/inv → silent compression: don't emit a node, recurse and let
+  // the child absorb this cell into its passthroughs_after.
+  if (isPassThroughCell(lc)) {
+    auto inputs = findCombInputPins(drv_inst, network);
+    if (inputs.empty()) {
+      node->kind = ClockMixNode::Kind::Unresolved;
+      node->inst = drv_inst;
+      node->out_pin = driver;
+      return node;
+    }
+    seen.insert(drv_inst);
+    auto child = walkClockMixNode(inputs.front(), std::move(cur_clocks),
+                                  sta_eng, network, mode, depth + 1,
+                                  max_depth, on_clock_path, seen);
+    LaunchStage::PassThrough pt;
+    pt.inst = drv_inst;
+    pt.in_pin = inputs.front();
+    pt.out_pin = driver;
+    child->passthroughs_after.push_back(pt);
+    return child;
+  }
+
+  // Sequential (non-ICG) → hop through CK. on_clock_path flips on.
+  if (lc->hasSequentials() && !lc->isClockGate()) {
+    const sta::Pin* ck_pin = findRegisterClockInput(drv_inst, network);
+    if (!ck_pin) {
+      node->kind = ClockMixNode::Kind::Stuck;
+      node->inst = drv_inst;
+      node->out_pin = driver;
+      return node;
+    }
+    auto ck_clocks = pinClockSet(ck_pin);
+    bool ck_covers = std::includes(ck_clocks.begin(), ck_clocks.end(),
+                                    cur_clocks.begin(), cur_clocks.end());
+    if (ck_covers) {
+      node->kind = ClockMixNode::Kind::RegisterTransit;
+      node->inst = drv_inst;
+      node->via_pin = ck_pin;
+      node->out_pin = driver;
+      seen.insert(drv_inst);
+      // From here upstream we're tracing the CLOCK network — flip
+      // on_clock_path so any mixer found from here on labels as a
+      // clock-path mix in the UI.
+      node->child = walkClockMixNode(ck_pin, std::move(cur_clocks),
+                                     sta_eng, network, mode, depth + 1,
+                                     max_depth, /*on_clock_path=*/true,
+                                     seen);
+      return node;
+    }
+    // CK doesn't carry every clock in cur_clocks — surface what's
+    // there as actual_clocks, what's missing as unaccounted_clocks.
+    node->kind = ClockMixNode::Kind::Stuck;
+    node->inst = drv_inst;
+    node->via_pin = ck_pin;
+    node->out_pin = driver;
+    auto intersect = setIntersection(ck_clocks, cur_clocks);
+    node->actual_clocks.assign(intersect.begin(), intersect.end());
+    node->unaccounted_clocks = setMinus(cur_clocks, intersect);
+    return node;
+  }
+
+  // Combinational (or ICG) — classify by per-input intersections.
+  auto inputs = findCombInputPins(drv_inst, network);
+  if (inputs.empty()) {
+    node->kind = ClockMixNode::Kind::Unresolved;
+    node->inst = drv_inst;
+    node->out_pin = driver;
+    return node;
+  }
+  struct InputInfo
+  {
+    const sta::Pin* pin = nullptr;
+    std::set<std::string> clocks;
+    std::set<std::string> intersection;
+  };
+  std::vector<InputInfo> infos;
+  infos.reserve(inputs.size());
+  for (const sta::Pin* in : inputs) {
+    InputInfo info;
+    info.pin = in;
+    info.clocks = pinClockSet(in);
+    info.intersection = setIntersection(info.clocks, cur_clocks);
+    infos.push_back(std::move(info));
+  }
+  std::vector<size_t> contrib_idx;
+  for (size_t i = 0; i < infos.size(); ++i) {
+    if (!infos[i].intersection.empty()) {
+      contrib_idx.push_back(i);
+    }
+  }
+  if (contrib_idx.empty()) {
+    node->kind = ClockMixNode::Kind::Stuck;
+    node->inst = drv_inst;
+    node->out_pin = driver;
+    node->unaccounted_clocks.assign(cur_clocks.begin(), cur_clocks.end());
+    for (auto& info : infos) {
+      ClockMixNode::Branch b;
+      b.pin = info.pin;
+      b.clocks.assign(info.clocks.begin(), info.clocks.end());
+      node->branches.push_back(std::move(b));
+    }
+    return node;
+  }
+  // Cover check: if ANY input ⊇ cur_clocks, the cell isn't narrowing
+  // the clock set — at least one route already carries everything we
+  // care about. Treat as a pass-through (CombTransit) and follow
+  // that input regardless of how many OTHER inputs also contribute
+  // some subset.
+  //
+  // The "any other inputs ALSO contribute" case is redundant
+  // routing: e.g. a 2-input AND tied as a buffer, or a downstream
+  // signal that re-picks up clocks already on the covering input.
+  // Walking back from the covering input still reaches every
+  // upstream source that contributes to cur_clocks; the BFS exhaustive
+  // search lives at the level UPSTREAM of this cell, where the
+  // clock set narrows for real. (User feedback 2026-05-02 round 4
+  // initially asked for fan-out here, but that misclassified
+  // single-clock chains as mixers — countNodes(tree, "mixer") was
+  // 2 on a clk_a-only chain. Reverted: cover always wins.)
+  size_t cover_idx = SIZE_MAX;
+  for (size_t i = 0; i < infos.size(); ++i) {
+    if (std::includes(infos[i].clocks.begin(), infos[i].clocks.end(),
+                      cur_clocks.begin(), cur_clocks.end())) {
+      cover_idx = i;
       break;
     }
-
-    // ≥2 contributing inputs, none covering all → real mixer.
-    ClockMixStage s;
-    s.kind = ClockMixStage::Kind::Mixer;
-    s.inst = drv_inst;
-    s.out_pin = driver;
-    setClocks(s, cur_clocks);
-    for (size_t i : contrib_idx) {
-      ClockMixStage::Contributor c;
-      c.pin = infos[i].pin;
-      c.clocks.assign(infos[i].intersection.begin(),
-                      infos[i].intersection.end());
-      s.contributors.push_back(std::move(c));
-    }
-    attachPending(s);
-    stages.push_back(s);
-    terminated = true;
-    break;
   }
-
-  if (!terminated) {
-    // Carry cur_pin on `via_pin` so the frontend can offer a
-    // "↑ continue trace" affordance on the depth-limit card —
-    // clicking re-issues `cdc_clock_mix_trace` from cur_pin with
-    // cur_clocks, walking another N stages upstream.
-    ClockMixStage s;
-    s.kind = ClockMixStage::Kind::DepthLimit;
-    s.via_pin = cur_pin;
-    s.clocks.assign(cur_clocks.begin(), cur_clocks.end());
-    attachPending(s);
-    stages.push_back(s);
+  if (cover_idx != SIZE_MAX) {
+    node->kind = ClockMixNode::Kind::CombTransit;
+    node->inst = drv_inst;
+    node->via_pin = infos[cover_idx].pin;
+    node->out_pin = driver;
+    seen.insert(drv_inst);
+    node->child = walkClockMixNode(infos[cover_idx].pin,
+                                   std::move(cur_clocks), sta_eng,
+                                   network, mode, depth + 1, max_depth,
+                                   on_clock_path, seen);
+    return node;
   }
-
-  // Walk emits stages closest-to-start-pin first; reverse so launch /
-  // mixer / transit lands at index 0 (matches data-fan-in convention).
-  std::reverse(stages.begin(), stages.end());
-  return stages;
+  // Mixer: fan out into every contributing input.
+  node->kind = ClockMixNode::Kind::Mixer;
+  node->inst = drv_inst;
+  node->out_pin = driver;
+  node->degenerate = (contrib_idx.size() == 1);
+  seen.insert(drv_inst);
+  for (size_t i : contrib_idx) {
+    ClockMixNode::Branch b;
+    b.pin = infos[i].pin;
+    b.clocks.assign(infos[i].intersection.begin(),
+                    infos[i].intersection.end());
+    std::set<std::string> branch_clocks(infos[i].intersection.begin(),
+                                         infos[i].intersection.end());
+    b.subtree = walkClockMixNode(infos[i].pin, std::move(branch_clocks),
+                                 sta_eng, network, mode, depth + 1,
+                                 max_depth, on_clock_path, seen);
+    node->branches.push_back(std::move(b));
+  }
+  return node;
 }
+
 
 WebSocketResponse CdcHandler::handleCdcClockMixTrace(
     const WebSocketRequest& req)
 {
-  static constexpr const char* kEmpty = R"({"stages":[]})";
+  static constexpr const char* kEmpty = R"({"tree":null})";
   auto ctx = makeCdcContext(gen_);
   if (!ctx) {
     return jsonResponse(req.id, kEmpty);
@@ -3094,9 +3034,6 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
     mode = ctx->sta->cmdMode();
   }
 
-  // The clocks the user wants to trace. When omitted, fall back to the
-  // pin's own clock set — the typical case (the trace-mix button picks
-  // up exactly the clocks rendered on the pin).
   std::set<std::string> requested_clocks
       = extract_string_array(req.raw_json, "clocks");
   if (requested_clocks.empty() && mode) {
@@ -3111,10 +3048,31 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
     return jsonResponse(req.id, kEmpty);
   }
 
-  std::vector<ClockMixStage> chain
-      = walkClockMix(start_pin, requested_clocks, ctx->sta, ctx->network,
-                     mode);
+  // Initial on_clock_path: true iff the start pin is itself a
+  // register clock-input. Clicking trace-mix on a CK row should
+  // immediately label upstream mixers as clock-path mixes; clicking
+  // on D / IN / +IN starts on the data path.
+  const bool start_on_clock_path
+      = ctx->network->isRegClkPin(start_pin);
 
+  // Cap on total nodes emitted across all branches — without this a
+  // pathological design could blow the JSON. 256 is generous for
+  // human-readable traces (typical clock trees have <20 nodes).
+  constexpr int kMaxDepth = 12;
+
+  std::unordered_set<const sta::Instance*> seen;
+  if (sta::Instance* start_inst = ctx->network->instance(start_pin)) {
+    seen.insert(start_inst);
+  }
+  auto root = walkClockMixNode(start_pin, requested_clocks, ctx->sta,
+                               ctx->network, mode, /*depth=*/0,
+                               kMaxDepth, start_on_clock_path,
+                               std::move(seen));
+
+  // Recursive JSON emission. The tree mirrors the in-memory shape:
+  // mixer / net_mixer carry `branches[]`, transits carry `child`,
+  // terminals carry `actual_clocks` / `unaccounted_clocks` for
+  // diagnostics.
   JsonBuilder b;
   auto emitOdbPinFields
       = [&](const std::string& prefix, const sta::Pin* pin) {
@@ -3171,29 +3129,122 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
           }
           b.endArray();
         };
-  auto kindString = [](ClockMixStage::Kind k) -> std::string {
+  auto kindString = [](ClockMixNode::Kind k) -> std::string {
     switch (k) {
-      case ClockMixStage::Kind::Mixer:
+      case ClockMixNode::Kind::Mixer:
         return "mixer";
-      case ClockMixStage::Kind::NetMixer:
+      case ClockMixNode::Kind::NetMixer:
         return "net_mixer";
-      case ClockMixStage::Kind::RegisterTransit:
+      case ClockMixNode::Kind::RegisterTransit:
         return "register_transit";
-      case ClockMixStage::Kind::CombTransit:
+      case ClockMixNode::Kind::CombTransit:
         return "comb_transit";
-      case ClockMixStage::Kind::Port:
+      case ClockMixNode::Kind::Port:
         return "port";
-      case ClockMixStage::Kind::Stuck:
+      case ClockMixNode::Kind::Stuck:
         return "stuck";
-      case ClockMixStage::Kind::Feedback:
+      case ClockMixNode::Kind::Feedback:
         return "feedback";
-      case ClockMixStage::Kind::DepthLimit:
+      case ClockMixNode::Kind::DepthLimit:
         return "depth_limit";
-      case ClockMixStage::Kind::Unresolved:
+      case ClockMixNode::Kind::Unresolved:
         return "unresolved";
     }
     return "unresolved";
   };
+
+  std::function<void(const ClockMixNode&, const char*)> emitNode
+      = [&](const ClockMixNode& n, const char* key) {
+          if (key) {
+            b.beginObject(key);
+          } else {
+            b.beginObject();
+          }
+          b.field("kind", kindString(n.kind));
+          if (n.inst) {
+            b.field("instance",
+                    std::string(ctx->network->pathName(n.inst)));
+            sta::LibertyCell* lc = ctx->network->libertyCell(n.inst);
+            if (lc) {
+              b.field("cell", std::string(lc->name()));
+            } else {
+              b.nullField("cell");
+            }
+            emitInstanceOdbBare(b, n.inst, ctx->db_network);
+          } else {
+            b.nullField("instance");
+            b.nullField("cell");
+          }
+          if (n.out_pin) {
+            b.field("out_pin",
+                    std::string(ctx->network->pathName(n.out_pin)));
+            emitOdbPinFields("out_pin", n.out_pin);
+          } else {
+            b.nullField("out_pin");
+          }
+          if (n.via_pin) {
+            b.field("via_pin",
+                    std::string(ctx->network->pathName(n.via_pin)));
+            emitOdbPinFields("via_pin", n.via_pin);
+          } else {
+            b.nullField("via_pin");
+          }
+          b.beginArray("clocks");
+          for (const std::string& c : n.clocks) {
+            b.value(c);
+          }
+          b.endArray();
+          b.field("on_clock_path", n.on_clock_path);
+          b.field("degenerate", n.degenerate);
+          if (!n.actual_clocks.empty() || !n.unaccounted_clocks.empty()) {
+            b.beginArray("actual_clocks");
+            for (const std::string& c : n.actual_clocks) {
+              b.value(c);
+            }
+            b.endArray();
+            b.beginArray("unaccounted_clocks");
+            for (const std::string& c : n.unaccounted_clocks) {
+              b.value(c);
+            }
+            b.endArray();
+          }
+          b.beginArray("branches");
+          for (const auto& br : n.branches) {
+            b.beginObject();
+            if (br.pin) {
+              b.field("pin",
+                      std::string(ctx->network->pathName(br.pin)));
+              const char* tp = nullptr;
+              int id = 0;
+              if (resolvePinOdb(br.pin, ctx->db_network, tp, id)) {
+                b.field("pin_odb_type", std::string(tp));
+                b.field("pin_odb_id", id);
+              }
+            } else {
+              b.nullField("pin");
+            }
+            b.beginArray("clocks");
+            for (const std::string& c : br.clocks) {
+              b.value(c);
+            }
+            b.endArray();
+            if (br.subtree) {
+              emitNode(*br.subtree, "subtree");
+            } else {
+              b.nullField("subtree");
+            }
+            b.endObject();
+          }
+          b.endArray();
+          if (n.child) {
+            emitNode(*n.child, "child");
+          } else {
+            b.nullField("child");
+          }
+          emitOutNet(n.out_pin);
+          emitPassthroughs(n.passthroughs_after);
+          b.endObject();
+        };
 
   b.beginObject();
   b.beginArray("requested_clocks");
@@ -3201,69 +3252,11 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
     b.value(c);
   }
   b.endArray();
-  b.beginArray("stages");
-  for (const ClockMixStage& cs : chain) {
-    b.beginObject();
-    b.field("kind", kindString(cs.kind));
-    if (cs.inst) {
-      b.field("instance", std::string(ctx->network->pathName(cs.inst)));
-      sta::LibertyCell* lc = ctx->network->libertyCell(cs.inst);
-      if (lc) {
-        b.field("cell", std::string(lc->name()));
-      } else {
-        b.nullField("cell");
-      }
-      emitInstanceOdbBare(b, cs.inst, ctx->db_network);
-    } else {
-      b.nullField("instance");
-      b.nullField("cell");
-    }
-    if (cs.out_pin) {
-      const std::string out_path = ctx->network->pathName(cs.out_pin);
-      b.field("out_pin", out_path);
-      emitOdbPinFields("out_pin", cs.out_pin);
-    } else {
-      b.nullField("out_pin");
-    }
-    if (cs.via_pin) {
-      b.field("via_pin", std::string(ctx->network->pathName(cs.via_pin)));
-      emitOdbPinFields("via_pin", cs.via_pin);
-    } else {
-      b.nullField("via_pin");
-    }
-    b.beginArray("clocks");
-    for (const std::string& c : cs.clocks) {
-      b.value(c);
-    }
-    b.endArray();
-    b.beginArray("contributors");
-    for (const auto& c : cs.contributors) {
-      b.beginObject();
-      if (c.pin) {
-        b.field("pin", std::string(ctx->network->pathName(c.pin)));
-        const char* tp = nullptr;
-        int id = 0;
-        if (resolvePinOdb(c.pin, ctx->db_network, tp, id)) {
-          b.field("pin_odb_type", std::string(tp));
-          b.field("pin_odb_id", id);
-        }
-      } else {
-        b.nullField("pin");
-      }
-      b.beginArray("clocks");
-      for (const std::string& nm : c.clocks) {
-        b.value(nm);
-      }
-      b.endArray();
-      b.endObject();
-    }
-    b.endArray();
-    b.field("degenerate", cs.degenerate);
-    emitOutNet(cs.out_pin);
-    emitPassthroughs(cs.passthroughs_after);
-    b.endObject();
+  if (root) {
+    emitNode(*root, "tree");
+  } else {
+    b.nullField("tree");
   }
-  b.endArray();
   b.endObject();
   return jsonResponse(req.id, b.str());
 }

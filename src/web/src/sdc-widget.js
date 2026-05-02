@@ -9000,13 +9000,12 @@ export class SdcWidget {
     }
 
     // Clock-mix tracer (replaces per-chip data fan-in). Triggered
-    // from the `↑ trace mix` button on a multi-clock pin row.
-    // Walks upstream to find where the requested clocks first
-    // merge — the actual mixer cell. The wrapper / strip layout
-    // matches `_toggleCdcFanIn` so collapse + side-by-side is
-    // identical UX. Different RPC, different stage shapes, but
-    // the user-facing affordance reads as "another wrapper above
-    // the card."
+    // from the `↑ trace mix` button on a multi-clock pin row. The
+    // backend returns a TREE rooted at the originating pin: each
+    // mixer node has per-input branches that recurse upstream to
+    // ports / registers / depth-limit terminals. The frontend
+    // renders the tree as nested branch columns converging at each
+    // mixer card, with the originating pin at the bottom.
     async _toggleCdcClockMix(pinRef, clocks, btn, pinKind, pinName) {
         const clockList = Array.isArray(clocks)
             ? clocks.filter(c => c).slice() : [];
@@ -9038,8 +9037,10 @@ export class SdcWidget {
         btn.style.outline = '1px dashed var(--accent-tab)';
 
         if (!this._cdcClockMixCache) this._cdcClockMixCache = new Map();
-        let stages = this._cdcClockMixCache.get(key);
-        if (!stages) {
+        let tree;
+        if (this._cdcClockMixCache.has(key)) {
+            tree = this._cdcClockMixCache.get(key);
+        } else {
             try {
                 const data = await this._requestWithTimeout({
                     type: 'cdc_clock_mix_trace',
@@ -9048,8 +9049,8 @@ export class SdcWidget {
                     clocks: clockList,
                     mode: this._cdcActiveModeName(this._cdcOverview),
                 });
-                stages = (data && data.stages) || [];
-                this._cdcClockMixCache.set(key, stages);
+                tree = (data && data.tree) || null;
+                this._cdcClockMixCache.set(key, tree);
             } catch (e) {
                 console.warn('[CDC] clock-mix fetch failed', e);
                 btn.style.outline = '';
@@ -9061,11 +9062,11 @@ export class SdcWidget {
         wrapper.dataset.cdcFanInKey = key;
         wrapper.dataset.cdcClockMixWrapper = '1';
         wrapper.style.cssText
-            = 'display:flex;flex-direction:column;gap:4px;'
-            + 'padding:4px 6px;border:1px dashed var(--border);'
+            = 'display:flex;flex-direction:column;gap:6px;'
+            + 'padding:6px 8px;border:1px dashed var(--border);'
             + 'border-radius:3px;'
-            + 'min-width:240px;max-width:340px;'
-            + 'flex:0 0 auto;';
+            + 'flex:0 0 auto;'
+            + 'min-width:260px;';
 
         const head = document.createElement('div');
         head.style.cssText
@@ -9093,7 +9094,7 @@ export class SdcWidget {
         head.appendChild(collapse);
         wrapper.appendChild(head);
 
-        if (!stages.length) {
+        if (!tree) {
             const empty = document.createElement('div');
             empty.style.cssText
                 = 'padding:6px 8px;font-style:italic;'
@@ -9102,90 +9103,7 @@ export class SdcWidget {
                 + 'level port or has no resolvable driver.';
             wrapper.appendChild(empty);
         } else {
-            // Consecutive transit cards collapse into a single
-            // expandable summary so a long chain of buffer-like
-            // cells doesn't drown out the actual mix points (user
-            // feedback 2026-05-02 round 3). Single transits also
-            // collapse for consistency — clicking the summary
-            // expands inline.
-            const isTransit = (s) => s
-                && (s.kind === 'comb_transit'
-                    || s.kind === 'register_transit');
-            const renderTransitRun = (run) => {
-                if (!run.length) return;
-                const group = document.createElement('div');
-                group.dataset.cdcMixTransitRun = '1';
-                group.style.cssText
-                    = 'border:1px dashed var(--border);'
-                    + 'border-radius:4px;background:var(--bg-input);';
-                const summary = document.createElement('a');
-                summary.style.cssText
-                    = 'display:block;cursor:pointer;'
-                    + 'color:var(--accent-tab);'
-                    + 'text-decoration:underline;'
-                    + 'text-decoration-style:dotted;'
-                    + 'padding:4px 8px;font-size:11px;'
-                    + 'white-space:nowrap;overflow:hidden;'
-                    + 'text-overflow:ellipsis;';
-                const inner = document.createElement('div');
-                inner.style.cssText
-                    = 'display:none;padding:4px 8px 8px 8px;'
-                    + 'border-top:1px solid var(--border);'
-                    + 'display:flex;flex-direction:column;gap:4px;';
-                inner.style.display = 'none';
-                for (let j = 0; j < run.length; ++j) {
-                    if (j > 0) {
-                        const prev = run[j - 1];
-                        inner.appendChild(
-                            this._renderCdcInterStageGap(
-                                prev && prev.out_net,
-                                (prev && prev.passthroughs_after) || []));
-                    }
-                    inner.appendChild(
-                        this._renderCdcClockMixStage(run[j]));
-                }
-                const N = run.length;
-                const setLabel = (open) => {
-                    summary.textContent
-                        = `${open ? '▼' : '▶'} ${N} via `
-                        + (N === 1 ? 'cell' : 'cells')
-                        + ' — click to '
-                        + (open ? 'collapse' : 'expand');
-                };
-                setLabel(false);
-                summary.addEventListener('click', () => {
-                    const open = inner.style.display !== 'none';
-                    inner.style.display = open ? 'none' : '';
-                    setLabel(!open);
-                });
-                group.appendChild(summary);
-                group.appendChild(inner);
-                wrapper.appendChild(group);
-            };
-
-            let transitRun = [];
-            const flush = () => {
-                if (transitRun.length) {
-                    renderTransitRun(transitRun);
-                    transitRun = [];
-                }
-            };
-            for (let i = 0; i < stages.length; ++i) {
-                const s = stages[i];
-                if (isTransit(s)) {
-                    transitRun.push(s);
-                    continue;
-                }
-                flush();
-                if (i > 0) {
-                    const prev = stages[i - 1];
-                    wrapper.appendChild(this._renderCdcInterStageGap(
-                        prev && prev.out_net,
-                        (prev && prev.passthroughs_after) || []));
-                }
-                wrapper.appendChild(this._renderCdcClockMixStage(s));
-            }
-            flush();
+            wrapper.appendChild(this._renderCdcClockMixNode(tree));
             const arrow = document.createElement('div');
             arrow.style.cssText
                 = 'text-align:center;font-size:11px;'
@@ -9202,68 +9120,159 @@ export class SdcWidget {
             strip.dataset.cdcFanInStrip = '1';
             strip.style.cssText
                 = 'display:flex;flex-direction:row;gap:8px;'
-                + 'align-items:stretch;'
+                + 'align-items:flex-end;'
                 + 'overflow-x:auto;margin-bottom:4px;';
             parent.insertBefore(strip, card);
         }
         strip.appendChild(wrapper);
     }
 
-    // Renders one stage of a clock-mix trace. Stage shapes:
-    //   - "mixer"            ⚡ banner; per-contributor rows with
-    //                        own `↑ trace mix` link if subset ≥ 2
-    //   - "register_transit" muted "↑ via CK of FF" header
-    //   - "comb_transit"     muted "↑ via CELL" header
-    //   - "port"             ⏚ banner, terminal
-    //   - "stuck"            ⊘ amber banner with input clock breakdown
-    //   - "feedback"         ↺ banner, terminal
-    //   - "depth_limit"      ⋯ banner, terminal
-    //   - "unresolved"       ? banner, terminal
-    _renderCdcClockMixStage(stage) {
+    // Recursive entry. Renders the subtree(s) above this node, then
+    // the node's own card. Returns a column-flex DOM element with
+    // upstream content on top and the node's card at the bottom.
+    _renderCdcClockMixNode(node) {
+        if (!node) return document.createElement('div');
+        const card = this._renderCdcClockMixCard(node);
+        const above = this._renderCdcClockMixSubtree(node);
+        if (!above) {
+            return card;
+        }
+        const container = document.createElement('div');
+        container.style.cssText
+            = 'display:flex;flex-direction:column;'
+            + 'align-items:stretch;gap:6px;';
+        container.appendChild(above);
+        container.appendChild(card);
+        return container;
+    }
+
+    // Subtree for a node — DOM that goes ABOVE this node's card.
+    //   - Mixer / NetMixer: a row of branch columns. Each column
+    //     recurses on the branch's subtree. Branches lay out left-
+    //     to-right, aligned at the bottom (each branch's terminal
+    //     sits at the top, the column's deepest card sits just
+    //     above the parent mixer).
+    //   - RegisterTransit / CombTransit: a single recursed subtree
+    //     above the transit card (linear chain; no branching).
+    //   - Terminal kinds: nothing above.
+    _renderCdcClockMixSubtree(node) {
+        if (node.kind === 'mixer' || node.kind === 'net_mixer') {
+            const branches = (node.branches || []).filter(b => b);
+            if (!branches.length) return null;
+            const row = document.createElement('div');
+            row.style.cssText
+                = 'display:flex;flex-direction:row;gap:8px;'
+                + 'align-items:flex-end;justify-content:center;';
+            for (const branch of branches) {
+                const col = document.createElement('div');
+                col.style.cssText
+                    = 'display:flex;flex-direction:column;gap:6px;'
+                    + 'flex:0 0 auto;align-items:stretch;'
+                    + 'min-width:240px;';
+                if (branch.subtree) {
+                    col.appendChild(this._renderCdcClockMixNode(
+                        branch.subtree));
+                }
+                row.appendChild(col);
+            }
+            return row;
+        }
+        if (node.kind === 'register_transit'
+            || node.kind === 'comb_transit') {
+            if (node.child) {
+                return this._renderCdcClockMixNode(node.child);
+            }
+        }
+        return null;
+    }
+
+    // One node's card. Shapes:
+    //   - mixer / net_mixer  ⚡ banner; data-path or clock-path tint
+    //                        based on `on_clock_path`. Body lists OUT
+    //                        + cur_clocks chips; contributors are
+    //                        already rendered as the branch columns
+    //                        above so we don't duplicate them here.
+    //   - register_transit /
+    //     comb_transit       collapsed by default — single-line
+    //                        `↑ via {instance}`. Click expands to
+    //                        full body (master cell, pin rows,
+    //                        clock chips).
+    //   - port               ⏚ banner. Body shows port pin +
+    //                        actual_clocks chips. Unaccounted
+    //                        warning band when applicable.
+    //   - stuck              ⊘ banner. Body shows pin + actual
+    //                        clocks chips + unaccounted warning.
+    //   - feedback           ↺ banner.
+    //   - depth_limit        ⋯ banner + ↑ continue trace link.
+    //   - unresolved         ? banner.
+    _renderCdcClockMixCard(node) {
         const card = document.createElement('div');
         card.dataset.cdcStageCard = '1';
-        card.dataset.cdcMixStageKind = stage.kind || 'unresolved';
+        card.dataset.cdcMixStageKind = node.kind || 'unresolved';
+        if (node.on_clock_path) {
+            card.dataset.cdcMixOnClockPath = '1';
+        }
         card.style.cssText =
             'border:1px solid var(--border);border-radius:4px;' +
             'background:var(--bg-input);font-family:monospace;' +
-            'font-size:12px;min-width:0;overflow:hidden;';
+            'font-size:12px;min-width:0;overflow:hidden;'
+            + 'flex:0 0 auto;';
 
+        // Transit cards are collapsed-by-default. Render only a
+        // one-line summary (instance name) until clicked.
+        if (node.kind === 'register_transit'
+            || node.kind === 'comb_transit') {
+            this._buildCdcMixTransitCard(card, node);
+            return card;
+        }
+
+        // All other kinds get the full banner+header+body layout.
         const banner = document.createElement('div');
         banner.style.cssText
             = 'padding:3px 8px;font-size:11px;font-weight:600;'
             + 'border-bottom:1px solid var(--border);';
         let bannerText = '';
         let bannerBg = 'var(--bg-header)';
-        switch (stage.kind) {
+        switch (node.kind) {
             case 'mixer':
-                bannerText = stage.degenerate
-                    ? `⚡ DEGENERATE MIX · single contributor (subset)`
-                    : `⚡ CLOCK MIX · ${stage.contributors.length} `
-                      + 'inputs merge';
-                bannerBg = 'rgba(255, 167, 38, 0.20)';
+                if (node.on_clock_path) {
+                    bannerText = node.degenerate
+                        ? '⚡ CLOCK-PATH MIX · single contributor'
+                        : `⚡ CLOCK-PATH MIX · ${node.branches.length}`
+                          + ' inputs merge';
+                    // Yellow/orange — clock convergence is often
+                    // intentional (clock mux), not a bug per se.
+                    bannerBg = 'rgba(255, 167, 38, 0.20)';
+                } else {
+                    bannerText = node.degenerate
+                        ? '⚠ DATA-PATH MIX · single contributor'
+                        : `⚠ DATA-PATH MIX · ${node.branches.length}`
+                          + ' inputs merge';
+                    // Red — data-path mix is the actual CDC bug.
+                    bannerBg = 'rgba(220, 64, 64, 0.22)';
+                }
                 break;
             case 'net_mixer':
-                bannerText = stage.degenerate
-                    ? `⚡ NET CONVERGENCE · single contributor (subset)`
-                    : `⚡ NET CONVERGENCE · ${stage.contributors.length} `
-                      + 'drivers on this net';
-                bannerBg = 'rgba(255, 167, 38, 0.20)';
-                break;
-            case 'register_transit':
-                bannerText = '↑ via CK of '
-                    + (stage.cell || 'register');
-                bannerBg = 'var(--bg-header)';
-                break;
-            case 'comb_transit':
-                bannerText = `↑ via ${stage.cell || 'cell'}`;
-                bannerBg = 'var(--bg-header)';
+                if (node.on_clock_path) {
+                    bannerText = node.degenerate
+                        ? '⚡ CLOCK-PATH NET CONVERGENCE · 1 driver'
+                        : `⚡ CLOCK-PATH NET CONVERGENCE · `
+                          + `${node.branches.length} drivers`;
+                    bannerBg = 'rgba(255, 167, 38, 0.20)';
+                } else {
+                    bannerText = node.degenerate
+                        ? '⚠ DATA-PATH NET CONVERGENCE · 1 driver'
+                        : `⚠ DATA-PATH NET CONVERGENCE · `
+                          + `${node.branches.length} drivers`;
+                    bannerBg = 'rgba(220, 64, 64, 0.22)';
+                }
                 break;
             case 'port':
                 bannerText = '⏚ clock source · port';
                 bannerBg = 'rgba(76, 175, 80, 0.18)';
                 break;
             case 'stuck':
-                bannerText = '⊘ trace stopped — no input carries clocks';
+                bannerText = '⊘ trace stopped';
                 bannerBg = 'rgba(220, 64, 64, 0.18)';
                 break;
             case 'feedback':
@@ -9271,7 +9280,8 @@ export class SdcWidget {
                 bannerBg = 'rgba(220, 64, 64, 0.12)';
                 break;
             case 'depth_limit':
-                bannerText = '⋯ depth limit reached · click to continue';
+                bannerText
+                    = '⋯ depth limit reached · click to continue';
                 bannerBg = 'var(--bg-header)';
                 break;
             default:
@@ -9282,8 +9292,7 @@ export class SdcWidget {
         banner.textContent = bannerText;
         card.appendChild(banner);
 
-        // Header line: instance + cell name, when present.
-        if (stage.instance || stage.cell) {
+        if (node.instance || node.cell) {
             const head = document.createElement('div');
             head.style.cssText
                 = 'padding:3px 8px;display:flex;'
@@ -9294,25 +9303,24 @@ export class SdcWidget {
             instEl.style.cssText
                 = 'color:var(--fg-primary);min-width:0;'
                 + TRUNCATE_PATH_CSS;
-            instEl.textContent = stage.instance || '';
-            instEl.title = stage.instance || '';
+            instEl.textContent = node.instance || '';
+            instEl.title = node.instance || '';
             head.appendChild(instEl);
-            if (stage.cell) {
+            if (node.cell) {
                 const cellEl = document.createElement('span');
                 cellEl.style.cssText
                     = 'color:var(--fg-muted);font-size:11px;'
                     + 'flex:0 0 auto;white-space:nowrap;';
-                cellEl.textContent = stage.cell;
+                cellEl.textContent = node.cell;
                 head.appendChild(cellEl);
             }
             card.appendChild(head);
         }
 
-        // Body — pins + clock badges + per-contributor expand links.
         const body = document.createElement('div');
         body.style.cssText = 'padding:4px 8px;';
 
-        const pinLine = (label, pinPath, clocks, contribIdx) => {
+        const pinRow = (label, pinPath, clocks) => {
             const row = document.createElement('div');
             row.style.cssText
                 = 'display:flex;align-items:baseline;gap:6px;'
@@ -9321,7 +9329,7 @@ export class SdcWidget {
             lab.textContent = label;
             lab.style.cssText
                 = 'color:var(--fg-muted);font-weight:600;'
-                + 'min-width:32px;';
+                + 'min-width:36px;';
             row.appendChild(lab);
             const path = document.createElement('span');
             path.style.cssText
@@ -9329,7 +9337,7 @@ export class SdcWidget {
                 + TRUNCATE_PATH_CSS;
             path.textContent
                 = pinPath
-                    ? this._pinLeafName(pinPath, stage.instance || null)
+                    ? this._pinLeafName(pinPath, node.instance || null)
                     : '—';
             path.title = pinPath || '';
             row.appendChild(path);
@@ -9337,115 +9345,44 @@ export class SdcWidget {
             chips.style.cssText
                 = 'display:inline-flex;gap:3px;flex-wrap:wrap;'
                 + 'align-items:center;';
-            for (const c of clocks) {
-                const chip = document.createElement('span');
-                chip.textContent = c;
-                // Per-clock tint matches the chip colours used on
-                // the path-detail diagram so the same clock name
-                // renders the same hue everywhere — consistent
-                // legend across views (user feedback 2026-05-02
-                // round 3: "the clock pill colors do not match
-                // the legends").
-                const tint = this._cdcClockTint(c, 0.30);
-                chip.style.cssText
-                    = 'padding:0 6px;border-radius:8px;font-size:11px;'
-                    + `background:${tint || 'var(--bg-header)'};`
-                    + 'color:var(--fg-primary);white-space:nowrap;';
-                chips.appendChild(chip);
-            }
-            // Per-contributor recursive trace-mix link. Shown on
-            // mixer / net_mixer stages when this row's clock subset
-            // is itself multi-clock (size ≥ 2). Re-uses
-            // _toggleCdcClockMix with the narrower clock set —
-            // same handler, narrower input → naturally re-runs the
-            // walker on the branch.
-            const isMixerKind = stage.kind === 'mixer'
-                || stage.kind === 'net_mixer';
-            if (contribIdx != null && isMixerKind
-                && clocks.length >= 2) {
-                const contrib = stage.contributors[contribIdx];
-                if (contrib && contrib.pin_odb_type
-                    && contrib.pin_odb_id != null) {
-                    const link = document.createElement('a');
-                    link.textContent = '↑ trace mix';
-                    link.dataset.cdcTraceMix = '1';
-                    link.style.cssText
-                        = 'cursor:pointer;color:var(--accent-tab);'
-                        + 'text-decoration:underline;'
-                        + 'text-decoration-style:dotted;'
-                        + 'font-size:11px;margin-left:4px;'
-                        + 'white-space:nowrap;';
-                    link.title
-                        = `Trace where these ${clocks.length} clocks `
-                        + 'merge upstream of this input.';
-                    link.addEventListener('click', () =>
-                        this._toggleCdcClockMix(
-                            { odb_type: contrib.pin_odb_type,
-                              odb_id: contrib.pin_odb_id },
-                            clocks.slice(),
-                            link,
-                            'data',
-                            contrib.pin || null));
-                    chips.appendChild(link);
-                }
+            for (const c of (clocks || [])) {
+                chips.appendChild(this._cdcMakeClockChip(c));
             }
             row.appendChild(chips);
             body.appendChild(row);
         };
 
-        // Per-stage-kind body content.
-        if (stage.kind === 'mixer' || stage.kind === 'stuck') {
-            // OUT row first if the stage has one.
-            if (stage.out_pin) {
-                pinLine('OUT', stage.out_pin, stage.clocks || [], null);
+        if (node.kind === 'mixer' || node.kind === 'net_mixer') {
+            // Contributors render as the branch columns ABOVE this
+            // card; the card itself just shows OUT + the active
+            // clock set so the user sees the merge point and what's
+            // converging.
+            if (node.out_pin) {
+                pinRow('OUT', node.out_pin, node.clocks || []);
+            } else if ((node.clocks || []).length) {
+                pinRow('CLK', '—', node.clocks);
             }
-            // Then each contributor as its own input row.
-            for (let i = 0; i < (stage.contributors || []).length; ++i) {
-                const c = stage.contributors[i];
-                pinLine('IN', c.pin || '—', c.clocks || [], i);
+        } else if (node.kind === 'port') {
+            pinRow('PORT', node.out_pin || '—',
+                   node.actual_clocks && node.actual_clocks.length
+                       ? node.actual_clocks
+                       : node.clocks || []);
+        } else if (node.kind === 'stuck') {
+            if (node.via_pin) {
+                pinRow('VIA', node.via_pin,
+                       node.actual_clocks || []);
+            } else if (node.out_pin) {
+                pinRow('OUT', node.out_pin,
+                       node.actual_clocks || node.clocks || []);
             }
-        } else if (stage.kind === 'net_mixer') {
-            // No OUT row: the convergence is on the NET — we don't
-            // own a single output pin to report. The contributors
-            // are the multiple drivers themselves.
-            for (let i = 0; i < (stage.contributors || []).length; ++i) {
-                const c = stage.contributors[i];
-                pinLine('DRV', c.pin || '—', c.clocks || [], i);
+        } else if (node.kind === 'depth_limit') {
+            if (node.via_pin) {
+                pinRow('FROM', node.via_pin, node.clocks || []);
+            } else if ((node.clocks || []).length) {
+                pinRow('CLK', '—', node.clocks);
             }
-        } else if (stage.kind === 'register_transit') {
-            // Show Q + CK so the user sees the hop.
-            if (stage.out_pin) {
-                pinLine('Q', stage.out_pin, stage.clocks || [], null);
-            }
-            if (stage.via_pin) {
-                pinLine('CK', stage.via_pin, stage.clocks || [], null);
-            }
-        } else if (stage.kind === 'comb_transit') {
-            if (stage.out_pin) {
-                pinLine('OUT', stage.out_pin, stage.clocks || [], null);
-            }
-            if (stage.via_pin) {
-                pinLine('IN', stage.via_pin, stage.clocks || [], null);
-            }
-        } else if (stage.kind === 'port') {
-            if (stage.out_pin) {
-                pinLine('PORT', stage.out_pin, stage.clocks || [], null);
-            }
-        } else if (stage.kind === 'depth_limit') {
-            // Depth limit terminal — the walk stopped at N stages
-            // without reaching a mixer/source. Carry a `↑ continue
-            // trace` link if we have the via pin id, so the user
-            // can click to walk another N stages from where we
-            // stopped (user feedback 2026-05-02 round 3: "if that
-            // happens I should be able to click something to
-            // continue").
-            if (stage.via_pin) {
-                pinLine('FROM', stage.via_pin, stage.clocks || [], null);
-            } else if ((stage.clocks || []).length) {
-                pinLine('CLK', '—', stage.clocks, null);
-            }
-            if (stage.via_pin && stage.via_pin_odb_type
-                && stage.via_pin_odb_id != null) {
+            if (node.via_pin && node.via_pin_odb_type
+                && node.via_pin_odb_id != null) {
                 const cont = document.createElement('div');
                 cont.style.cssText
                     = 'padding:4px 8px;border-top:1px solid var(--border);'
@@ -9453,39 +9390,201 @@ export class SdcWidget {
                 const link = document.createElement('a');
                 link.textContent = '↑ continue trace';
                 link.dataset.cdcTraceMix = '1';
-                link.dataset.cdcContinueDepth = '1';
                 link.style.cssText
                     = 'cursor:pointer;color:var(--accent-tab);'
                     + 'text-decoration:underline;'
-                    + 'text-decoration-style:dotted;font-size:11px;'
-                    + 'white-space:nowrap;';
+                    + 'text-decoration-style:dotted;'
+                    + 'font-size:11px;white-space:nowrap;';
                 link.title
                     = 'Walk another batch of stages upstream from '
                     + 'where the depth cap was hit.';
-                const stageClocks = (stage.clocks || []).slice();
+                const stageClocks = (node.clocks || []).slice();
                 link.addEventListener('click', () =>
                     this._toggleCdcClockMix(
-                        { odb_type: stage.via_pin_odb_type,
-                          odb_id: stage.via_pin_odb_id },
+                        { odb_type: node.via_pin_odb_type,
+                          odb_id: node.via_pin_odb_id },
                         stageClocks,
                         link,
                         'data',
-                        stage.via_pin));
+                        node.via_pin));
                 cont.appendChild(link);
                 body.appendChild(cont);
             }
         } else {
-            // feedback / unresolved — just show the clock set + pin.
-            if (stage.out_pin) {
-                pinLine('PIN', stage.out_pin, stage.clocks || [], null);
-            } else if ((stage.clocks || []).length) {
-                pinLine('CLK', '—', stage.clocks, null);
+            if (node.out_pin) {
+                pinRow('PIN', node.out_pin, node.clocks || []);
+            } else if ((node.clocks || []).length) {
+                pinRow('CLK', '—', node.clocks);
             }
         }
         card.appendChild(body);
 
+        // Unaccounted-clocks warning band. When a terminal's
+        // actual_clocks doesn't cover the cur_clocks the walker was
+        // tracing, the missing clocks reach cur_pin via some path
+        // the walker didn't follow. Surface them prominently so the
+        // user knows the trace on this branch is incomplete.
+        if (node.unaccounted_clocks
+            && node.unaccounted_clocks.length) {
+            const warn = document.createElement('div');
+            warn.style.cssText
+                = 'padding:3px 8px;font-size:11px;'
+                + 'background:rgba(255, 167, 38, 0.20);'
+                + 'color:var(--fg-primary);'
+                + 'border-top:1px solid var(--border);';
+            warn.textContent
+                = `⚠ ${node.unaccounted_clocks.length} clock`
+                + (node.unaccounted_clocks.length === 1 ? '' : 's')
+                + ' unaccounted for here: '
+                + node.unaccounted_clocks.join(', ');
+            warn.title
+                = 'These clocks reach the originating pin via some '
+                + 'route this branch didn\'t take. Look at sibling '
+                + 'branches for where they come from.';
+            card.appendChild(warn);
+        }
         return card;
     }
+
+    // Transit card — collapsed by default to a single line
+    // `↑ via {instance}`. Click on the summary line expands the
+    // body to reveal the master cell, pin rows, and clock chips.
+    // Per user feedback 2026-05-02 round 4: transit cards are
+    // useful for verifying the path but noisy when always
+    // expanded; instance name in the header is the minimum useful
+    // info.
+    _buildCdcMixTransitCard(card, node) {
+        const verb = node.kind === 'register_transit'
+            ? 'via CK of'
+            : 'via';
+        const instLeaf = (node.instance || '')
+            .split('/')
+            .pop() || '(unknown)';
+
+        const summary = document.createElement('a');
+        summary.dataset.cdcMixTransitSummary = '1';
+        summary.style.cssText
+            = 'display:flex;align-items:center;gap:6px;'
+            + 'cursor:pointer;'
+            + 'padding:4px 8px;font-size:12px;'
+            + 'color:var(--fg-primary);';
+        const arrow = document.createElement('span');
+        arrow.style.cssText
+            = 'color:var(--accent-tab);font-size:11px;'
+            + 'flex:0 0 auto;';
+        const head = document.createElement('span');
+        head.style.cssText
+            = 'flex:1 1 auto;min-width:0;'
+            + TRUNCATE_PATH_CSS;
+        head.title = node.instance || '';
+        summary.appendChild(arrow);
+        summary.appendChild(head);
+
+        const inner = document.createElement('div');
+        inner.style.cssText
+            = 'border-top:1px solid var(--border);'
+            + 'padding:4px 8px;display:none;'
+            + 'flex-direction:column;gap:2px;';
+
+        const bodyHeader = document.createElement('div');
+        bodyHeader.style.cssText
+            = 'display:flex;justify-content:space-between;'
+            + 'gap:8px;align-items:baseline;'
+            + 'font-size:11px;color:var(--fg-muted);'
+            + 'padding-bottom:2px;';
+        const bodyHeadInst = document.createElement('span');
+        bodyHeadInst.textContent = node.instance || '';
+        bodyHeadInst.title = node.instance || '';
+        bodyHeadInst.style.cssText
+            = 'color:var(--fg-secondary);min-width:0;'
+            + TRUNCATE_PATH_CSS;
+        bodyHeader.appendChild(bodyHeadInst);
+        if (node.cell) {
+            const cellEl = document.createElement('span');
+            cellEl.textContent = node.cell;
+            cellEl.style.cssText
+                = 'flex:0 0 auto;white-space:nowrap;';
+            bodyHeader.appendChild(cellEl);
+        }
+        inner.appendChild(bodyHeader);
+
+        const pinRow = (label, pinPath, clocks) => {
+            const row = document.createElement('div');
+            row.style.cssText
+                = 'display:flex;align-items:baseline;gap:6px;'
+                + 'padding:1px 0;font-size:12px;';
+            const lab = document.createElement('span');
+            lab.textContent = label;
+            lab.style.cssText
+                = 'color:var(--fg-muted);font-weight:600;'
+                + 'min-width:36px;';
+            row.appendChild(lab);
+            const path = document.createElement('span');
+            path.style.cssText
+                = 'color:var(--fg-primary);min-width:0;flex:1 1 auto;'
+                + TRUNCATE_PATH_CSS;
+            path.textContent
+                = pinPath
+                    ? this._pinLeafName(pinPath, node.instance || null)
+                    : '—';
+            path.title = pinPath || '';
+            row.appendChild(path);
+            const chips = document.createElement('span');
+            chips.style.cssText
+                = 'display:inline-flex;gap:3px;flex-wrap:wrap;'
+                + 'align-items:center;';
+            for (const c of (clocks || [])) {
+                chips.appendChild(this._cdcMakeClockChip(c));
+            }
+            row.appendChild(chips);
+            inner.appendChild(row);
+        };
+
+        if (node.kind === 'register_transit') {
+            if (node.out_pin) {
+                pinRow('Q', node.out_pin, node.clocks || []);
+            }
+            if (node.via_pin) {
+                pinRow('CK', node.via_pin, node.clocks || []);
+            }
+        } else {
+            if (node.out_pin) {
+                pinRow('OUT', node.out_pin, node.clocks || []);
+            }
+            if (node.via_pin) {
+                pinRow('IN', node.via_pin, node.clocks || []);
+            }
+        }
+
+        const setLabel = (open) => {
+            arrow.textContent = open ? '▼' : '▶';
+            head.textContent = `↑ ${verb} ${instLeaf}`;
+        };
+        setLabel(false);
+        summary.addEventListener('click', () => {
+            const open = inner.style.display !== 'none';
+            inner.style.display = open ? 'none' : 'flex';
+            setLabel(!open);
+        });
+        card.appendChild(summary);
+        card.appendChild(inner);
+    }
+
+    // Tinted clock chip used inside the clock-mix renderer. Same
+    // hash-to-hue background as the rest of the diagram so the
+    // legend stays consistent (user feedback 2026-05-02 round 3).
+    _cdcMakeClockChip(name) {
+        const chip = document.createElement('span');
+        chip.textContent = name;
+        chip.dataset.cdcClockChip = name;
+        const tint = this._cdcClockTint(name, 0.30);
+        chip.style.cssText
+            = 'padding:0 6px;border-radius:8px;font-size:11px;'
+            + `background:${tint || 'var(--bg-header)'};`
+            + 'color:var(--fg-primary);white-space:nowrap;';
+        return chip;
+    }
+
 
     // One stage card. Three shapes depending on `s.kind`:
     //   - "register"  flop — D + Q pin rows; banner says LAUNCH /
