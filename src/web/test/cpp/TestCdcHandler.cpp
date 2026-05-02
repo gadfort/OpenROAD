@@ -241,6 +241,18 @@ TEST_F(NullStaTest, PinFanInReturnsEmptyEnvelope)
   EXPECT_TRUE(o.at("stages").as_array().empty());
 }
 
+// `cdc_clock_mix_trace` returns the same empty-stages envelope as
+// `cdc_pin_fan_in` when STA is not loaded.
+TEST_F(NullStaTest, ClockMixTraceReturnsEmptyEnvelope)
+{
+  auto req = makeReq(7, WebSocketRequest::kCdcClockMixTrace);
+  req.raw_json = makeJson({{"pin_odb_type", "iterm"}},
+                          {{"pin_odb_id", 0}});
+  auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
+  ASSERT_TRUE(v.is_object());
+  EXPECT_TRUE(v.as_object().at("stages").as_array().empty());
+}
+
 // ─── Whitelist round-trip + CSV edge cases ─────────────────────────────────
 
 TEST_F(NullStaTest, WhitelistGetEmptyByDefault)
@@ -1019,6 +1031,140 @@ TEST_F(CdcWithStaTest, PinFanInMatchesPathDetailLaunchSide)
   EXPECT_EQ(launch.at("kind").as_string(), "register");
   EXPECT_EQ(comb.at("instance").as_string(), "mix_and");
   EXPECT_EQ(comb.at("kind").as_string(), "comb");
+}
+
+// ─── Clock-mix tracer ──────────────────────────────────────────────────────
+
+// `cdc_clock_mix_trace` walks upstream from a multi-clock pin to find
+// the gate where the clocks first merge. The fixture's mix_and AND2
+// has clk_a on A1 and clk_b on A2, so a walk from ff_mix_b/D (which
+// carries both clocks via mix_and's output) must:
+//
+//   - not stop at a sequential boundary (the start pin's instance is
+//     the cap flop ff_mix_b — the walker seeds `seen` with it so the
+//     first `findSingleNetDriver` step lands on mix_and, not back on
+//     ff_mix_b's Q),
+//   - find the mixer at mix_and (≥ 2 contributing inputs),
+//   - emit ONE stage of kind "mixer" with two contributors.
+//
+// Replaces the pre-existing per-clock chip click that ran the data
+// fan-in walker with strict_clock_match — that walker was sometimes
+// stopped by phantom clock propagation; the mix tracer's clock-set
+// algebra handles the multi-clock-CK case directly without cuts.
+TEST_F(CdcWithStaTest, ClockMixFromMixedDPinFindsMixerGate)
+{
+  odb::dbITerm* d = ff_mix_b_->findITerm("D");
+  ASSERT_NE(d, nullptr);
+  auto req = makeReq(1, WebSocketRequest::kCdcClockMixTrace);
+  // Omit `clocks` field — handler falls back to the pin's own
+  // clockDomains() set, which on D is {clk_a, clk_b} after mix_and.
+  req.raw_json = makeJson({{"pin_odb_type", "iterm"}},
+                          {{"pin_odb_id", static_cast<int>(d->getId())}});
+  auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
+  ASSERT_TRUE(v.is_object());
+  ASSERT_TRUE(v.as_object().contains("stages"));
+  const auto& stages = v.as_object().at("stages").as_array();
+  ASSERT_EQ(stages.size(), 1u)
+      << "single mixer is the expected terminal stage; deeper "
+      << "recursion is initiated by the user clicking a "
+      << "contributing input's `↑ trace mix` link";
+  const auto& mix = stages.front().as_object();
+  EXPECT_EQ(mix.at("kind").as_string(), "mixer");
+  EXPECT_EQ(mix.at("instance").as_string(), "mix_and");
+  // Two contributors, one carrying clk_a (A1), the other clk_b (A2).
+  const auto& contribs = mix.at("contributors").as_array();
+  ASSERT_EQ(contribs.size(), 2u);
+  std::set<std::string> seen_clocks;
+  for (const auto& c : contribs) {
+    const auto& cks = c.as_object().at("clocks").as_array();
+    ASSERT_EQ(cks.size(), 1u) << "each contributor on this fixture "
+                              << "carries a single clock (clk_a or "
+                              << "clk_b)";
+    seen_clocks.insert(std::string(cks[0].as_string()));
+  }
+  EXPECT_TRUE(seen_clocks.count("clk_a") > 0);
+  EXPECT_TRUE(seen_clocks.count("clk_b") > 0);
+}
+
+// Single-clock start pin: there is no mix to trace. The walker still
+// produces a chain (it doesn't know in advance that the trace is
+// trivial), but every emitted stage is a non-mixer kind. This pins
+// the contract that the frontend can rely on: a one-clock walk
+// terminates without ever emitting kind="mixer".
+TEST_F(CdcWithStaTest, ClockMixOnSingleClockPinHasNoMixerStages)
+{
+  // A1 of mix_and is fed only by ff_src_a/Q — single clock (clk_a).
+  odb::dbITerm* a1 = inst_and_mix_->findITerm("A1");
+  ASSERT_NE(a1, nullptr);
+  auto req = makeReq(1, WebSocketRequest::kCdcClockMixTrace);
+  req.raw_json = makeJson({{"pin_odb_type", "iterm"}},
+                          {{"pin_odb_id", static_cast<int>(a1->getId())}});
+  auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
+  ASSERT_TRUE(v.is_object());
+  const auto& stages = v.as_object().at("stages").as_array();
+  for (const auto& s : stages) {
+    EXPECT_NE(s.as_object().at("kind").as_string(), "mixer")
+        << "a single-clock walk should never emit a mixer stage";
+  }
+}
+
+// Regression: a multi-input cell whose inputs ALL carry the same
+// (super-)set of cur_clocks is a pass-through, not a mixer. The
+// fixture's comb_back_or is a 2-input OR with q_a (clk_a) on A2
+// and comb_back_t1 (also clk_a) on A1 — every input carries
+// {clk_a}, so walking from ff_comb_b/D with {clk_a} must traverse
+// it as a transit, not stop and call it a "2-clock mixer".
+//
+// User-reported regression 2026-05-02 round 2: the walker was
+// terminating at every multi-input cell whose inputs collectively
+// covered cur_clocks, even when each input individually already
+// covered cur_clocks (no narrowing actually happened). The fix
+// runs the cover check first: if any input ⊇ cur_clocks, emit a
+// transit and follow that input regardless of how many other
+// inputs also carry the same clocks.
+TEST_F(CdcWithStaTest, ClockMixTreatsRedundantClockRouteAsTransit)
+{
+  odb::dbITerm* d = ff_comb_b_->findITerm("D");
+  ASSERT_NE(d, nullptr);
+  auto req = makeReq(1, WebSocketRequest::kCdcClockMixTrace);
+  req.raw_json = makeJson({{"pin_odb_type", "iterm"}},
+                          {{"pin_odb_id", static_cast<int>(d->getId())}});
+  auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
+  ASSERT_TRUE(v.is_object());
+  const auto& stages = v.as_object().at("stages").as_array();
+  ASSERT_FALSE(stages.empty()) << "single-clock chain still emits "
+                               << "stages — at minimum the source "
+                               << "flop and the clock-source port";
+  for (const auto& s : stages) {
+    const auto& o = s.as_object();
+    EXPECT_NE(o.at("kind").as_string(), "mixer")
+        << "redundant-clock-route cells must emit transit, not "
+        << "mixer (cur_clocks={clk_a}; both inputs of "
+        << "comb_back_or carry clk_a)";
+  }
+  // Both comb_back_or AND comb_back_and are on the chain — both
+  // should appear as comb_transit cards.
+  bool saw_or = false, saw_and = false;
+  for (const auto& s : stages) {
+    const auto& o = s.as_object();
+    if (o.at("kind").as_string() != "comb_transit") continue;
+    const std::string inst = std::string(o.at("instance").as_string());
+    if (inst == "comb_back_or") saw_or = true;
+    if (inst == "comb_back_and") saw_and = true;
+  }
+  EXPECT_TRUE(saw_or) << "comb_back_or rendered as transit card";
+  EXPECT_TRUE(saw_and) << "comb_back_and rendered as transit card";
+}
+
+// Missing pin id — handler returns the canonical empty-stages
+// envelope that the frontend treats as "no upstream driver".
+TEST_F(CdcWithStaTest, ClockMixMissingIdReturnsEmpty)
+{
+  auto req = makeReq(1, WebSocketRequest::kCdcClockMixTrace);
+  req.raw_json = makeJson({{"pin_odb_type", "iterm"}});
+  auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
+  ASSERT_TRUE(v.is_object());
+  EXPECT_TRUE(v.as_object().at("stages").as_array().empty());
 }
 
 // ─── Path detail (per-shape coverage) ──────────────────────────────────────

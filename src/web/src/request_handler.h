@@ -112,6 +112,7 @@ struct WebSocketRequest
     kCdcPaths,
     kCdcPathDetail,
     kCdcPinFanIn,
+    kCdcClockMixTrace,
     kCdcSetWhitelist,
     kCdcGetWhitelist,
     kDebugContinue,
@@ -413,6 +414,7 @@ class CdcHandler
   WebSocketResponse handleCdcPaths(const WebSocketRequest& req);
   WebSocketResponse handleCdcPathDetail(const WebSocketRequest& req);
   WebSocketResponse handleCdcPinFanIn(const WebSocketRequest& req);
+  WebSocketResponse handleCdcClockMixTrace(const WebSocketRequest& req);
   WebSocketResponse handleCdcSetWhitelist(const WebSocketRequest& req);
   WebSocketResponse handleCdcGetWhitelist(const WebSocketRequest& req);
 

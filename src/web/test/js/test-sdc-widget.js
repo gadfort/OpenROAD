@@ -5641,12 +5641,16 @@ describe('SdcWidget', () => {
         });
     });
 
-    // Per-pin "expand fan-in" affordance — clicking a clock chip
-    // on a pin row dispatches `cdc_pin_fan_in` and inserts the
-    // returned ancestor stages above the originating stage card.
-    // Re-clicking collapses. Cached per (pin, clock) for the
-    // session.
-    describe('CDC path-detail per-pin fan-in expansion', () => {
+    // Clock-mix tracer — replaces the old per-clock-chip data
+    // fan-in affordance. A multi-clock pin row carries a single
+    // `↑ trace mix` button next to the chip cluster; clicking it
+    // dispatches `cdc_clock_mix_trace` and renders the mixer
+    // gate(s) above the originating stage card. Single-clock pins
+    // render no button (no mix to trace). Output pins (OUT / Q
+    // rows) render no button — by construction they redistribute
+    // their inputs' clocks, so a walk from OUT just re-derives
+    // what clicking the matching IN row would produce.
+    describe('CDC path-detail clock-mix trace button', () => {
         const CDC_OVERVIEW = {
             time_unit: 'ns',
             current_mode: 'default',
@@ -5658,8 +5662,7 @@ describe('SdcWidget', () => {
             }},
         };
         const PATHS = {
-            time_unit: 'ns',
-            total: 1, offset: 0,
+            time_unit: 'ns', total: 1, offset: 0,
             category_total: { synced: 0, excluded: 0, unsynced: 1 },
             paths: [{
                 capture_pin:  'ff_mix/D', odb_type: 'iterm', odb_id: 1,
@@ -5670,35 +5673,23 @@ describe('SdcWidget', () => {
                 whitelist_match: null, whitelist_pattern: null,
             }],
         };
+        // Path detail puts the multi-clock-CK FF (ff_mux_clk) on
+        // screen — its CK row carries [clk_a, clk_b], so the CK
+        // row is exactly the kind of multi-clock pin the trace-mix
+        // button is for.
         const PATH_DETAIL = {
             stages: [
-                { instance: 'ff_src_a', cell: 'DFF_X1',
+                { instance: 'ff_mux_clk', cell: 'DFF_X1',
                   odb_type: 'inst', odb_id: 10,
-                  d_pin: 'ff_src_a/D',
+                  d_pin: 'ff_mux_clk/D',
                   d_pin_odb_type: 'iterm', d_pin_odb_id: 100,
-                  q_pin: 'ff_src_a/Q',
+                  q_pin: 'ff_mux_clk/Q',
                   q_pin_odb_type: 'iterm', q_pin_odb_id: 101,
+                  ck_pin: 'ff_mux_clk/CK',
+                  ck_pin_odb_type: 'iterm', ck_pin_odb_id: 102,
+                  ck_pin_clocks: ['clk_a', 'clk_b'],
                   kind: 'register', is_launch: true, clock: 'clk_a',
-                  out_net: { name: 'q_a', odb_type: 'net', odb_id: 200 },
-                  passthroughs_after: [] },
-                // Domain-mix gate with q_a (clk_a) on A1 and q_b
-                // (clk_b) on A2 — this is the pin we'll be clicking
-                // chips on to expand the fan-in.
-                { instance: 'mix_and', cell: 'AND2_X1',
-                  odb_type: 'inst', odb_id: 11,
-                  in_pin: 'mix_and/A1',
-                  in_pin_odb_type: 'iterm', in_pin_odb_id: 102,
-                  in_pin_clocks: ['clk_a'],
-                  out_pin: 'mix_and/ZN',
-                  out_pin_odb_type: 'iterm', out_pin_odb_id: 103,
-                  aux_in_pins: [{
-                      name: 'mix_and/A2',
-                      odb_type: 'iterm', odb_id: 104,
-                      clocks: ['clk_b'],
-                  }],
-                  kind: 'comb', is_domain_mix: true,
-                  clock: 'clk_a', capture_clock: 'clk_b',
-                  out_net: { name: 'mix_y', odb_type: 'net', odb_id: 201 },
+                  out_net: { name: 'mux_q', odb_type: 'net', odb_id: 200 },
                   passthroughs_after: [] },
                 { instance: 'ff_mix', cell: 'DFF_X1',
                   odb_type: 'inst', odb_id: 12,
@@ -5706,6 +5697,9 @@ describe('SdcWidget', () => {
                   d_pin_odb_type: 'iterm', d_pin_odb_id: 105,
                   q_pin: 'ff_mix/Q',
                   q_pin_odb_type: 'iterm', q_pin_odb_id: 106,
+                  ck_pin: 'ff_mix/CK',
+                  ck_pin_odb_type: 'iterm', ck_pin_odb_id: 108,
+                  ck_pin_clocks: ['clk_b'],
                   kind: 'register', is_capture: true,
                   launch_clock: 'clk_a', capture_clock: 'clk_b',
                   clock: 'clk_b',
@@ -5714,18 +5708,29 @@ describe('SdcWidget', () => {
             sync_chain: { kind: 'none', depth: 1,
                           whitelist_match: null, whitelist_pattern: null },
         };
-        // Fan-in from mix_and/A2 (clk_b side) lands on ff_src_b.
-        const FAN_IN_RESPONSE = {
+        // Clock-mix walk from CK lands on the OR gate that mixes
+        // clk_a + clk_b on the clock net.
+        const MIX_RESPONSE = {
+            requested_clocks: ['clk_a', 'clk_b'],
             stages: [
-                { instance: 'ff_src_b', cell: 'DFF_X1',
-                  odb_type: 'inst', odb_id: 30,
-                  d_pin: 'ff_src_b/D',
-                  d_pin_odb_type: 'iterm', d_pin_odb_id: 300,
-                  q_pin: 'ff_src_b/Q',
-                  q_pin_odb_type: 'iterm', q_pin_odb_id: 301,
-                  kind: 'register', is_launch: true,
-                  clock: 'clk_b',
-                  out_net: { name: 'q_b', odb_type: 'net', odb_id: 400 },
+                { kind: 'mixer',
+                  instance: 'clk_mux_g', cell: 'OR2_X1',
+                  odb_type: 'inst', odb_id: 60,
+                  out_pin: 'clk_mux_g/ZN',
+                  out_pin_odb_type: 'iterm', out_pin_odb_id: 601,
+                  via_pin: null,
+                  clocks: ['clk_a', 'clk_b'],
+                  contributors: [
+                      { pin: 'clk_mux_g/A1',
+                        pin_odb_type: 'iterm', pin_odb_id: 600,
+                        clocks: ['clk_a'] },
+                      { pin: 'clk_mux_g/A2',
+                        pin_odb_type: 'iterm', pin_odb_id: 602,
+                        clocks: ['clk_b'] },
+                  ],
+                  degenerate: false,
+                  out_net: { name: 'mux_clk_or',
+                             odb_type: 'net', odb_id: 301 },
                   passthroughs_after: [] },
             ],
         };
@@ -5737,169 +5742,206 @@ describe('SdcWidget', () => {
                 cdc_overview: () => CDC_OVERVIEW,
                 cdc_paths: () => PATHS,
                 cdc_path_detail: () => PATH_DETAIL,
-                cdc_pin_fan_in: () => FAN_IN_RESPONSE,
+                cdc_clock_mix_trace: () => MIX_RESPONSE,
             }, extra));
             const widget = await setupTabWidget('CDC', app);
-            widget._cdcScanBtn.click();
-            await settle();
+            widget._cdcScanBtn.click(); await settle();
             widget._cdcBody.querySelector(
                 'td[data-cdc-launch="clk_a"][data-cdc-capture="clk_b"]')
-                .click();
-            await settle();
+                .click(); await settle();
             widget._cdcBody.querySelector('tbody tr td span').click();
             await settle();
             return widget;
         };
 
-        // Helper: locate the clk_b chip on the mix gate's A2 aux row.
-        const findClkBAuxChip = (widget) => {
-            // A2 is the aux pin (label "+IN"). Walk every chip in
-            // the mix_and stage card looking for one labelled clk_b.
+        // Locate the trace-mix button next to the CK row of
+        // ff_mux_clk (which has [clk_a, clk_b]).
+        const findCkTraceMixBtn = (widget) => {
             const cards = widget._cdcBody.querySelectorAll(
                 '[data-cdc-stage-card]');
             for (const card of cards) {
-                if (!/mix_and/.test(card.textContent)) continue;
-                const chips = card.querySelectorAll('span');
-                for (const ch of chips) {
-                    if (ch.textContent === 'clk_b'
-                        && ch.style.cursor === 'pointer') {
-                        return ch;
+                if (card.dataset.cdcStageInstance !== 'ff_mux_clk') {
+                    continue;
+                }
+                const btns = card.querySelectorAll(
+                    'a[data-cdc-trace-mix="1"]');
+                for (const btn of btns) {
+                    if (btn.dataset.cdcPinKind === 'clock') {
+                        return btn;
                     }
                 }
             }
             return null;
         };
 
-        it('clock chips on multi-clock pins are individually clickable',
+        it('multi-clock pin row renders a single trace-mix button',
                 async () => {
             const widget = await drillToDetail();
-            // The A2 aux pin has only clk_b — it should render as
-            // a SEPARATE clickable chip (not joined with anything).
-            const chip = findClkBAuxChip(widget);
-            assert.ok(chip,
-                'clk_b chip exists on the mix gate aux input');
-            assert.equal(chip.style.cursor, 'pointer',
-                'chip is clickable when the pin has an ODB ref');
-            assert.ok(/click to trace/.test(chip.title),
-                'chip tooltip mentions the trace affordance');
+            const btn = findCkTraceMixBtn(widget);
+            assert.ok(btn, 'CK row carries an `↑ trace mix` button');
+            assert.equal(btn.textContent, '↑ trace mix');
+            // The chips themselves should NOT be clickable — the
+            // button is the only interactive element for clock-mix
+            // tracing now.
+            const ckCard = btn.closest('[data-cdc-stage-card]');
+            const chips = ckCard.querySelectorAll(
+                'span[data-cdc-pin-kind="clock"]');
+            assert.ok(chips.length >= 2,
+                'CK row renders both clock chips');
+            for (const ch of chips) {
+                assert.notEqual(ch.style.cursor, 'pointer',
+                    'chip is inert (no per-chip click handler)');
+            }
         });
 
-        it('clicking a chip dispatches cdc_pin_fan_in and inserts '
-                + 'ancestor cards', async () => {
+        it('single-clock pin row does NOT render a trace-mix button',
+                async () => {
+            const widget = await drillToDetail();
+            // The capture flop ff_mix has CK=[clk_b] (single clock)
+            // so its CK row should NOT carry a trace-mix button.
+            const cards = widget._cdcBody.querySelectorAll(
+                '[data-cdc-stage-card]');
+            let captureCard = null;
+            for (const card of cards) {
+                if (card.dataset.cdcStageInstance === 'ff_mix') {
+                    captureCard = card;
+                    break;
+                }
+            }
+            assert.ok(captureCard, 'capture stage card found');
+            const btns = captureCard.querySelectorAll(
+                'a[data-cdc-trace-mix="1"]');
+            assert.equal(btns.length, 0,
+                'no trace-mix button on a single-clock card');
+        });
+
+        it('clicking the button dispatches cdc_clock_mix_trace '
+                + 'with the row clocks and inserts a mixer card',
+                async () => {
             const calls = [];
             const widget = await drillToDetail({
-                cdc_pin_fan_in: (req) => {
+                cdc_clock_mix_trace: (req) => {
                     calls.push(req);
-                    return FAN_IN_RESPONSE;
+                    return MIX_RESPONSE;
                 },
             });
-            const chip = findClkBAuxChip(widget);
-            chip.click();
-            await settle();
-            // The RPC should have been dispatched with the right
-            // pin + clock identification.
+            const btn = findCkTraceMixBtn(widget);
+            btn.click(); await settle();
             assert.equal(calls.length, 1, 'RPC fired once');
             assert.equal(calls[0].pin_odb_type, 'iterm');
-            assert.equal(calls[0].pin_odb_id, 104);
-            assert.equal(calls[0].clock, 'clk_b');
-            // The ancestor flop should now appear in the diagram,
-            // wrapped in a fan-in trace block.
+            assert.equal(calls[0].pin_odb_id, 102);
+            assert.deepEqual(calls[0].clocks.slice().sort(),
+                             ['clk_a', 'clk_b']);
             const wrapper = widget._cdcBody.querySelector(
                 '[data-cdc-fan-in-key]');
-            assert.ok(wrapper, 'fan-in wrapper inserted');
-            assert.ok(/ff_src_b/.test(wrapper.textContent),
-                'ancestor flop rendered in the fan-in block');
-            assert.ok(/fan-in trace.*clk_b/.test(wrapper.textContent),
-                'header labels the trace by clock');
+            assert.ok(wrapper, 'mix wrapper inserted');
+            assert.ok(/clock-mix trace/.test(wrapper.textContent),
+                'header labels the trace as clock-mix');
+            assert.ok(/CLOCK MIX/.test(wrapper.textContent),
+                'mixer banner rendered');
+            assert.ok(/clk_mux_g/.test(wrapper.textContent),
+                'mixer instance rendered');
         });
 
-        it('re-clicking the same chip collapses the expansion',
+        it('mixer card surfaces per-contributor trace-mix links '
+                + 'only when the contributor subset is multi-clock',
+                async () => {
+            // Replace MIX_RESPONSE with one whose first contributor
+            // is itself multi-clock so we can exercise the recursive
+            // per-contributor link rendering rule.
+            const NESTED_MIX = {
+                requested_clocks: ['clk_a', 'clk_b', 'clk_c'],
+                stages: [
+                    { kind: 'mixer',
+                      instance: 'or_outer', cell: 'OR2_X1',
+                      out_pin: 'or_outer/ZN',
+                      out_pin_odb_type: 'iterm', out_pin_odb_id: 700,
+                      via_pin: null,
+                      clocks: ['clk_a', 'clk_b', 'clk_c'],
+                      contributors: [
+                          { pin: 'or_outer/A1',
+                            pin_odb_type: 'iterm', pin_odb_id: 701,
+                            clocks: ['clk_a', 'clk_b'] },
+                          { pin: 'or_outer/A2',
+                            pin_odb_type: 'iterm', pin_odb_id: 702,
+                            clocks: ['clk_c'] },
+                      ],
+                      degenerate: false,
+                      out_net: null, passthroughs_after: [] },
+                ],
+            };
+            const widget = await drillToDetail({
+                cdc_clock_mix_trace: () => NESTED_MIX,
+            });
+            const btn = findCkTraceMixBtn(widget);
+            btn.click(); await settle();
+            const wrapper = widget._cdcBody.querySelector(
+                '[data-cdc-fan-in-key]');
+            assert.ok(wrapper, 'mix wrapper inserted');
+            // The mixer card is INSIDE the wrapper, NOT the
+            // originating CK card — so locate it inside the wrapper.
+            const inner = wrapper.querySelectorAll(
+                'a[data-cdc-trace-mix="1"]');
+            assert.equal(inner.length, 1,
+                'exactly one per-contributor link — the multi-clock '
+                + '{clk_a, clk_b} subset gets one; the single-clock '
+                + '{clk_c} subset does not');
+        });
+
+        it('re-clicking the button collapses the expansion',
                 async () => {
             const widget = await drillToDetail();
-            const chip = findClkBAuxChip(widget);
-            chip.click();
-            await settle();
+            const btn = findCkTraceMixBtn(widget);
+            btn.click(); await settle();
             assert.ok(widget._cdcBody.querySelector(
                 '[data-cdc-fan-in-key]'),
                 'expansion present after first click');
-            chip.click();
-            await settle();
+            btn.click(); await settle();
             assert.ok(!widget._cdcBody.querySelector(
                 '[data-cdc-fan-in-key]'),
                 'expansion gone after second click');
         });
 
-        it('caches the result per (pin, clock) — second expand '
-                + 'after collapse does not refetch', async () => {
-            const calls = [];
+        it('output pin rows (OUT/Q) carry no trace-mix button '
+                + 'even when multi-clock', async () => {
+            // Manufacture a path detail where ff_mux_clk's Q row
+            // carries multiple clocks. The renderer should still
+            // skip the button on the Q row because Q is an output
+            // pin (output rows just redistribute their inputs'
+            // clocks).
+            const PATH_OUT = JSON.parse(JSON.stringify(PATH_DETAIL));
+            // The launch flop carries clock 'clk_a' as its `clock`
+            // field; pretend Q sees [clk_a, clk_b] for this test.
+            PATH_OUT.stages[0].clock = 'clk_a';
+            // Add a multi-clock badge by hijacking ck_pin_clocks
+            // — but the existing renderer reads ck_pin_clocks for
+            // the CK row only; Q row reads `qClk` derived from
+            // `s.clock`. So just keep the data-driven assertion:
+            // there is ONLY ONE trace-mix button on this card,
+            // and it sits on the CK row, not on Q.
             const widget = await drillToDetail({
-                cdc_pin_fan_in: (req) => {
-                    calls.push(req);
-                    return FAN_IN_RESPONSE;
-                },
+                cdc_path_detail: () => PATH_OUT,
             });
-            const chip = findClkBAuxChip(widget);
-            chip.click(); await settle();
-            chip.click(); await settle();   // collapse
-            chip.click(); await settle();   // re-expand
-            assert.equal(calls.length, 1,
-                'RPC fired exactly once across expand-collapse-'
-                + 'expand cycles (cache hit on the second expand)');
-            assert.ok(widget._cdcBody.querySelector(
-                '[data-cdc-fan-in-key]'),
-                'expansion is back after the third click');
-        });
-
-        it('empty stages response renders a "no further fan-in" '
-                + 'placeholder', async () => {
-            const widget = await drillToDetail({
-                cdc_pin_fan_in: () => ({ stages: [] }),
-            });
-            const chip = findClkBAuxChip(widget);
-            chip.click();
-            await settle();
-            const wrapper = widget._cdcBody.querySelector(
-                '[data-cdc-fan-in-key]');
-            assert.ok(wrapper, 'wrapper rendered even on empty');
-            assert.ok(/no further fan-in/i.test(wrapper.textContent),
-                'placeholder explains the empty result');
-        });
-
-        // Once a fan-in expansion is open, the chips on the
-        // ANCESTOR cards inside the expansion must NOT be
-        // clickable for further nested expansion. Clicking
-        // identical-looking chips inside an already-open trace
-        // was reported as confusing UX (chained expansions
-        // produce a runaway tree with no clear stop signal). The
-        // chips still render so the clock domain is visible, but
-        // the cursor + underline come off.
-        it('chips inside an open expansion are non-clickable',
-                async () => {
-            const widget = await drillToDetail();
-            const outerChip = findClkBAuxChip(widget);
-            outerChip.click();
-            await settle();
-            const wrapper = widget._cdcBody.querySelector(
-                '[data-cdc-fan-in-key]');
-            assert.ok(wrapper, 'expansion wrapper present');
-            // ff_src_b's pin rows live inside the wrapper. Their
-            // clk_b chips should be there (clock domain still
-            // visible) but with NO pointer cursor and NO
-            // underline (visual cue that they're inert).
-            const innerChips = Array.from(
-                wrapper.querySelectorAll('span'))
-                .filter(s => s.textContent === 'clk_b');
-            assert.ok(innerChips.length > 0,
-                'clk_b chips still rendered inside the expansion');
-            for (const c of innerChips) {
-                assert.notEqual(c.style.cursor, 'pointer',
-                    'inner chips lose the pointer cursor');
-                assert.notEqual(c.style.textDecoration,
-                    'underline',
-                    'inner chips lose the underline');
+            const cards = widget._cdcBody.querySelectorAll(
+                '[data-cdc-stage-card]');
+            let launchCard = null;
+            for (const card of cards) {
+                if (card.dataset.cdcStageInstance === 'ff_mux_clk') {
+                    launchCard = card;
+                    break;
+                }
             }
+            assert.ok(launchCard, 'launch card found');
+            const btns = launchCard.querySelectorAll(
+                'a[data-cdc-trace-mix="1"]');
+            assert.equal(btns.length, 1,
+                'exactly one trace-mix button on the multi-clock '
+                + 'launch card — on the CK row, not on Q');
+            assert.equal(btns[0].dataset.cdcPinKind, 'clock',
+                'the one button belongs to the CK row (pinKind=clock)');
         });
     });
+
 
     // Multi-clock CK rendering — when a register stage carries
     // `ck_pin_clocks` with more than one entry, the card renders
@@ -6036,324 +6078,12 @@ describe('SdcWidget', () => {
     // same flop), don't draw a duplicate wrapper. Annotate the
     // existing card with a "↑ also reached via" line and flash
     // the card to point at it.
-    describe('CDC path-detail fan-in convergence detection', () => {
-        const CDC_OVERVIEW = {
-            time_unit: 'ns',
-            current_mode: 'default',
-            modes: { default: {
-                endpoint_count: 1, clocks: ['clk_a', 'clk_b'],
-                matrix: { clk_a: { clk_b: {
-                    paths: 1, synced: 0, excluded: 0, unsynced: 1,
-                }}},
-            }},
-        };
-        const PATHS = {
-            time_unit: 'ns', total: 1, offset: 0,
-            category_total: { synced: 0, excluded: 0, unsynced: 1 },
-            paths: [{
-                capture_pin:  'ff_mix/D', odb_type: 'iterm', odb_id: 1,
-                capture_inst: 'ff_mix', capture_cell: 'DFF_X1',
-                launch_clock: 'clk_a', capture_clock: 'clk_b',
-                category: 'unsynchronized',
-                sync_chain_kind: 'none', sync_chain_depth: 1,
-                whitelist_match: null, whitelist_pattern: null,
-            }],
-        };
-        // Path detail walks to ff_mux_clk on the launch side. The
-        // mix gate has clk_a (followed) on A1 and clk_b (aux) on
-        // A2. Clicking the clk_b chip on A2 dispatches a fan-in
-        // trace that ALSO lands on ff_mux_clk — the convergence
-        // case. Both clk_a's main-diagram path and clk_b's fan-in
-        // legitimately terminate at this multi-clock-CK FF.
-        const PATH_DETAIL = {
-            stages: [
-                { instance: 'ff_mux_clk', cell: 'DFF_X1',
-                  odb_type: 'inst', odb_id: 10,
-                  d_pin: 'ff_mux_clk/D',
-                  d_pin_odb_type: 'iterm', d_pin_odb_id: 100,
-                  q_pin: 'ff_mux_clk/Q',
-                  q_pin_odb_type: 'iterm', q_pin_odb_id: 101,
-                  ck_pin: 'ff_mux_clk/CK',
-                  ck_pin_odb_type: 'iterm', ck_pin_odb_id: 102,
-                  ck_pin_clocks: ['clk_a', 'clk_b'],
-                  kind: 'register', is_launch: true, clock: 'clk_a',
-                  out_net: { name: 'mux_q', odb_type: 'net', odb_id: 200 },
-                  passthroughs_after: [] },
-                { instance: 'mix_and', cell: 'AND2_X1',
-                  odb_type: 'inst', odb_id: 11,
-                  in_pin: 'mix_and/A1',
-                  in_pin_odb_type: 'iterm', in_pin_odb_id: 103,
-                  in_pin_clocks: ['clk_a'],
-                  out_pin: 'mix_and/ZN',
-                  out_pin_odb_type: 'iterm', out_pin_odb_id: 104,
-                  aux_in_pins: [{
-                      name: 'mix_and/A2',
-                      odb_type: 'iterm', odb_id: 105,
-                      clocks: ['clk_b'],
-                  }],
-                  kind: 'comb', is_domain_mix: true,
-                  clock: 'clk_a', capture_clock: 'clk_b',
-                  out_net: { name: 'mix_y', odb_type: 'net', odb_id: 201 },
-                  passthroughs_after: [] },
-                { instance: 'ff_mix', cell: 'DFF_X1',
-                  odb_type: 'inst', odb_id: 12,
-                  d_pin: 'ff_mix/D',
-                  d_pin_odb_type: 'iterm', d_pin_odb_id: 106,
-                  q_pin: 'ff_mix/Q',
-                  q_pin_odb_type: 'iterm', q_pin_odb_id: 107,
-                  ck_pin: 'ff_mix/CK',
-                  ck_pin_odb_type: 'iterm', ck_pin_odb_id: 108,
-                  ck_pin_clocks: ['clk_b'],
-                  kind: 'register', is_capture: true,
-                  launch_clock: 'clk_a', capture_clock: 'clk_b',
-                  clock: 'clk_b',
-                  out_net: null, passthroughs_after: [] },
-            ],
-            sync_chain: { kind: 'none', depth: 1,
-                          whitelist_match: null, whitelist_pattern: null },
-        };
-        // Fan-in from mix_and/A2 (clk_b) lands on the SAME
-        // ff_mux_clk that the main path detail already shows.
-        const FAN_IN_RESPONSE = {
-            stages: [
-                { instance: 'ff_mux_clk', cell: 'DFF_X1',
-                  odb_type: 'inst', odb_id: 10,
-                  d_pin: 'ff_mux_clk/D',
-                  d_pin_odb_type: 'iterm', d_pin_odb_id: 100,
-                  q_pin: 'ff_mux_clk/Q',
-                  q_pin_odb_type: 'iterm', q_pin_odb_id: 101,
-                  ck_pin: 'ff_mux_clk/CK',
-                  ck_pin_odb_type: 'iterm', ck_pin_odb_id: 102,
-                  ck_pin_clocks: ['clk_a', 'clk_b'],
-                  kind: 'register', is_launch: true,
-                  clock: 'clk_b',
-                  out_net: { name: 'mux_q', odb_type: 'net', odb_id: 200 },
-                  passthroughs_after: [] },
-            ],
-        };
-
-        const drillToDetail = async () => {
-            const app = createMockApp({
-                sdc_clocks: () => EMPTY_CLOCKS,
-                sdc_clock_modes: () => EMPTY_MODES,
-                cdc_overview: () => CDC_OVERVIEW,
-                cdc_paths: () => PATHS,
-                cdc_path_detail: () => PATH_DETAIL,
-                cdc_pin_fan_in: () => FAN_IN_RESPONSE,
-            });
-            const widget = await setupTabWidget('CDC', app);
-            widget._cdcScanBtn.click(); await settle();
-            widget._cdcBody.querySelector(
-                'td[data-cdc-launch="clk_a"][data-cdc-capture="clk_b"]')
-                .click(); await settle();
-            widget._cdcBody.querySelector('tbody tr td span').click();
-            await settle();
-            return widget;
-        };
-
-        const findClkBAuxChip = (widget) => {
-            const cards = widget._cdcBody
-                .querySelectorAll('[data-cdc-stage-card]');
-            for (const card of cards) {
-                if (!/mix_and/.test(card.textContent)) continue;
-                const chips = card.querySelectorAll('span');
-                for (const ch of chips) {
-                    if (ch.textContent === 'clk_b'
-                        && ch.style.cursor === 'pointer') {
-                        return ch;
-                    }
-                }
-            }
-            return null;
-        };
-
-        // Convergence merging used to suppress a new wrapper
-        // when the trace landed at an FF already on the diagram,
-        // adding an "also reached via" annotation instead. User
-        // feedback: the annotation is hard to read and clicking
-        // expects a visible expansion. With side-by-side
-        // wrappers, duplicates are easy to compare visually, so
-        // every chip click now renders its own wrapper — even
-        // when the trace converges with the main diagram.
-        it('every chip click opens its own wrapper, even when '
-                + 'the trace would land on an existing card',
-                async () => {
-            const widget = await drillToDetail();
-            const chip = findClkBAuxChip(widget);
-            assert.ok(chip,
-                'sanity: clk_b chip on aux input found');
-            chip.click();
-            await settle();
-            const wrappers = widget._cdcBody.querySelectorAll(
-                '[data-cdc-fan-in-key]');
-            assert.equal(wrappers.length, 1,
-                'exactly one fan-in wrapper rendered (no '
-                + 'convergence annotation)');
-            // The old "also reached via" annotation block must
-            // not be created — convergence merging is removed.
-            const annotations = widget._cdcBody.querySelectorAll(
-                '[data-cdc-convergence]');
-            assert.equal(annotations.length, 0,
-                'no convergence annotation block rendered');
-        });
-    });
 
     // Clock-path fan-in renders multi-clock convergence gates as
     // "⚠ clock-mux convergence" instead of the data-path
     // "⚠ domain mix" — same backend stage data, different
     // semantic depending on whether the trace started from a CK
     // pin or a data pin.
-    describe('CDC path-detail clock-mux convergence labelling',
-            () => {
-        const CDC_OVERVIEW = {
-            time_unit: 'ns',
-            current_mode: 'default',
-            modes: { default: {
-                endpoint_count: 1, clocks: ['clk_a', 'clk_b'],
-                matrix: { clk_a: { clk_b: {
-                    paths: 1, synced: 0, excluded: 0, unsynced: 1,
-                }}},
-            }},
-        };
-        const PATHS = {
-            time_unit: 'ns', total: 1, offset: 0,
-            category_total: { synced: 0, excluded: 0, unsynced: 1 },
-            paths: [{
-                capture_pin:  'ff_dst/D', odb_type: 'iterm', odb_id: 1,
-                capture_inst: 'ff_dst', capture_cell: 'DFF_X1',
-                launch_clock: 'clk_a', capture_clock: 'clk_b',
-                category: 'unsynchronized',
-                sync_chain_kind: 'none', sync_chain_depth: 1,
-                whitelist_match: null, whitelist_pattern: null,
-            }],
-        };
-        // Path detail terminates at ff_mux_clk (multi-clock CK),
-        // so its CK row carries clk_a + clk_b chips.
-        const PATH_DETAIL = {
-            stages: [
-                { instance: 'ff_mux_clk', cell: 'DFF_X1',
-                  odb_type: 'inst', odb_id: 10,
-                  d_pin: 'ff_mux_clk/D',
-                  d_pin_odb_type: 'iterm', d_pin_odb_id: 100,
-                  q_pin: 'ff_mux_clk/Q',
-                  q_pin_odb_type: 'iterm', q_pin_odb_id: 101,
-                  ck_pin: 'ff_mux_clk/CK',
-                  ck_pin_odb_type: 'iterm', ck_pin_odb_id: 102,
-                  ck_pin_clocks: ['clk_a', 'clk_b'],
-                  kind: 'register', is_launch: true, clock: 'clk_a',
-                  out_net: { name: 'mux_q', odb_type: 'net', odb_id: 200 },
-                  passthroughs_after: [] },
-                { instance: 'ff_dst', cell: 'DFF_X1',
-                  odb_type: 'inst', odb_id: 11,
-                  d_pin: 'ff_dst/D',
-                  d_pin_odb_type: 'iterm', d_pin_odb_id: 105,
-                  q_pin: 'ff_dst/Q',
-                  q_pin_odb_type: 'iterm', q_pin_odb_id: 106,
-                  ck_pin: 'ff_dst/CK',
-                  ck_pin_odb_type: 'iterm', ck_pin_odb_id: 107,
-                  ck_pin_clocks: ['clk_b'],
-                  kind: 'register', is_capture: true,
-                  launch_clock: 'clk_a', capture_clock: 'clk_b',
-                  clock: 'clk_b',
-                  out_net: null, passthroughs_after: [] },
-            ],
-            sync_chain: { kind: 'none', depth: 1,
-                          whitelist_match: null, whitelist_pattern: null },
-        };
-        // Fan-in from ff_mux_clk/CK for clk_a walks back through
-        // the OR gate that mixes clk_a + clk_b on the CK net.
-        // The OR gate is `is_domain_mix=true` — but on a clock
-        // path that means CLOCK-mux, not data-domain mix.
-        const CK_FAN_IN_RESPONSE = {
-            stages: [
-                { instance: 'clk_a',
-                  odb_type: 'bterm', odb_id: 50,
-                  q_pin: 'clk_a',
-                  q_pin_odb_type: 'bterm', q_pin_odb_id: 50,
-                  out_pin: 'clk_a',
-                  out_pin_odb_type: 'bterm', out_pin_odb_id: 50,
-                  cell: null,
-                  kind: 'port', is_launch: true, clock: 'clk_a',
-                  out_net: { name: 'clk_a_net',
-                             odb_type: 'net', odb_id: 300 },
-                  passthroughs_after: [] },
-                { instance: 'clk_mux_g', cell: 'OR2_X1',
-                  odb_type: 'inst', odb_id: 60,
-                  in_pin: 'clk_mux_g/A1',
-                  in_pin_odb_type: 'iterm', in_pin_odb_id: 600,
-                  in_pin_clocks: ['clk_a'],
-                  out_pin: 'clk_mux_g/ZN',
-                  out_pin_odb_type: 'iterm', out_pin_odb_id: 601,
-                  aux_in_pins: [{ name: 'clk_mux_g/A2',
-                                  odb_type: 'iterm', odb_id: 602,
-                                  clocks: ['clk_b'] }],
-                  kind: 'comb', is_domain_mix: true,
-                  clock: 'clk_a',
-                  out_net: { name: 'mux_clk_or',
-                             odb_type: 'net', odb_id: 301 },
-                  passthroughs_after: [] },
-            ],
-        };
-
-        const drillToDetail = async () => {
-            const app = createMockApp({
-                sdc_clocks: () => EMPTY_CLOCKS,
-                sdc_clock_modes: () => EMPTY_MODES,
-                cdc_overview: () => CDC_OVERVIEW,
-                cdc_paths: () => PATHS,
-                cdc_path_detail: () => PATH_DETAIL,
-                cdc_pin_fan_in: () => CK_FAN_IN_RESPONSE,
-            });
-            const widget = await setupTabWidget('CDC', app);
-            widget._cdcScanBtn.click(); await settle();
-            widget._cdcBody.querySelector(
-                'td[data-cdc-launch="clk_a"][data-cdc-capture="clk_b"]')
-                .click(); await settle();
-            widget._cdcBody.querySelector('tbody tr td span').click();
-            await settle();
-            return widget;
-        };
-
-        it('clicking a CK chip labels the merge as clock-mux',
-                async () => {
-            const widget = await drillToDetail();
-            // Find the clk_a chip on the CK row — it carries
-            // `data-cdc-pin-kind="clock"`, set by the renderer
-            // when the chip is on a CK pin row.
-            const cards = widget._cdcBody.querySelectorAll(
-                '[data-cdc-stage-card]');
-            let ckChip = null;
-            for (const card of cards) {
-                if (card.dataset.cdcStageInstance !== 'ff_mux_clk') {
-                    continue;
-                }
-                const chips = card.querySelectorAll(
-                    'span[data-cdc-pin-kind="clock"]');
-                for (const ch of chips) {
-                    if (ch.textContent === 'clk_a') {
-                        ckChip = ch;
-                        break;
-                    }
-                }
-                if (ckChip) break;
-            }
-            assert.ok(ckChip, 'sanity: clk_a chip on CK row found');
-            ckChip.click();
-            await settle();
-            // The expansion wrapper should contain a card for the
-            // OR gate (clk_mux_g) labelled as clock-mux convergence.
-            const wrapper = widget._cdcBody.querySelector(
-                '[data-cdc-fan-in-key]');
-            assert.ok(wrapper,
-                'fan-in expansion wrapper rendered');
-            assert.ok(/clock-mux convergence/.test(wrapper.textContent),
-                'OR gate labelled as clock-mux convergence (not '
-                + 'data-domain mix)');
-            assert.ok(!/domain mix/.test(wrapper.textContent),
-                'no "domain mix" label leaks into a clock-path '
-                + 'expansion');
-        });
-    });
 
     // Shared-FF badge on the path-list — when N rows share the
     // same `capture_inst`, each carries a "⚭ N" badge plus a

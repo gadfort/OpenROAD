@@ -7452,6 +7452,11 @@ export class SdcWidget {
             if (rowEl) {
                 rowEl.style.background = on ? HOVER_BG : HEADER_BG;
                 rowEl.style.fontWeight = on ? '700' : '';
+                // Match the column header's text-color flip on hover —
+                // the row label was previously left at default fg
+                // while the column label flipped to HOVER_FG, and the
+                // asymmetric visual was confusing.
+                rowEl.style.color = on ? HOVER_FG : 'var(--fg-primary)';
             }
             if (colEl) {
                 colEl.style.background = on ? HOVER_BG : HEADER_BG;
@@ -8994,6 +8999,494 @@ export class SdcWidget {
         strip.appendChild(wrapper);
     }
 
+    // Clock-mix tracer (replaces per-chip data fan-in). Triggered
+    // from the `↑ trace mix` button on a multi-clock pin row.
+    // Walks upstream to find where the requested clocks first
+    // merge — the actual mixer cell. The wrapper / strip layout
+    // matches `_toggleCdcFanIn` so collapse + side-by-side is
+    // identical UX. Different RPC, different stage shapes, but
+    // the user-facing affordance reads as "another wrapper above
+    // the card."
+    async _toggleCdcClockMix(pinRef, clocks, btn, pinKind, pinName) {
+        const clockList = Array.isArray(clocks)
+            ? clocks.filter(c => c).slice() : [];
+        if (!pinRef || !clockList.length || !btn) return;
+        // Cache / collapse key — pin id + sorted clock set so two
+        // walks for the same pin with different clock sets stay
+        // separate (manual recursion entry from a contributing
+        // input narrows the clock set; each gets its own wrapper).
+        const sorted = clockList.slice().sort();
+        const key = `mix|${pinRef.odb_type}|${pinRef.odb_id}|`
+            + sorted.join(',');
+        const card = btn.closest('[data-cdc-stage-card]');
+        if (!card || !card.parentElement) return;
+        const parent = card.parentElement;
+        const existing = Array.from(
+            parent.querySelectorAll('[data-cdc-fan-in-key]'))
+            .find(el => el.dataset.cdcFanInKey === key);
+        if (existing) {
+            const oldStrip = existing.parentElement;
+            existing.remove();
+            btn.style.outline = '';
+            if (oldStrip
+                && oldStrip.dataset.cdcFanInStrip === '1'
+                && oldStrip.children.length === 0) {
+                oldStrip.remove();
+            }
+            return;
+        }
+        btn.style.outline = '1px dashed var(--accent-tab)';
+
+        if (!this._cdcClockMixCache) this._cdcClockMixCache = new Map();
+        let stages = this._cdcClockMixCache.get(key);
+        if (!stages) {
+            try {
+                const data = await this._requestWithTimeout({
+                    type: 'cdc_clock_mix_trace',
+                    pin_odb_type: pinRef.odb_type,
+                    pin_odb_id:   pinRef.odb_id,
+                    clocks: clockList,
+                    mode: this._cdcActiveModeName(this._cdcOverview),
+                });
+                stages = (data && data.stages) || [];
+                this._cdcClockMixCache.set(key, stages);
+            } catch (e) {
+                console.warn('[CDC] clock-mix fetch failed', e);
+                btn.style.outline = '';
+                return;
+            }
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.dataset.cdcFanInKey = key;
+        wrapper.dataset.cdcClockMixWrapper = '1';
+        wrapper.style.cssText
+            = 'display:flex;flex-direction:column;gap:4px;'
+            + 'padding:4px 6px;border:1px dashed var(--border);'
+            + 'border-radius:3px;'
+            + 'min-width:240px;max-width:340px;'
+            + 'flex:0 0 auto;';
+
+        const head = document.createElement('div');
+        head.style.cssText
+            = 'display:flex;align-items:baseline;gap:8px;'
+            + 'font-size:11px;color:var(--fg-muted);';
+        const headLabel = document.createElement('span');
+        headLabel.textContent
+            = `↑ clock-mix trace · ${clockList.join(', ')}`;
+        head.appendChild(headLabel);
+        const collapse = document.createElement('a');
+        collapse.textContent = '× collapse';
+        collapse.style.cssText
+            = 'cursor:pointer;color:var(--accent-tab);'
+            + 'text-decoration:underline;margin-left:auto;';
+        collapse.addEventListener('click', () => {
+            const strip = wrapper.parentElement;
+            wrapper.remove();
+            btn.style.outline = '';
+            if (strip
+                && strip.dataset.cdcFanInStrip === '1'
+                && strip.children.length === 0) {
+                strip.remove();
+            }
+        });
+        head.appendChild(collapse);
+        wrapper.appendChild(head);
+
+        if (!stages.length) {
+            const empty = document.createElement('div');
+            empty.style.cssText
+                = 'padding:6px 8px;font-style:italic;'
+                + 'color:var(--fg-muted);';
+            empty.textContent = 'No upstream driver — pin is a top-'
+                + 'level port or has no resolvable driver.';
+            wrapper.appendChild(empty);
+        } else {
+            // Consecutive transit cards collapse into a single
+            // expandable summary so a long chain of buffer-like
+            // cells doesn't drown out the actual mix points (user
+            // feedback 2026-05-02 round 3). Single transits also
+            // collapse for consistency — clicking the summary
+            // expands inline.
+            const isTransit = (s) => s
+                && (s.kind === 'comb_transit'
+                    || s.kind === 'register_transit');
+            const renderTransitRun = (run) => {
+                if (!run.length) return;
+                const group = document.createElement('div');
+                group.dataset.cdcMixTransitRun = '1';
+                group.style.cssText
+                    = 'border:1px dashed var(--border);'
+                    + 'border-radius:4px;background:var(--bg-input);';
+                const summary = document.createElement('a');
+                summary.style.cssText
+                    = 'display:block;cursor:pointer;'
+                    + 'color:var(--accent-tab);'
+                    + 'text-decoration:underline;'
+                    + 'text-decoration-style:dotted;'
+                    + 'padding:4px 8px;font-size:11px;'
+                    + 'white-space:nowrap;overflow:hidden;'
+                    + 'text-overflow:ellipsis;';
+                const inner = document.createElement('div');
+                inner.style.cssText
+                    = 'display:none;padding:4px 8px 8px 8px;'
+                    + 'border-top:1px solid var(--border);'
+                    + 'display:flex;flex-direction:column;gap:4px;';
+                inner.style.display = 'none';
+                for (let j = 0; j < run.length; ++j) {
+                    if (j > 0) {
+                        const prev = run[j - 1];
+                        inner.appendChild(
+                            this._renderCdcInterStageGap(
+                                prev && prev.out_net,
+                                (prev && prev.passthroughs_after) || []));
+                    }
+                    inner.appendChild(
+                        this._renderCdcClockMixStage(run[j]));
+                }
+                const N = run.length;
+                const setLabel = (open) => {
+                    summary.textContent
+                        = `${open ? '▼' : '▶'} ${N} via `
+                        + (N === 1 ? 'cell' : 'cells')
+                        + ' — click to '
+                        + (open ? 'collapse' : 'expand');
+                };
+                setLabel(false);
+                summary.addEventListener('click', () => {
+                    const open = inner.style.display !== 'none';
+                    inner.style.display = open ? 'none' : '';
+                    setLabel(!open);
+                });
+                group.appendChild(summary);
+                group.appendChild(inner);
+                wrapper.appendChild(group);
+            };
+
+            let transitRun = [];
+            const flush = () => {
+                if (transitRun.length) {
+                    renderTransitRun(transitRun);
+                    transitRun = [];
+                }
+            };
+            for (let i = 0; i < stages.length; ++i) {
+                const s = stages[i];
+                if (isTransit(s)) {
+                    transitRun.push(s);
+                    continue;
+                }
+                flush();
+                if (i > 0) {
+                    const prev = stages[i - 1];
+                    wrapper.appendChild(this._renderCdcInterStageGap(
+                        prev && prev.out_net,
+                        (prev && prev.passthroughs_after) || []));
+                }
+                wrapper.appendChild(this._renderCdcClockMixStage(s));
+            }
+            flush();
+            const arrow = document.createElement('div');
+            arrow.style.cssText
+                = 'text-align:center;font-size:11px;'
+                + 'color:var(--fg-muted);padding:2px;';
+            arrow.textContent = '↓ feeds into';
+            wrapper.appendChild(arrow);
+        }
+
+        let strip = card.previousElementSibling;
+        if (!strip
+            || !strip.dataset
+            || strip.dataset.cdcFanInStrip !== '1') {
+            strip = document.createElement('div');
+            strip.dataset.cdcFanInStrip = '1';
+            strip.style.cssText
+                = 'display:flex;flex-direction:row;gap:8px;'
+                + 'align-items:stretch;'
+                + 'overflow-x:auto;margin-bottom:4px;';
+            parent.insertBefore(strip, card);
+        }
+        strip.appendChild(wrapper);
+    }
+
+    // Renders one stage of a clock-mix trace. Stage shapes:
+    //   - "mixer"            ⚡ banner; per-contributor rows with
+    //                        own `↑ trace mix` link if subset ≥ 2
+    //   - "register_transit" muted "↑ via CK of FF" header
+    //   - "comb_transit"     muted "↑ via CELL" header
+    //   - "port"             ⏚ banner, terminal
+    //   - "stuck"            ⊘ amber banner with input clock breakdown
+    //   - "feedback"         ↺ banner, terminal
+    //   - "depth_limit"      ⋯ banner, terminal
+    //   - "unresolved"       ? banner, terminal
+    _renderCdcClockMixStage(stage) {
+        const card = document.createElement('div');
+        card.dataset.cdcStageCard = '1';
+        card.dataset.cdcMixStageKind = stage.kind || 'unresolved';
+        card.style.cssText =
+            'border:1px solid var(--border);border-radius:4px;' +
+            'background:var(--bg-input);font-family:monospace;' +
+            'font-size:12px;min-width:0;overflow:hidden;';
+
+        const banner = document.createElement('div');
+        banner.style.cssText
+            = 'padding:3px 8px;font-size:11px;font-weight:600;'
+            + 'border-bottom:1px solid var(--border);';
+        let bannerText = '';
+        let bannerBg = 'var(--bg-header)';
+        switch (stage.kind) {
+            case 'mixer':
+                bannerText = stage.degenerate
+                    ? `⚡ DEGENERATE MIX · single contributor (subset)`
+                    : `⚡ CLOCK MIX · ${stage.contributors.length} `
+                      + 'inputs merge';
+                bannerBg = 'rgba(255, 167, 38, 0.20)';
+                break;
+            case 'net_mixer':
+                bannerText = stage.degenerate
+                    ? `⚡ NET CONVERGENCE · single contributor (subset)`
+                    : `⚡ NET CONVERGENCE · ${stage.contributors.length} `
+                      + 'drivers on this net';
+                bannerBg = 'rgba(255, 167, 38, 0.20)';
+                break;
+            case 'register_transit':
+                bannerText = '↑ via CK of '
+                    + (stage.cell || 'register');
+                bannerBg = 'var(--bg-header)';
+                break;
+            case 'comb_transit':
+                bannerText = `↑ via ${stage.cell || 'cell'}`;
+                bannerBg = 'var(--bg-header)';
+                break;
+            case 'port':
+                bannerText = '⏚ clock source · port';
+                bannerBg = 'rgba(76, 175, 80, 0.18)';
+                break;
+            case 'stuck':
+                bannerText = '⊘ trace stopped — no input carries clocks';
+                bannerBg = 'rgba(220, 64, 64, 0.18)';
+                break;
+            case 'feedback':
+                bannerText = '↺ feedback cycle';
+                bannerBg = 'rgba(220, 64, 64, 0.12)';
+                break;
+            case 'depth_limit':
+                bannerText = '⋯ depth limit reached · click to continue';
+                bannerBg = 'var(--bg-header)';
+                break;
+            default:
+                bannerText = '? unresolved driver';
+                bannerBg = 'var(--bg-header)';
+        }
+        banner.style.background = bannerBg;
+        banner.textContent = bannerText;
+        card.appendChild(banner);
+
+        // Header line: instance + cell name, when present.
+        if (stage.instance || stage.cell) {
+            const head = document.createElement('div');
+            head.style.cssText
+                = 'padding:3px 8px;display:flex;'
+                + 'justify-content:space-between;gap:8px;'
+                + 'align-items:baseline;'
+                + 'border-bottom:1px solid var(--border);';
+            const instEl = document.createElement('span');
+            instEl.style.cssText
+                = 'color:var(--fg-primary);min-width:0;'
+                + TRUNCATE_PATH_CSS;
+            instEl.textContent = stage.instance || '';
+            instEl.title = stage.instance || '';
+            head.appendChild(instEl);
+            if (stage.cell) {
+                const cellEl = document.createElement('span');
+                cellEl.style.cssText
+                    = 'color:var(--fg-muted);font-size:11px;'
+                    + 'flex:0 0 auto;white-space:nowrap;';
+                cellEl.textContent = stage.cell;
+                head.appendChild(cellEl);
+            }
+            card.appendChild(head);
+        }
+
+        // Body — pins + clock badges + per-contributor expand links.
+        const body = document.createElement('div');
+        body.style.cssText = 'padding:4px 8px;';
+
+        const pinLine = (label, pinPath, clocks, contribIdx) => {
+            const row = document.createElement('div');
+            row.style.cssText
+                = 'display:flex;align-items:baseline;gap:6px;'
+                + 'padding:1px 0;font-size:12px;';
+            const lab = document.createElement('span');
+            lab.textContent = label;
+            lab.style.cssText
+                = 'color:var(--fg-muted);font-weight:600;'
+                + 'min-width:32px;';
+            row.appendChild(lab);
+            const path = document.createElement('span');
+            path.style.cssText
+                = 'color:var(--fg-primary);min-width:0;flex:1 1 auto;'
+                + TRUNCATE_PATH_CSS;
+            path.textContent
+                = pinPath
+                    ? this._pinLeafName(pinPath, stage.instance || null)
+                    : '—';
+            path.title = pinPath || '';
+            row.appendChild(path);
+            const chips = document.createElement('span');
+            chips.style.cssText
+                = 'display:inline-flex;gap:3px;flex-wrap:wrap;'
+                + 'align-items:center;';
+            for (const c of clocks) {
+                const chip = document.createElement('span');
+                chip.textContent = c;
+                // Per-clock tint matches the chip colours used on
+                // the path-detail diagram so the same clock name
+                // renders the same hue everywhere — consistent
+                // legend across views (user feedback 2026-05-02
+                // round 3: "the clock pill colors do not match
+                // the legends").
+                const tint = this._cdcClockTint(c, 0.30);
+                chip.style.cssText
+                    = 'padding:0 6px;border-radius:8px;font-size:11px;'
+                    + `background:${tint || 'var(--bg-header)'};`
+                    + 'color:var(--fg-primary);white-space:nowrap;';
+                chips.appendChild(chip);
+            }
+            // Per-contributor recursive trace-mix link. Shown on
+            // mixer / net_mixer stages when this row's clock subset
+            // is itself multi-clock (size ≥ 2). Re-uses
+            // _toggleCdcClockMix with the narrower clock set —
+            // same handler, narrower input → naturally re-runs the
+            // walker on the branch.
+            const isMixerKind = stage.kind === 'mixer'
+                || stage.kind === 'net_mixer';
+            if (contribIdx != null && isMixerKind
+                && clocks.length >= 2) {
+                const contrib = stage.contributors[contribIdx];
+                if (contrib && contrib.pin_odb_type
+                    && contrib.pin_odb_id != null) {
+                    const link = document.createElement('a');
+                    link.textContent = '↑ trace mix';
+                    link.dataset.cdcTraceMix = '1';
+                    link.style.cssText
+                        = 'cursor:pointer;color:var(--accent-tab);'
+                        + 'text-decoration:underline;'
+                        + 'text-decoration-style:dotted;'
+                        + 'font-size:11px;margin-left:4px;'
+                        + 'white-space:nowrap;';
+                    link.title
+                        = `Trace where these ${clocks.length} clocks `
+                        + 'merge upstream of this input.';
+                    link.addEventListener('click', () =>
+                        this._toggleCdcClockMix(
+                            { odb_type: contrib.pin_odb_type,
+                              odb_id: contrib.pin_odb_id },
+                            clocks.slice(),
+                            link,
+                            'data',
+                            contrib.pin || null));
+                    chips.appendChild(link);
+                }
+            }
+            row.appendChild(chips);
+            body.appendChild(row);
+        };
+
+        // Per-stage-kind body content.
+        if (stage.kind === 'mixer' || stage.kind === 'stuck') {
+            // OUT row first if the stage has one.
+            if (stage.out_pin) {
+                pinLine('OUT', stage.out_pin, stage.clocks || [], null);
+            }
+            // Then each contributor as its own input row.
+            for (let i = 0; i < (stage.contributors || []).length; ++i) {
+                const c = stage.contributors[i];
+                pinLine('IN', c.pin || '—', c.clocks || [], i);
+            }
+        } else if (stage.kind === 'net_mixer') {
+            // No OUT row: the convergence is on the NET — we don't
+            // own a single output pin to report. The contributors
+            // are the multiple drivers themselves.
+            for (let i = 0; i < (stage.contributors || []).length; ++i) {
+                const c = stage.contributors[i];
+                pinLine('DRV', c.pin || '—', c.clocks || [], i);
+            }
+        } else if (stage.kind === 'register_transit') {
+            // Show Q + CK so the user sees the hop.
+            if (stage.out_pin) {
+                pinLine('Q', stage.out_pin, stage.clocks || [], null);
+            }
+            if (stage.via_pin) {
+                pinLine('CK', stage.via_pin, stage.clocks || [], null);
+            }
+        } else if (stage.kind === 'comb_transit') {
+            if (stage.out_pin) {
+                pinLine('OUT', stage.out_pin, stage.clocks || [], null);
+            }
+            if (stage.via_pin) {
+                pinLine('IN', stage.via_pin, stage.clocks || [], null);
+            }
+        } else if (stage.kind === 'port') {
+            if (stage.out_pin) {
+                pinLine('PORT', stage.out_pin, stage.clocks || [], null);
+            }
+        } else if (stage.kind === 'depth_limit') {
+            // Depth limit terminal — the walk stopped at N stages
+            // without reaching a mixer/source. Carry a `↑ continue
+            // trace` link if we have the via pin id, so the user
+            // can click to walk another N stages from where we
+            // stopped (user feedback 2026-05-02 round 3: "if that
+            // happens I should be able to click something to
+            // continue").
+            if (stage.via_pin) {
+                pinLine('FROM', stage.via_pin, stage.clocks || [], null);
+            } else if ((stage.clocks || []).length) {
+                pinLine('CLK', '—', stage.clocks, null);
+            }
+            if (stage.via_pin && stage.via_pin_odb_type
+                && stage.via_pin_odb_id != null) {
+                const cont = document.createElement('div');
+                cont.style.cssText
+                    = 'padding:4px 8px;border-top:1px solid var(--border);'
+                    + 'text-align:center;';
+                const link = document.createElement('a');
+                link.textContent = '↑ continue trace';
+                link.dataset.cdcTraceMix = '1';
+                link.dataset.cdcContinueDepth = '1';
+                link.style.cssText
+                    = 'cursor:pointer;color:var(--accent-tab);'
+                    + 'text-decoration:underline;'
+                    + 'text-decoration-style:dotted;font-size:11px;'
+                    + 'white-space:nowrap;';
+                link.title
+                    = 'Walk another batch of stages upstream from '
+                    + 'where the depth cap was hit.';
+                const stageClocks = (stage.clocks || []).slice();
+                link.addEventListener('click', () =>
+                    this._toggleCdcClockMix(
+                        { odb_type: stage.via_pin_odb_type,
+                          odb_id: stage.via_pin_odb_id },
+                        stageClocks,
+                        link,
+                        'data',
+                        stage.via_pin));
+                cont.appendChild(link);
+                body.appendChild(cont);
+            }
+        } else {
+            // feedback / unresolved — just show the clock set + pin.
+            if (stage.out_pin) {
+                pinLine('PIN', stage.out_pin, stage.clocks || [], null);
+            } else if ((stage.clocks || []).length) {
+                pinLine('CLK', '—', stage.clocks, null);
+            }
+        }
+        card.appendChild(body);
+
+        return card;
+    }
+
     // One stage card. Three shapes depending on `s.kind`:
     //   - "register"  flop — D + Q pin rows; banner says LAUNCH /
     //                 STAGE 1 / STAGE 2+ / CROSSOVER depending on
@@ -9291,7 +9784,7 @@ export class SdcWidget {
         // click closure for "from <pin>" convergence labels.
         const stageInst = s && s.instance || null;
         const addPinRow = (label, pinName, pinRef, clk, role,
-                           pinKind) => {
+                           pinKind, isOutputPin) => {
             const lab = document.createElement('span');
             lab.textContent = label;
             lab.style.cssText =
@@ -9326,12 +9819,17 @@ export class SdcWidget {
                 dash.style.color = 'var(--fg-muted)';
                 clkContainer.appendChild(dash);
             } else {
+                // Chips render as inert badges. Clock-mix tracing
+                // moved off per-chip clicks (which conflated
+                // single-clock and mix scenarios and routinely
+                // produced empty / stuck wrappers on phantom
+                // propagation) and onto a single `↑ trace mix`
+                // button at the end of the cluster — only present
+                // when the row is multi-clock AND we have a pin
+                // ref to walk back from.
                 for (const c of clkList) {
                     const chip = document.createElement('span');
                     chip.textContent = c;
-                    // Mark the chip's pin-kind on the DOM so
-                    // tests + any post-render lookups can find
-                    // CK chips without walking parent text.
                     if (pinKind) {
                         chip.dataset.cdcPinKind = pinKind;
                     }
@@ -9346,44 +9844,57 @@ export class SdcWidget {
                     } else if (role === 'capture') {
                         chip.style.background = 'rgba(76, 175, 80, 0.18)';
                     }
-                    const baseTitle = role === 'launch'
+                    chip.title = role === 'launch'
                         ? `${c} — launches this transition (clock on `
                           + `the driving flop's CK pin)`
                         : (role === 'capture'
                             ? `${c} — captures this transition on `
                               + 'this flop\'s CK'
                             : `${c} — clock domain of this stage`);
-                    // Chips inside an already-expanded fan-in
-                    // wrapper stay visible-but-inert: chained
-                    // expansion from within an expansion was
-                    // reported as confusing UX (the inner chip
-                    // looks identical to the outer one and clicking
-                    // it triggers another nested trace). The user
-                    // collapses and re-expands from a different
-                    // pin instead.
-                    const allowFanIn = pinRef && pinRef.odb_type
-                        && pinRef.odb_id != null
-                        && !(opts && opts.disableFanInChips);
-                    if (allowFanIn) {
-                        chip.style.cursor = 'pointer';
-                        chip.style.textDecoration = 'underline';
-                        chip.style.textDecorationStyle = 'dotted';
-                        chip.title
-                            = baseTitle
-                            + ' — click to trace this clock\'s fan-in '
-                            + 'back to its source.';
-                        // Capture pinKind in the closure so the
-                        // toggler can label clock-path expansions
-                        // distinctly from data-path ones.
-                        chip.addEventListener('click', () =>
-                            this._toggleCdcFanIn(
-                                pinRef, c, chip,
-                                pinKind || 'data',
-                                pinName));
-                    } else {
-                        chip.title = baseTitle;
-                    }
                     clkContainer.appendChild(chip);
+                }
+                // Trace-mix button. Conditions:
+                //   - row is multi-clock (≥ 2 clocks, otherwise
+                //     there's no mix to trace);
+                //   - pinRef resolves to an iterm/bterm so the
+                //     backend can locate the start pin;
+                //   - the pin is an INPUT-direction pin (OUT / Q
+                //     output rows are skipped — by construction
+                //     they redistribute their inputs' clocks, so
+                //     a walk from OUT just re-derives what
+                //     clicking the matching IN row would produce);
+                //   - this card is not inside an expansion wrapper
+                //     (no chained recursion from within an
+                //     expansion — `disableFanInChips` carries the
+                //     legacy name but means "no expand affordances
+                //     in nested cards" and applies here too).
+                const allowMixTrace = clkList.length >= 2
+                    && !isOutputPin
+                    && pinRef && pinRef.odb_type
+                    && pinRef.odb_id != null
+                    && !(opts && opts.disableFanInChips);
+                if (allowMixTrace) {
+                    const btn = document.createElement('a');
+                    btn.textContent = '↑ trace mix';
+                    btn.dataset.cdcTraceMix = '1';
+                    if (pinKind) {
+                        btn.dataset.cdcPinKind = pinKind;
+                    }
+                    btn.style.cssText
+                        = 'cursor:pointer;color:var(--accent-tab);'
+                        + 'text-decoration:underline;'
+                        + 'text-decoration-style:dotted;'
+                        + 'font-size:11px;margin-left:4px;'
+                        + 'white-space:nowrap;';
+                    btn.title
+                        = `Trace where these ${clkList.length} clocks `
+                        + 'merge upstream — finds the gate that mixes them.';
+                    btn.addEventListener('click', () =>
+                        this._toggleCdcClockMix(
+                            pinRef, clkList.slice(), btn,
+                            pinKind || 'data',
+                            pinName));
+                    clkContainer.appendChild(btn);
                 }
             }
             pinTable.appendChild(lab);
@@ -9419,7 +9930,8 @@ export class SdcWidget {
             // with the gate's stage clock = launch domain).
             addPinRow('OUT', s.out_pin,
                 { odb_type: s.out_pin_odb_type, odb_id: s.out_pin_odb_id },
-                s.clock || null, 'domain');
+                s.clock || null, 'domain',
+                /*pinKind=*/undefined, /*isOutputPin=*/true);
             const auxes = Array.isArray(s.aux_in_pins) ? s.aux_in_pins : [];
             for (const aux of auxes) {
                 const auxClks = Array.isArray(aux.clocks) ? aux.clocks : [];
@@ -9442,7 +9954,8 @@ export class SdcWidget {
                 { odb_type: s.out_pin_odb_type || s.q_pin_odb_type,
                   odb_id: s.out_pin_odb_id != null
                       ? s.out_pin_odb_id : s.q_pin_odb_id },
-                s.clock || null, 'launch');
+                s.clock || null, 'launch',
+                /*pinKind=*/undefined, /*isOutputPin=*/true);
         } else {
             // Register stage — D + CK + Q rows. Launch flop's D is
             // in the launch domain (its own clock); crossover D is
@@ -9480,7 +9993,8 @@ export class SdcWidget {
                 ckClocks, 'capture', 'clock');
             addPinRow('Q', s.q_pin,
                 { odb_type: s.q_pin_odb_type, odb_id: s.q_pin_odb_id },
-                qClk, s.is_launch ? 'launch' : 'capture');
+                qClk, s.is_launch ? 'launch' : 'capture',
+                /*pinKind=*/undefined, /*isOutputPin=*/true);
             // Multi-clock-CK marker — built here so it has access
             // to `ckClocks`, but appended AFTER the pin table
             // below so it lands right under the CK row visually.
