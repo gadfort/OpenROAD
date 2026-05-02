@@ -5710,29 +5710,54 @@ describe('SdcWidget', () => {
         };
         // Clock-mix walk from CK lands on the OR gate that mixes
         // clk_a + clk_b on the clock net.
+        // Tree-shaped response. clk_mux_g is the mixer; each branch
+        // is a port terminal (clk_a / clk_b primary clock ports).
+        // on_clock_path=true because the user clicks trace-mix on a
+        // CK pin (pinKind=clock) — the backend flips it on for the
+        // initial walk and propagates to all upstream nodes.
+        const portNode = (name, odbId, clk) => ({
+            kind: 'port',
+            instance: null, cell: null,
+            out_pin: name,
+            out_pin_odb_type: 'bterm', out_pin_odb_id: odbId,
+            via_pin: null,
+            clocks: [clk],
+            actual_clocks: [clk],
+            unaccounted_clocks: [],
+            on_clock_path: true,
+            degenerate: false,
+            branches: [],
+            child: null,
+            out_net: { name, odb_type: 'net', odb_id: 999 + odbId },
+            passthroughs_after: [],
+        });
         const MIX_RESPONSE = {
             requested_clocks: ['clk_a', 'clk_b'],
-            stages: [
-                { kind: 'mixer',
-                  instance: 'clk_mux_g', cell: 'OR2_X1',
-                  odb_type: 'inst', odb_id: 60,
-                  out_pin: 'clk_mux_g/ZN',
-                  out_pin_odb_type: 'iterm', out_pin_odb_id: 601,
-                  via_pin: null,
-                  clocks: ['clk_a', 'clk_b'],
-                  contributors: [
-                      { pin: 'clk_mux_g/A1',
-                        pin_odb_type: 'iterm', pin_odb_id: 600,
-                        clocks: ['clk_a'] },
-                      { pin: 'clk_mux_g/A2',
-                        pin_odb_type: 'iterm', pin_odb_id: 602,
-                        clocks: ['clk_b'] },
-                  ],
-                  degenerate: false,
-                  out_net: { name: 'mux_clk_or',
-                             odb_type: 'net', odb_id: 301 },
-                  passthroughs_after: [] },
-            ],
+            tree: {
+                kind: 'mixer',
+                instance: 'clk_mux_g', cell: 'OR2_X1',
+                odb_type: 'inst', odb_id: 60,
+                out_pin: 'clk_mux_g/ZN',
+                out_pin_odb_type: 'iterm', out_pin_odb_id: 601,
+                via_pin: null,
+                clocks: ['clk_a', 'clk_b'],
+                on_clock_path: true,
+                degenerate: false,
+                branches: [
+                    { pin: 'clk_mux_g/A1',
+                      pin_odb_type: 'iterm', pin_odb_id: 600,
+                      clocks: ['clk_a'],
+                      subtree: portNode('clk_a', 50, 'clk_a') },
+                    { pin: 'clk_mux_g/A2',
+                      pin_odb_type: 'iterm', pin_odb_id: 602,
+                      clocks: ['clk_b'],
+                      subtree: portNode('clk_b', 51, 'clk_b') },
+                ],
+                child: null,
+                out_net: { name: 'mux_clk_or',
+                           odb_type: 'net', odb_id: 301 },
+                passthroughs_after: [],
+            },
         };
 
         const drillToDetail = async (extra = {}) => {
@@ -5837,55 +5862,101 @@ describe('SdcWidget', () => {
             assert.ok(wrapper, 'mix wrapper inserted');
             assert.ok(/clock-mix trace/.test(wrapper.textContent),
                 'header labels the trace as clock-mix');
-            assert.ok(/CLOCK MIX/.test(wrapper.textContent),
-                'mixer banner rendered');
+            // Mixer banner now distinguishes data-path vs clock-path.
+            // Walk started on a CK pin so on_clock_path=true → the
+            // banner reads "CLOCK-PATH MIX".
+            assert.ok(/CLOCK-PATH MIX/.test(wrapper.textContent),
+                'clock-path mixer banner rendered (FF CK origin)');
             assert.ok(/clk_mux_g/.test(wrapper.textContent),
                 'mixer instance rendered');
+            // Branches render automatically as columns above the
+            // mixer card. Each port terminal (clk_a / clk_b) should
+            // be visible in the wrapper without further clicks.
+            assert.ok(/clock source · port/.test(wrapper.textContent),
+                'branch terminals (port stages) rendered');
         });
 
-        it('mixer card surfaces per-contributor trace-mix links '
-                + 'only when the contributor subset is multi-clock',
+        it('BFS auto-expands branches above the mixer card '
+                + '— no manual clicking through trace-mix per branch',
                 async () => {
-            // Replace MIX_RESPONSE with one whose first contributor
-            // is itself multi-clock so we can exercise the recursive
-            // per-contributor link rendering rule.
-            const NESTED_MIX = {
-                requested_clocks: ['clk_a', 'clk_b', 'clk_c'],
-                stages: [
-                    { kind: 'mixer',
-                      instance: 'or_outer', cell: 'OR2_X1',
-                      out_pin: 'or_outer/ZN',
-                      out_pin_odb_type: 'iterm', out_pin_odb_id: 700,
-                      via_pin: null,
-                      clocks: ['clk_a', 'clk_b', 'clk_c'],
-                      contributors: [
-                          { pin: 'or_outer/A1',
-                            pin_odb_type: 'iterm', pin_odb_id: 701,
-                            clocks: ['clk_a', 'clk_b'] },
-                          { pin: 'or_outer/A2',
-                            pin_odb_type: 'iterm', pin_odb_id: 702,
-                            clocks: ['clk_c'] },
-                      ],
-                      degenerate: false,
-                      out_net: null, passthroughs_after: [] },
-                ],
-            };
-            const widget = await drillToDetail({
-                cdc_clock_mix_trace: () => NESTED_MIX,
-            });
+            // The MIX_RESPONSE tree has two branches each ending at a
+            // port terminal. Both should render INSIDE the wrapper
+            // without requiring the user to click anything beyond the
+            // initial trace-mix button.
+            const widget = await drillToDetail();
             const btn = findCkTraceMixBtn(widget);
             btn.click(); await settle();
             const wrapper = widget._cdcBody.querySelector(
                 '[data-cdc-fan-in-key]');
             assert.ok(wrapper, 'mix wrapper inserted');
-            // The mixer card is INSIDE the wrapper, NOT the
-            // originating CK card — so locate it inside the wrapper.
-            const inner = wrapper.querySelectorAll(
-                'a[data-cdc-trace-mix="1"]');
-            assert.equal(inner.length, 1,
-                'exactly one per-contributor link — the multi-clock '
-                + '{clk_a, clk_b} subset gets one; the single-clock '
-                + '{clk_c} subset does not');
+            // Two port terminal cards inside (one per branch).
+            const portCards = wrapper.querySelectorAll(
+                '[data-cdc-mix-stage-kind="port"]');
+            assert.equal(portCards.length, 2,
+                'two port terminals auto-rendered as branches');
+            const txt = wrapper.textContent;
+            assert.ok(/clk_a/.test(txt) && /clk_b/.test(txt),
+                'both branch clocks visible without clicking');
+        });
+
+        it('data-path mix banner labels mixer started from a data '
+                + 'pin', async () => {
+            // Mock walks the mixer with on_clock_path=false (the
+            // default for D / IN / +IN clicks). Banner should read
+            // "DATA-PATH MIX" in red.
+            const DATA_MIX = JSON.parse(JSON.stringify(MIX_RESPONSE));
+            DATA_MIX.tree.on_clock_path = false;
+            for (const br of DATA_MIX.tree.branches) {
+                br.subtree.on_clock_path = false;
+            }
+            const widget = await drillToDetail({
+                cdc_clock_mix_trace: () => DATA_MIX,
+            });
+            const btn = findCkTraceMixBtn(widget);
+            btn.click(); await settle();
+            const wrapper = widget._cdcBody.querySelector(
+                '[data-cdc-fan-in-key]');
+            assert.ok(wrapper);
+            assert.ok(/DATA-PATH MIX/.test(wrapper.textContent),
+                'data-path mixer banner rendered');
+        });
+
+        it('terminal port with unaccounted clocks renders the '
+                + 'warning band', async () => {
+            // Construct a Port terminal whose actual_clocks is a
+            // strict subset of the carried clocks — the unaccounted
+            // ones reach the originating pin via some other path.
+            const RESP = JSON.parse(JSON.stringify(MIX_RESPONSE));
+            // Replace the tree with a single Port that only sources
+            // clk_a even though we asked for {clk_a, clk_b}.
+            RESP.tree = {
+                kind: 'port',
+                instance: null, cell: null,
+                out_pin: 'clk_a',
+                out_pin_odb_type: 'bterm', out_pin_odb_id: 50,
+                via_pin: null,
+                clocks: ['clk_a', 'clk_b'],
+                actual_clocks: ['clk_a'],
+                unaccounted_clocks: ['clk_b'],
+                on_clock_path: true,
+                degenerate: false,
+                branches: [],
+                child: null,
+                out_net: null,
+                passthroughs_after: [],
+            };
+            const widget = await drillToDetail({
+                cdc_clock_mix_trace: () => RESP,
+            });
+            const btn = findCkTraceMixBtn(widget);
+            btn.click(); await settle();
+            const wrapper = widget._cdcBody.querySelector(
+                '[data-cdc-fan-in-key]');
+            assert.ok(wrapper);
+            assert.ok(/unaccounted for here/.test(wrapper.textContent),
+                'unaccounted-clocks warning band shown');
+            assert.ok(/clk_b/.test(wrapper.textContent),
+                'unaccounted clock listed');
         });
 
         it('re-clicking the button collapses the expansion',

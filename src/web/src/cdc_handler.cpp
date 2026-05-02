@@ -2864,38 +2864,64 @@ static std::unique_ptr<ClockMixNode> walkClockMixNode(
   if (lc->hasSequentials() && !lc->isClockGate()) {
     const sta::Pin* ck_pin = findRegisterClockInput(drv_inst, network);
     if (!ck_pin) {
+      // Truly no CK pin — this isn't a normal flop; bail.
       node->kind = ClockMixNode::Kind::Stuck;
       node->inst = drv_inst;
       node->out_pin = driver;
       return node;
     }
+    // ALWAYS hop through CK. Earlier versions only hopped when CK ⊇
+    // cur_clocks — that turned generated-clock flops (Q is the
+    // generated clock; CK is the master, with disjoint clock sets)
+    // into Stuck terminals, which made the trace useless past the
+    // first flop in any clock-divider topology (user feedback
+    // 2026-05-02 round 5: "I don't get anything past the flipflops
+    // — I would think we would want to trace the clock pin to get
+    // the clock nets that fan into the FF").
+    //
+    // Semantic shift on the hop: we were tracing cur_clocks on the
+    // Q net; the upstream walk traces what feeds CK. The new
+    // cur_clocks is the intersection if non-empty (common case:
+    // multi-clock CK, all clocks shared with Q), else CK's own
+    // clock set (generated-clock case: Q.clocks ∩ CK.clocks = ∅,
+    // so trace CK's master clocks instead). Either way the CK pin
+    // path + its clocks land on the RegisterTransit card so the
+    // user sees the boundary explicitly; unaccounted_clocks lists
+    // any tracked clocks NOT on CK so the diagnostic surfaces
+    // when a generated-clock boundary is crossed.
     auto ck_clocks = pinClockSet(ck_pin);
-    bool ck_covers = std::includes(ck_clocks.begin(), ck_clocks.end(),
-                                    cur_clocks.begin(), cur_clocks.end());
-    if (ck_covers) {
-      node->kind = ClockMixNode::Kind::RegisterTransit;
-      node->inst = drv_inst;
-      node->via_pin = ck_pin;
-      node->out_pin = driver;
-      seen.insert(drv_inst);
-      // From here upstream we're tracing the CLOCK network — flip
-      // on_clock_path so any mixer found from here on labels as a
-      // clock-path mix in the UI.
-      node->child = walkClockMixNode(ck_pin, std::move(cur_clocks),
-                                     sta_eng, network, mode, depth + 1,
-                                     max_depth, /*on_clock_path=*/true,
-                                     seen);
-      return node;
+    auto intersect = setIntersection(ck_clocks, cur_clocks);
+    std::set<std::string> next_clocks;
+    if (!intersect.empty()) {
+      next_clocks = intersect;
+    } else {
+      next_clocks = ck_clocks;
     }
-    // CK doesn't carry every clock in cur_clocks — surface what's
-    // there as actual_clocks, what's missing as unaccounted_clocks.
-    node->kind = ClockMixNode::Kind::Stuck;
+
+    node->kind = ClockMixNode::Kind::RegisterTransit;
     node->inst = drv_inst;
     node->via_pin = ck_pin;
     node->out_pin = driver;
-    auto intersect = setIntersection(ck_clocks, cur_clocks);
-    node->actual_clocks.assign(intersect.begin(), intersect.end());
-    node->unaccounted_clocks = setMinus(cur_clocks, intersect);
+    // Stamp the CK side so the transit card can show what's
+    // actually on the clock pin — useful when CK's clocks differ
+    // from Q's (generated-clock crossing).
+    node->actual_clocks.assign(ck_clocks.begin(), ck_clocks.end());
+    node->unaccounted_clocks = setMinus(cur_clocks, ck_clocks);
+
+    if (next_clocks.empty()) {
+      // CK has NO clocks at all (no create_clock reaches it). Stop
+      // here — there's nothing to trace upstream of CK.
+      return node;
+    }
+
+    seen.insert(drv_inst);
+    // From here upstream we're tracing the CLOCK network — flip
+    // on_clock_path so any mixer found from here on labels as a
+    // clock-path mix in the UI.
+    node->child = walkClockMixNode(ck_pin, std::move(next_clocks),
+                                   sta_eng, network, mode, depth + 1,
+                                   max_depth, /*on_clock_path=*/true,
+                                   seen);
     return node;
   }
 
