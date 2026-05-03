@@ -9174,12 +9174,17 @@ export class SdcWidget {
                 + 'min-width:max-content;';
             for (const branch of branches) {
                 const col = document.createElement('div');
-                // Fixed 320px column — every sibling column is the
-                // same width so the row's branches line up cleanly
-                // regardless of card content.
+                // 320px minimum — leaf branches with single cards
+                // line up cleanly at that width. Allowed to grow
+                // (`flex:0 0 auto`) so a branch carrying its own
+                // nested mixer can host its sub-row without the
+                // sub-row's content overflowing the column and
+                // visually colliding with sibling branches. Two
+                // siblings at the same level may end up different
+                // widths if one is deeper, but nothing overlaps.
                 col.style.cssText
                     = 'display:flex;flex-direction:column;gap:6px;'
-                    + 'flex:0 0 320px;width:320px;'
+                    + 'flex:0 0 auto;min-width:320px;'
                     + 'align-items:stretch;';
                 if (branch.subtree) {
                     col.appendChild(this._renderCdcClockMixNode(
