@@ -10822,6 +10822,87 @@ export class SdcWidget {
         }
     }
 
+    // Per-clock endpoint chip — populated lazily by the (list) link.
+    // `this._clockEndpointCounts` is null while uncomputed, an object
+    // (`{name: count, ...}`) once the user has triggered the count walk.
+    // `this._loadingClockEndpointCounts` guards against a double-fire
+    // when the user clicks (list) on multiple cards in quick succession.
+    _renderEndpointChipContent(chip, clockName) {
+        chip.innerHTML = '';
+        const counts = this._clockEndpointCounts;
+        if (this._loadingClockEndpointCounts) {
+            chip.textContent = 'endpoints: …';
+            chip.title = 'counting endpoints — building timing graph';
+            return;
+        }
+        if (counts && Object.prototype.hasOwnProperty.call(counts, clockName)) {
+            chip.textContent = `endpoints: ${counts[clockName]}`;
+            chip.title = 'number of timing-endpoint pins reached by this ' +
+                'clock domain (per-pin count, no instance dedup)';
+            return;
+        }
+        if (counts) {
+            // Counts have been computed but this clock had zero endpoints.
+            chip.textContent = 'endpoints: 0';
+            chip.title = 'no timing-endpoint pin reached by this clock domain';
+            return;
+        }
+        // Uncomputed — show a (list) link the user can press to trigger
+        // the walk. Building the timing graph + endpoint cache is the
+        // slowest SDC call on big designs, so it stays opt-in.
+        const lbl = document.createTextNode('endpoints: ? ');
+        chip.appendChild(lbl);
+        const link = document.createElement('a');
+        link.href = '#';
+        link.textContent = '(list)';
+        link.style.cssText =
+            'color:var(--accent-tab);text-decoration:underline;cursor:pointer;';
+        link.title = 'count endpoints reached by every clock — first call ' +
+            'builds the timing graph and may take a moment on large designs';
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            this._loadClockEndpointCounts();
+        });
+        chip.appendChild(link);
+    }
+
+    _refreshAllEndpointChips() {
+        if (!this._cardScrollArea) return;
+        const chips = this._cardScrollArea.querySelectorAll(
+            '.sdc-clock-card [data-endpoints-chip]');
+        for (const chip of chips) {
+            const card = chip.closest('.sdc-clock-card');
+            const name = card && card.dataset && card.dataset.clockName;
+            if (name) {
+                this._renderEndpointChipContent(chip, name);
+            }
+        }
+    }
+
+    async _loadClockEndpointCounts() {
+        if (this._loadingClockEndpointCounts) return;
+        this._loadingClockEndpointCounts = true;
+        this._refreshAllEndpointChips();
+        try {
+            await this._app.websocketManager.readyPromise;
+            // Same compute cost ceiling as sdc_endpoint_list — first call
+            // builds the timing graph on a fresh design. Allow up to
+            // 5 minutes for huge cases; subsequent calls hit the cache.
+            const data = await this._requestWithTimeout(
+                { type: 'sdc_endpoint_counts' },
+                /*timeoutMs=*/300000);
+            this._clockEndpointCounts = data.clocks_total || {};
+        } catch (e) {
+            console.error('[SDC] endpoint count error:', e);
+            // Reset cache so the (list) link comes back, letting the
+            // user retry instead of being stuck on a stale "…".
+            this._clockEndpointCounts = null;
+        } finally {
+            this._loadingClockEndpointCounts = false;
+            this._refreshAllEndpointChips();
+        }
+    }
+
     _renderClockCards() {
         this._cardScrollArea.innerHTML = '';
         // Refresh per-bucket counts on the master/generated/all toolbar
@@ -11035,6 +11116,23 @@ export class SdcWidget {
                     'generated" in the toolbar to refresh from the master clock';
                 hdr.appendChild(stBadge);
             }
+
+            // Endpoints chip — number of timing-endpoint pins this clock
+            // reaches. Populated lazily: if the cache is already filled
+            // (the user previously hit the "list" link, or returns to
+            // this tab after computing), the count renders inline. Until
+            // then the chip shows `endpoints: ?` with a small (list)
+            // link that triggers the count walk on demand. Keeping it
+            // off the auto-load path matters on million-instance designs
+            // where the underlying graph build is the slowest SDC call.
+            const epChip = document.createElement('span');
+            epChip.dataset.endpointsChip = '';
+            epChip.style.cssText =
+                'font-size:11px;padding:1px 6px;border-radius:3px;' +
+                'font-weight:600;background:var(--bg-input);' +
+                'color:var(--fg-muted);';
+            this._renderEndpointChipContent(epChip, clk.name);
+            hdr.appendChild(epChip);
             card.appendChild(hdr);
 
             // Body: stats left + waveform right

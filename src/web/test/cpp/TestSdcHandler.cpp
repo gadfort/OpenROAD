@@ -200,6 +200,8 @@ class NullStaTest : public tst::Nangate45Fixture,
         return handler_->handleSdcEndpoint(req);
       case WebSocketRequest::kSdcEndpointList:
         return handler_->handleSdcEndpointList(req);
+      case WebSocketRequest::kSdcEndpointCounts:
+        return handler_->handleSdcEndpointCounts(req);
       case WebSocketRequest::kSdcListModes:
         return handler_->handleSdcListModes(req);
       case WebSocketRequest::kSdcSetMode:
@@ -1269,6 +1271,19 @@ TEST_F(SdcHandlerWithStaTest, EndpointReturnsFalseForMissingPin)
   EXPECT_FALSE(val.as_object().at("found").as_bool());
 }
 
+TEST_F(SdcHandlerWithStaTest, EndpointCountsReportsPerClockTotals)
+{
+  WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointCounts);
+  auto val = parsePayload(handler_->handleSdcEndpointCounts(req));
+  const auto& obj = val.as_object();
+  ASSERT_TRUE(obj.contains("clocks_total"));
+  const auto& counts = obj.at("clocks_total").as_object();
+  // The fixture creates a clock named "clk" driving DFF_X1 endpoints,
+  // so that clock must surface at least one endpoint pin in the count.
+  ASSERT_TRUE(counts.contains("clk"));
+  EXPECT_GE(asNumber(counts.at("clk")), 1.0);
+}
+
 TEST_F(SdcHandlerWithStaTest, EndpointListEnumeratesEndpoints)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
@@ -1472,7 +1487,6 @@ TEST_F(SdcHandlerWithStaTest, LimitsReportsDesignWideLimits)
 {
   auto val = parsePayload(
       handler_->handleSdcLimits(makeReq(1, WebSocketRequest::kSdcLimits)));
-  const auto& obj = val.as_object();
   // Walk every numeric in the response — at least one of the values
   // we configured (cap=0.05, slew=0.4, fanout=32) must be findable.
   // The exact section name varies by emission style; this lets the

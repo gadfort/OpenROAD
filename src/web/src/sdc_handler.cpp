@@ -2468,6 +2468,70 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
   return jsonResponse(req.id, b.str());
 }
 
+// Per-clock endpoint pin counts only — the Clocks-tab card chip fetches
+// this when the user asks for it (gated behind a "list" link). Cheaper
+// than handleSdcEndpointList: skips per-pin pathName allocation, kind
+// classification, and the endpoints array itself. Counts every pin a
+// clock domain reaches at a timing endpoint vertex (no instance dedup —
+// the Clocks-tab chip surfaces raw endpoint count, not unique
+// instances).
+//
+// Top-level ports are excluded for the same reason as handleSdcEndpointList:
+// they live on the Port Delays tab.
+WebSocketResponse SdcHandler::handleSdcEndpointCounts(
+    const WebSocketRequest& req)
+{
+  static constexpr const char* kEmpty
+      = R"({"time_unit":"ns","clocks_total":{}})";
+  auto ctx = makeSdcContext(gen_);
+  if (!ctx || !ctx->network || !ctx->network->isLinked()) {
+    return jsonResponse(req.id, kEmpty);
+  }
+  sta::dbSta* sta = ctx->sta;
+  sta::Network* network = ctx->network;
+  sta::Mode* mode = sta->cmdMode();
+  sta->ensureGraph();
+  sta::Search* search = sta->search();
+  if (!search) {
+    return jsonResponse(req.id, kEmpty);
+  }
+
+  std::map<std::string, int> clocks_total;
+  sta::VertexSet& endpoints = search->endpoints();
+  for (sta::Vertex* v : endpoints) {
+    if (!v) {
+      continue;
+    }
+    const sta::Pin* pin = v->pin();
+    if (!pin) {
+      continue;
+    }
+    if (network->isTopLevelPort(pin)) {
+      continue;
+    }
+    if (!mode) {
+      continue;
+    }
+    sta::ClockSet domains = sta->clockDomains(pin, mode);
+    for (const sta::Clock* c : domains) {
+      if (c) {
+        clocks_total[c->name()] += 1;
+      }
+    }
+  }
+
+  JsonBuilder b;
+  b.beginObject();
+  b.field("time_unit", ctx->time_suffix);
+  b.beginObject("clocks_total");
+  for (const auto& [name, count] : clocks_total) {
+    b.field(name, count);
+  }
+  b.endObject();
+  b.endObject();
+  return jsonResponse(req.id, b.str());
+}
+
 // Paginated summary of timing endpoints (Search::endpoints()) with optional
 // glob pattern + kind filter ("flipflop"|"latch"|"macro"|"stdcell"|"all").
 // The first call is O(V) (graph build) — gated behind the explicit
@@ -3105,6 +3169,11 @@ void SdcHandler::registerRequests(RequestDispatcher& d)
         WebSocketRequest::kSdcEndpointList,
         [this](const WebSocketRequest& req, SessionState&) {
           return handleSdcEndpointList(req);
+        });
+  d.add("sdc_endpoint_counts",
+        WebSocketRequest::kSdcEndpointCounts,
+        [this](const WebSocketRequest& req, SessionState&) {
+          return handleSdcEndpointCounts(req);
         });
   d.add("sdc_list_modes",
         WebSocketRequest::kSdcListModes,

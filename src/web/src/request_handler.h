@@ -105,6 +105,7 @@ struct WebSocketRequest
     kSdcClockGroups,
     kSdcEndpoint,
     kSdcEndpointList,
+    kSdcEndpointCounts,
     kSdcListModes,
     kSdcSetMode,
     kSdcResolveGenClocks,
@@ -390,6 +391,7 @@ class SdcHandler
   WebSocketResponse handleSdcClockGroups(const WebSocketRequest& req);
   WebSocketResponse handleSdcEndpoint(const WebSocketRequest& req);
   WebSocketResponse handleSdcEndpointList(const WebSocketRequest& req);
+  WebSocketResponse handleSdcEndpointCounts(const WebSocketRequest& req);
   WebSocketResponse handleSdcListModes(const WebSocketRequest& req);
   WebSocketResponse handleSdcSetMode(const WebSocketRequest& req);
   WebSocketResponse handleSdcResolveGenClocks(const WebSocketRequest& req);
