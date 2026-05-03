@@ -280,6 +280,19 @@ cc_test(
 )
 
 cc_test(
+    name = "json_builder_test",
+    srcs = ["cpp/TestJsonBuilder.cpp"],
+    copts = ["-Isrc/web/src"],
+    features = ["-layering_check"],
+    deps = [
+        "//src/web",
+        "@boost.json",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "debug_graphics_test",
     srcs = ["cpp/TestDebugGraphics.cpp"],
     copts = ["-Isrc/web/src"],
