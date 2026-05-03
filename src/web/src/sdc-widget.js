@@ -9168,26 +9168,27 @@ export class SdcWidget {
             const branches = (node.branches || []).filter(b => b);
             if (!branches.length) return null;
             const row = document.createElement('div');
-            // `min-width:max-content` forces the row to demand its
-            // natural width: without it the row inherits the parent
-            // column's stretched width and `justify-content:center`
-            // pushes overflow equally to both sides, which renders
-            // as adjacent branches visually overlapping each other
-            // (seen on a 5-clock trace where the outermost mixer's
-            // branches were each themselves multi-branch). The
-            // outermost strip has `overflow-x:auto`, so when the
-            // demanded width exceeds the viewport the scroll bar
-            // takes over instead of stomping cards onto each other.
+            // Flex row with fixed 320px columns. Every branch column
+            // is the same width regardless of its card content, so
+            // siblings line up cleanly and a long instance path
+            // can't push one column wider than the others. The row
+            // demands its natural width (sum of fixed columns plus
+            // gaps) via `min-width:max-content`; the strip above
+            // has `overflow-x:auto` so wide trees scroll.
             row.style.cssText
                 = 'display:flex;flex-direction:row;gap:8px;'
                 + 'align-items:flex-end;justify-content:center;'
                 + 'min-width:max-content;';
             for (const branch of branches) {
                 const col = document.createElement('div');
+                // Fixed 320px column — locks every sibling column
+                // to the same width. min-width:0 lets cards inside
+                // ellipsize their long paths rather than push the
+                // column wider.
                 col.style.cssText
                     = 'display:flex;flex-direction:column;gap:6px;'
-                    + 'flex:0 0 auto;align-items:stretch;'
-                    + 'min-width:240px;max-width:360px;';
+                    + 'flex:0 0 320px;width:320px;'
+                    + 'align-items:stretch;min-width:0;';
                 if (branch.subtree) {
                     col.appendChild(this._renderCdcClockMixNode(
                         branch.subtree));
@@ -9253,15 +9254,17 @@ export class SdcWidget {
             'border:1px solid var(--border);border-radius:4px;' +
             'background:var(--bg-input);font-family:monospace;' +
             'font-size:12px;min-width:0;overflow:hidden;'
-            // No fixed max-width: trunk cards (a single chain leading
-            // up to a multi-branch mixer above) stretch via the
-            // parent's column-flex `align-items:stretch` so the whole
-            // traceback ends up the same width — matching the widest
-            // mixer row's natural span. In a branch column the column
-            // wrapper is already capped at 360px, so a long instance
-            // path there still triggers the TRUNCATE_PATH_CSS leading-
-            // ellipsis. Only trunk cards grow.
-            + 'flex:0 0 auto;';
+            // Fixed 320px width for every card (mix, via, port,
+            // stuck, depth-limit, …). Matches the branch-column
+            // width so trunk cards line up vertically with the
+            // siblings above and don't visually shout differently
+            // from the rest of the trace. With a fixed width:
+            //   - expanding a via-card's inner body can't grow the
+            //     card horizontally — the layout is stable.
+            //   - long instance paths in mix-card headers trigger
+            //     TRUNCATE_PATH_CSS leading-ellipsis, since the
+            //     card's width is content-independent.
+            + 'flex:0 0 320px;width:320px;';
 
         // Transit cards are collapsed-by-default. Render only a
         // one-line summary (instance name) until clicked.
@@ -9343,7 +9346,12 @@ export class SdcWidget {
                 = 'padding:3px 8px;display:flex;'
                 + 'justify-content:space-between;gap:8px;'
                 + 'align-items:baseline;'
-                + 'border-bottom:1px solid var(--border);';
+                + 'border-bottom:1px solid var(--border);'
+                // min-width:0 lets the instance-name span (which has
+                // TRUNCATE_PATH_CSS) actually shrink within the card's
+                // fixed width, so long hierarchical paths leading-
+                // ellipsize instead of pushing the card wider.
+                + 'min-width:0;';
             const instEl = document.createElement('span');
             instEl.style.cssText
                 = 'color:var(--fg-primary);min-width:0;'
@@ -9540,17 +9548,29 @@ export class SdcWidget {
         summary.appendChild(head);
 
         const inner = document.createElement('div');
+        // min-width:0 + overflow:hidden lets long expanded-body
+        // contents (full hierarchical instance paths, multi-clock pin
+        // rows) ellipsize within the card's existing width instead
+        // of pushing the card wider when the user opens the body.
+        // Without this, an expand toggle visibly resized the card
+        // and shoved neighboring branches around.
         inner.style.cssText
             = 'border-top:1px solid var(--border);'
             + 'padding:4px 8px;display:none;'
-            + 'flex-direction:column;gap:2px;';
+            + 'flex-direction:column;gap:2px;'
+            + 'min-width:0;overflow:hidden;';
 
         const bodyHeader = document.createElement('div');
         bodyHeader.style.cssText
             = 'display:flex;justify-content:space-between;'
             + 'gap:8px;align-items:baseline;'
             + 'font-size:11px;color:var(--fg-muted);'
-            + 'padding-bottom:2px;';
+            + 'padding-bottom:2px;'
+            // min-width:0 lets bodyHeadInst (which carries TRUNCATE_
+            // PATH_CSS) actually shrink and leading-ellipsize within
+            // bodyHeader's flex layout — without this the flex
+            // algorithm hands bodyHeadInst its full content width.
+            + 'min-width:0;';
         const bodyHeadInst = document.createElement('span');
         bodyHeadInst.textContent = node.instance || '';
         bodyHeadInst.title = node.instance || '';
