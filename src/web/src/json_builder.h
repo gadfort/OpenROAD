@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace web {
 
@@ -223,15 +224,24 @@ class JsonBuilder
   std::string&& take() { return std::move(buf_); }
 
  private:
-  static constexpr int kMaxDepth = 16;
-  bool need_comma_[kMaxDepth];
+  // need_comma_ is sized dynamically so a deeper-than-expected
+  // emission can't silently overflow a fixed buffer. Recursive
+  // tree emitters (clock-mix tracer, hierarchy walks) routinely
+  // hit 60+ nested levels on real designs, and a fixed cap that's
+  // smaller than the actual depth corrupts surrounding stack via
+  // out-of-bounds writes — surfacing later as malformed JSON
+  // (leading commas in arrays, missing keys) when the corrupted
+  // need_comma_ state is read back.
+  std::vector<bool> need_comma_;
   int depth_ = 0;
 
   std::string buf_;
 
   void pushContext()
   {
-    assert(depth_ < kMaxDepth);
+    if (static_cast<int>(need_comma_.size()) <= depth_) {
+      need_comma_.resize(depth_ + 1, false);
+    }
     need_comma_[depth_] = false;
     depth_++;
   }

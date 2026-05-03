@@ -9168,10 +9168,28 @@ export class SdcWidget {
                 col.style.cssText
                     = 'display:flex;flex-direction:column;gap:6px;'
                     + 'flex:0 0 auto;align-items:stretch;'
-                    + 'min-width:240px;';
+                    + 'min-width:240px;max-width:360px;';
                 if (branch.subtree) {
                     col.appendChild(this._renderCdcClockMixNode(
                         branch.subtree));
+                }
+                // "feeds into <pin>" label between this column and the
+                // mixer card below: surfaces which input pin of the
+                // downstream gate this branch wires to. The MIX card's
+                // body lists the same info per-input, but a connector
+                // label here matches the visual flow (column → arrow
+                // → that input pin on the mixer).
+                if (branch.pin) {
+                    const feeds = document.createElement('div');
+                    feeds.style.cssText
+                        = 'text-align:center;font-size:11px;'
+                        + 'color:var(--fg-muted);padding:1px 4px;'
+                        + 'min-width:0;' + TRUNCATE_PATH_CSS;
+                    const leaf = this._pinLeafName(
+                        branch.pin, node.instance || null);
+                    feeds.textContent = `↓ feeds into ${leaf}`;
+                    feeds.title = `feeds into ${branch.pin}`;
+                    col.appendChild(feeds);
                 }
                 row.appendChild(col);
             }
@@ -9216,7 +9234,13 @@ export class SdcWidget {
             'border:1px solid var(--border);border-radius:4px;' +
             'background:var(--bg-input);font-family:monospace;' +
             'font-size:12px;min-width:0;overflow:hidden;'
-            + 'flex:0 0 auto;';
+            // Cap card width so deeply-nested instance paths inside
+            // transit/expanded bodies trigger TRUNCATE_PATH_CSS's
+            // leading-ellipsis ('…/leaf/of/path') instead of growing
+            // the card past its column. min-width keeps single-line
+            // banners readable; max-width forces the path text into
+            // its parent's flex constraints so ellipsis kicks in.
+            + 'flex:0 0 auto;max-width:360px;';
 
         // Transit cards are collapsed-by-default. Render only a
         // one-line summary (instance name) until clicked.
@@ -9353,14 +9377,28 @@ export class SdcWidget {
         };
 
         if (node.kind === 'mixer' || node.kind === 'net_mixer') {
-            // Contributors render as the branch columns ABOVE this
-            // card; the card itself just shows OUT + the active
-            // clock set so the user sees the merge point and what's
-            // converging.
+            // OUT + the merged clock set is the headline (this is what
+            // the gate emits downstream).
             if (node.out_pin) {
                 pinRow('OUT', node.out_pin, node.clocks || []);
             } else if ((node.clocks || []).length) {
                 pinRow('CLK', '—', node.clocks);
+            }
+            // List every contributing input pin with the clocks that
+            // come in on it. The branch columns ABOVE the card already
+            // recurse upstream from each input, but they only show the
+            // upstream chain — the user couldn't see at a glance which
+            // input pin of THIS gate each branch lands on without
+            // hovering / inspecting. Surfacing the per-input rows here
+            // makes the merge picture self-contained on one card.
+            // Net-mixer "input pins" are the contributing driver pins
+            // on the converged net; rendered the same way for symmetry
+            // (the branches list the drivers; here we list the loads
+            // they share).
+            const branches = (node.branches || []).filter(b => b);
+            for (const br of branches) {
+                if (!br.pin) continue;
+                pinRow('IN', br.pin, br.clocks || []);
             }
         } else if (node.kind === 'port') {
             pinRow('PORT', node.out_pin || '—',

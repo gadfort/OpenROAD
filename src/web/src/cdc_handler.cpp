@@ -3081,10 +3081,13 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
   const bool start_on_clock_path
       = ctx->network->isRegClkPin(start_pin);
 
-  // Cap on total nodes emitted across all branches — without this a
-  // pathological design could blow the JSON. 256 is generous for
-  // human-readable traces (typical clock trees have <20 nodes).
-  constexpr int kMaxDepth = 12;
+  // Per-branch depth cap. Hierarchical real designs can run 15+ deep
+  // through clock trees + buffering before reaching a primary port,
+  // so 12 was cutting users off mid-trace. 20 covers typical real
+  // designs while still keeping the JSON bounded — a 20-deep tree
+  // with branching is already big enough that the depth-limit
+  // terminal card warning serves as a hint, not a wall.
+  constexpr int kMaxDepth = 20;
 
   std::unordered_set<const sta::Instance*> seen;
   if (sta::Instance* start_inst = ctx->network->instance(start_pin)) {
