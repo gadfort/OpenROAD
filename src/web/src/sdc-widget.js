@@ -9422,11 +9422,11 @@ export class SdcWidget {
                        node.actual_clocks || node.clocks || []);
             }
         } else if (node.kind === 'depth_limit') {
-            if (node.via_pin) {
-                pinRow('FROM', node.via_pin, node.clocks || []);
-            } else if ((node.clocks || []).length) {
-                pinRow('CLK', '—', node.clocks);
-            }
+            // No body row: the followed-pin name was redundant
+            // jargon ("· From <pin>") that didn't help users decide
+            // anything. The continue-trace link below carries the
+            // pin context implicitly (clicking starts the next
+            // walk from there).
             if (node.via_pin && node.via_pin_odb_type
                 && node.via_pin_odb_id != null) {
                 const cont = document.createElement('div');
@@ -9445,14 +9445,21 @@ export class SdcWidget {
                     = 'Walk another batch of stages upstream from '
                     + 'where the depth cap was hit.';
                 const stageClocks = (node.clocks || []).slice();
-                link.addEventListener('click', () =>
+                link.addEventListener('click', () => {
                     this._toggleCdcClockMix(
                         { odb_type: node.via_pin_odb_type,
                           odb_id: node.via_pin_odb_id },
                         stageClocks,
                         link,
                         'data',
-                        node.via_pin));
+                        node.via_pin);
+                    // Once the upstream trace has been launched,
+                    // this depth-limit terminal is just visual
+                    // noise — the new wrapper carries everything
+                    // the user needs. Hide the card so the column
+                    // ends at its real upstream chain.
+                    card.style.display = 'none';
+                });
                 cont.appendChild(link);
                 body.appendChild(cont);
             }
@@ -9882,30 +9889,37 @@ export class SdcWidget {
         card.appendChild(banner);
 
         // ── Instance + cell row ────────────────────────────────────
-        const instRow = document.createElement('div');
-        instRow.style.cssText =
-            'padding:5px 8px;display:flex;align-items:baseline;' +
-            'gap:8px;border-bottom:1px solid var(--border-subtle);';
-        if (tint) instRow.style.background = tint;
-        const instEl = document.createElement('span');
-        instEl.style.cssText =
-            'font-weight:600;flex:1;min-width:0;' + TRUNCATE_PATH_CSS;
-        instEl.textContent = s.instance;
-        instEl.title = s.instance;
-        // Linkify the instance row — for register/comb stages the stage's
-        // flat odb_type/odb_id refers to the instance; for port stages
-        // the same fields are absent and the port pin's odb refs sit
-        // under q_pin_ / out_pin_ instead, which the pin row picks up.
-        this._linkifyPin(instEl, s);
-        instRow.appendChild(instEl);
-        if (s.cell) {
-            const cellEl = document.createElement('span');
-            cellEl.textContent = s.cell;
-            cellEl.title = s.cell;
-            cellEl.style.cssText = 'color:var(--fg-muted);flex-shrink:0;';
-            instRow.appendChild(cellEl);
+        // Skipped for port stages: a top-level port's "instance" name
+        // and its OUT pin name are the same string, so this row
+        // would duplicate the OUT row below. Register / comb stages
+        // have an instance distinct from their pin leaves so the row
+        // adds real info there.
+        if (s.kind !== 'port') {
+            const instRow = document.createElement('div');
+            instRow.style.cssText =
+                'padding:5px 8px;display:flex;align-items:baseline;' +
+                'gap:8px;border-bottom:1px solid var(--border-subtle);';
+            if (tint) instRow.style.background = tint;
+            const instEl = document.createElement('span');
+            instEl.style.cssText =
+                'font-weight:600;flex:1;min-width:0;' + TRUNCATE_PATH_CSS;
+            instEl.textContent = s.instance;
+            instEl.title = s.instance;
+            // Linkify the instance row — for register/comb stages
+            // the stage's flat odb_type/odb_id refers to the
+            // instance.
+            this._linkifyPin(instEl, s);
+            instRow.appendChild(instEl);
+            if (s.cell) {
+                const cellEl = document.createElement('span');
+                cellEl.textContent = s.cell;
+                cellEl.title = s.cell;
+                cellEl.style.cssText
+                    = 'color:var(--fg-muted);flex-shrink:0;';
+                instRow.appendChild(cellEl);
+            }
+            card.appendChild(instRow);
         }
-        card.appendChild(instRow);
 
         // ── Pin rows — shape depends on stage kind ─────────────────
         const pinTable = document.createElement('div');
