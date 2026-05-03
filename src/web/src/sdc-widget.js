@@ -9138,9 +9138,17 @@ export class SdcWidget {
             return card;
         }
         const container = document.createElement('div');
+        // `min-width:max-content` mirrors the demand from the inner
+        // row of branches all the way up the tree so the wrapper
+        // ultimately reports the full natural width — otherwise an
+        // intermediate column-flex container would clamp at the
+        // parent's width and the inner row's `min-width:max-content`
+        // would punch outside its parent's bounds, reproducing the
+        // overlap.
         container.style.cssText
             = 'display:flex;flex-direction:column;'
-            + 'align-items:stretch;gap:6px;';
+            + 'align-items:stretch;gap:6px;'
+            + 'min-width:max-content;';
         container.appendChild(above);
         container.appendChild(card);
         return container;
@@ -9160,9 +9168,20 @@ export class SdcWidget {
             const branches = (node.branches || []).filter(b => b);
             if (!branches.length) return null;
             const row = document.createElement('div');
+            // `min-width:max-content` forces the row to demand its
+            // natural width: without it the row inherits the parent
+            // column's stretched width and `justify-content:center`
+            // pushes overflow equally to both sides, which renders
+            // as adjacent branches visually overlapping each other
+            // (seen on a 5-clock trace where the outermost mixer's
+            // branches were each themselves multi-branch). The
+            // outermost strip has `overflow-x:auto`, so when the
+            // demanded width exceeds the viewport the scroll bar
+            // takes over instead of stomping cards onto each other.
             row.style.cssText
                 = 'display:flex;flex-direction:row;gap:8px;'
-                + 'align-items:flex-end;justify-content:center;';
+                + 'align-items:flex-end;justify-content:center;'
+                + 'min-width:max-content;';
             for (const branch of branches) {
                 const col = document.createElement('div');
                 col.style.cssText
@@ -9234,13 +9253,15 @@ export class SdcWidget {
             'border:1px solid var(--border);border-radius:4px;' +
             'background:var(--bg-input);font-family:monospace;' +
             'font-size:12px;min-width:0;overflow:hidden;'
-            // Cap card width so deeply-nested instance paths inside
-            // transit/expanded bodies trigger TRUNCATE_PATH_CSS's
-            // leading-ellipsis ('…/leaf/of/path') instead of growing
-            // the card past its column. min-width keeps single-line
-            // banners readable; max-width forces the path text into
-            // its parent's flex constraints so ellipsis kicks in.
-            + 'flex:0 0 auto;max-width:360px;';
+            // No fixed max-width: trunk cards (a single chain leading
+            // up to a multi-branch mixer above) stretch via the
+            // parent's column-flex `align-items:stretch` so the whole
+            // traceback ends up the same width — matching the widest
+            // mixer row's natural span. In a branch column the column
+            // wrapper is already capped at 360px, so a long instance
+            // path there still triggers the TRUNCATE_PATH_CSS leading-
+            // ellipsis. Only trunk cards grow.
+            + 'flex:0 0 auto;';
 
         // Transit cards are collapsed-by-default. Render only a
         // one-line summary (instance name) until clicked.
