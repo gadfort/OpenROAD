@@ -3099,178 +3099,193 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
   // mixer / net_mixer carry `branches[]`, transits carry `child`,
   // terminals carry `actual_clocks` / `unaccounted_clocks` for
   // diagnostics.
+  //
+  // Walker is a plain struct rather than a self-capturing
+  // `std::function` lambda. The std::function form was hitting a
+  // recursive-dispatch crash under deep trees built from real
+  // hierarchical designs after the dbNetwork modnet fixes (gdb
+  // showed the invoker pointer being clobbered to 0x80 before a
+  // deep recursive call). A struct with member methods recurses
+  // directly through the symbol table, so there's no closure
+  // pointer to corrupt and no virtual dispatch in the path.
   JsonBuilder b;
-  auto emitOdbPinFields
-      = [&](const std::string& prefix, const sta::Pin* pin) {
-          const char* tp = nullptr;
-          int id = 0;
-          if (resolvePinOdb(pin, ctx->db_network, tp, id)) {
-            b.field(prefix + "_odb_type", std::string(tp));
-            b.field(prefix + "_odb_id", id);
-          }
-        };
-  auto emitOutNet = [&](const sta::Pin* out_pin) {
-    if (!out_pin) {
-      b.nullField("out_net");
-      return;
-    }
-    odb::dbNet* dnet = ctx->db_network->flatNet(out_pin);
-    if (!dnet) {
-      b.nullField("out_net");
-      return;
-    }
-    b.beginObject("out_net");
-    b.field("name", std::string(dnet->getName()));
-    b.field("odb_type", std::string("net"));
-    b.field("odb_id", static_cast<int>(dnet->getId()));
-    b.endObject();
-  };
-  auto emitPassthroughs
-      = [&](const std::vector<LaunchStage::PassThrough>& pts) {
-          b.beginArray("passthroughs_after");
-          for (const auto& pt : pts) {
-            b.beginObject();
-            if (pt.inst) {
-              b.field("instance",
-                      std::string(ctx->network->pathName(pt.inst)));
-              sta::LibertyCell* lc = ctx->network->libertyCell(pt.inst);
-              if (lc) {
-                b.field("cell", std::string(lc->name()));
-              } else {
-                b.nullField("cell");
-              }
-              emitInstanceOdbBare(b, pt.inst, ctx->db_network);
-            }
-            if (pt.in_pin) {
-              b.field("in_pin",
-                      std::string(ctx->network->pathName(pt.in_pin)));
-              emitOdbPinFields("in_pin", pt.in_pin);
-            }
-            if (pt.out_pin) {
-              b.field("out_pin",
-                      std::string(ctx->network->pathName(pt.out_pin)));
-              emitOdbPinFields("out_pin", pt.out_pin);
-            }
-            b.endObject();
-          }
-          b.endArray();
-        };
-  auto kindString = [](ClockMixNode::Kind k) -> std::string {
-    switch (k) {
-      case ClockMixNode::Kind::Mixer:
-        return "mixer";
-      case ClockMixNode::Kind::NetMixer:
-        return "net_mixer";
-      case ClockMixNode::Kind::RegisterTransit:
-        return "register_transit";
-      case ClockMixNode::Kind::CombTransit:
-        return "comb_transit";
-      case ClockMixNode::Kind::Port:
-        return "port";
-      case ClockMixNode::Kind::Stuck:
-        return "stuck";
-      case ClockMixNode::Kind::Feedback:
-        return "feedback";
-      case ClockMixNode::Kind::DepthLimit:
-        return "depth_limit";
-      case ClockMixNode::Kind::Unresolved:
-        return "unresolved";
-    }
-    return "unresolved";
-  };
+  struct ClockMixEmitter
+  {
+    JsonBuilder& b;
+    sta::Network* network;
+    sta::dbNetwork* db_network;
 
-  std::function<void(const ClockMixNode&, const char*)> emitNode
-      = [&](const ClockMixNode& n, const char* key) {
-          if (key) {
-            b.beginObject(key);
+    static const char* kindString(ClockMixNode::Kind k)
+    {
+      switch (k) {
+        case ClockMixNode::Kind::Mixer:
+          return "mixer";
+        case ClockMixNode::Kind::NetMixer:
+          return "net_mixer";
+        case ClockMixNode::Kind::RegisterTransit:
+          return "register_transit";
+        case ClockMixNode::Kind::CombTransit:
+          return "comb_transit";
+        case ClockMixNode::Kind::Port:
+          return "port";
+        case ClockMixNode::Kind::Stuck:
+          return "stuck";
+        case ClockMixNode::Kind::Feedback:
+          return "feedback";
+        case ClockMixNode::Kind::DepthLimit:
+          return "depth_limit";
+        case ClockMixNode::Kind::Unresolved:
+          return "unresolved";
+      }
+      return "unresolved";
+    }
+
+    void emitOdbPinFields(const std::string& prefix, const sta::Pin* pin)
+    {
+      const char* tp = nullptr;
+      int id = 0;
+      if (resolvePinOdb(pin, db_network, tp, id)) {
+        b.field(prefix + "_odb_type", std::string(tp));
+        b.field(prefix + "_odb_id", id);
+      }
+    }
+
+    void emitOutNet(const sta::Pin* out_pin)
+    {
+      if (!out_pin) {
+        b.nullField("out_net");
+        return;
+      }
+      odb::dbNet* dnet = db_network->flatNet(out_pin);
+      if (!dnet) {
+        b.nullField("out_net");
+        return;
+      }
+      b.beginObject("out_net");
+      b.field("name", std::string(dnet->getName()));
+      b.field("odb_type", std::string("net"));
+      b.field("odb_id", static_cast<int>(dnet->getId()));
+      b.endObject();
+    }
+
+    void emitPassthroughs(const std::vector<LaunchStage::PassThrough>& pts)
+    {
+      b.beginArray("passthroughs_after");
+      for (const auto& pt : pts) {
+        b.beginObject();
+        if (pt.inst) {
+          b.field("instance", std::string(network->pathName(pt.inst)));
+          sta::LibertyCell* lc = network->libertyCell(pt.inst);
+          if (lc) {
+            b.field("cell", std::string(lc->name()));
           } else {
-            b.beginObject();
-          }
-          b.field("kind", kindString(n.kind));
-          if (n.inst) {
-            b.field("instance",
-                    std::string(ctx->network->pathName(n.inst)));
-            sta::LibertyCell* lc = ctx->network->libertyCell(n.inst);
-            if (lc) {
-              b.field("cell", std::string(lc->name()));
-            } else {
-              b.nullField("cell");
-            }
-            emitInstanceOdbBare(b, n.inst, ctx->db_network);
-          } else {
-            b.nullField("instance");
             b.nullField("cell");
           }
-          if (n.out_pin) {
-            b.field("out_pin",
-                    std::string(ctx->network->pathName(n.out_pin)));
-            emitOdbPinFields("out_pin", n.out_pin);
-          } else {
-            b.nullField("out_pin");
+          emitInstanceOdbBare(b, pt.inst, db_network);
+        }
+        if (pt.in_pin) {
+          b.field("in_pin", std::string(network->pathName(pt.in_pin)));
+          emitOdbPinFields("in_pin", pt.in_pin);
+        }
+        if (pt.out_pin) {
+          b.field("out_pin", std::string(network->pathName(pt.out_pin)));
+          emitOdbPinFields("out_pin", pt.out_pin);
+        }
+        b.endObject();
+      }
+      b.endArray();
+    }
+
+    void emit(const ClockMixNode& n, const char* key)
+    {
+      if (key) {
+        b.beginObject(key);
+      } else {
+        b.beginObject();
+      }
+      b.field("kind", std::string(kindString(n.kind)));
+      if (n.inst) {
+        b.field("instance", std::string(network->pathName(n.inst)));
+        sta::LibertyCell* lc = network->libertyCell(n.inst);
+        if (lc) {
+          b.field("cell", std::string(lc->name()));
+        } else {
+          b.nullField("cell");
+        }
+        emitInstanceOdbBare(b, n.inst, db_network);
+      } else {
+        b.nullField("instance");
+        b.nullField("cell");
+      }
+      if (n.out_pin) {
+        b.field("out_pin", std::string(network->pathName(n.out_pin)));
+        emitOdbPinFields("out_pin", n.out_pin);
+      } else {
+        b.nullField("out_pin");
+      }
+      if (n.via_pin) {
+        b.field("via_pin", std::string(network->pathName(n.via_pin)));
+        emitOdbPinFields("via_pin", n.via_pin);
+      } else {
+        b.nullField("via_pin");
+      }
+      b.beginArray("clocks");
+      for (const std::string& c : n.clocks) {
+        b.value(c);
+      }
+      b.endArray();
+      b.field("on_clock_path", n.on_clock_path);
+      b.field("degenerate", n.degenerate);
+      if (!n.actual_clocks.empty() || !n.unaccounted_clocks.empty()) {
+        b.beginArray("actual_clocks");
+        for (const std::string& c : n.actual_clocks) {
+          b.value(c);
+        }
+        b.endArray();
+        b.beginArray("unaccounted_clocks");
+        for (const std::string& c : n.unaccounted_clocks) {
+          b.value(c);
+        }
+        b.endArray();
+      }
+      b.beginArray("branches");
+      for (const auto& br : n.branches) {
+        b.beginObject();
+        if (br.pin) {
+          b.field("pin", std::string(network->pathName(br.pin)));
+          const char* tp = nullptr;
+          int id = 0;
+          if (resolvePinOdb(br.pin, db_network, tp, id)) {
+            b.field("pin_odb_type", std::string(tp));
+            b.field("pin_odb_id", id);
           }
-          if (n.via_pin) {
-            b.field("via_pin",
-                    std::string(ctx->network->pathName(n.via_pin)));
-            emitOdbPinFields("via_pin", n.via_pin);
-          } else {
-            b.nullField("via_pin");
-          }
-          b.beginArray("clocks");
-          for (const std::string& c : n.clocks) {
-            b.value(c);
-          }
-          b.endArray();
-          b.field("on_clock_path", n.on_clock_path);
-          b.field("degenerate", n.degenerate);
-          if (!n.actual_clocks.empty() || !n.unaccounted_clocks.empty()) {
-            b.beginArray("actual_clocks");
-            for (const std::string& c : n.actual_clocks) {
-              b.value(c);
-            }
-            b.endArray();
-            b.beginArray("unaccounted_clocks");
-            for (const std::string& c : n.unaccounted_clocks) {
-              b.value(c);
-            }
-            b.endArray();
-          }
-          b.beginArray("branches");
-          for (const auto& br : n.branches) {
-            b.beginObject();
-            if (br.pin) {
-              b.field("pin",
-                      std::string(ctx->network->pathName(br.pin)));
-              const char* tp = nullptr;
-              int id = 0;
-              if (resolvePinOdb(br.pin, ctx->db_network, tp, id)) {
-                b.field("pin_odb_type", std::string(tp));
-                b.field("pin_odb_id", id);
-              }
-            } else {
-              b.nullField("pin");
-            }
-            b.beginArray("clocks");
-            for (const std::string& c : br.clocks) {
-              b.value(c);
-            }
-            b.endArray();
-            if (br.subtree) {
-              emitNode(*br.subtree, "subtree");
-            } else {
-              b.nullField("subtree");
-            }
-            b.endObject();
-          }
-          b.endArray();
-          if (n.child) {
-            emitNode(*n.child, "child");
-          } else {
-            b.nullField("child");
-          }
-          emitOutNet(n.out_pin);
-          emitPassthroughs(n.passthroughs_after);
-          b.endObject();
-        };
+        } else {
+          b.nullField("pin");
+        }
+        b.beginArray("clocks");
+        for (const std::string& c : br.clocks) {
+          b.value(c);
+        }
+        b.endArray();
+        if (br.subtree) {
+          emit(*br.subtree, "subtree");
+        } else {
+          b.nullField("subtree");
+        }
+        b.endObject();
+      }
+      b.endArray();
+      if (n.child) {
+        emit(*n.child, "child");
+      } else {
+        b.nullField("child");
+      }
+      emitOutNet(n.out_pin);
+      emitPassthroughs(n.passthroughs_after);
+      b.endObject();
+    }
+  };
+  ClockMixEmitter emitter{b, ctx->network, ctx->db_network};
 
   b.beginObject();
   b.beginArray("requested_clocks");
@@ -3279,7 +3294,7 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
   }
   b.endArray();
   if (root) {
-    emitNode(*root, "tree");
+    emitter.emit(*root, "tree");
   } else {
     b.nullField("tree");
   }
