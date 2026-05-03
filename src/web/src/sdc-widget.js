@@ -9251,12 +9251,16 @@ export class SdcWidget {
             'border:1px solid var(--border);border-radius:4px;' +
             'background:var(--bg-input);font-family:monospace;' +
             'font-size:12px;min-width:0;overflow:hidden;'
-            // max-width:100% caps the card at its column's width
-            // (320px in branch columns, the wrapper's natural span
-            // for trunk cards) so cards never spill horizontally
-            // into the neighbouring column. Vertical height stays
-            // content-sized so single-row cards stay short.
-            + 'flex:0 0 auto;max-width:100%;';
+            // `width:100%` + `contain:inline-size` means the card's
+            // width is dictated by its parent (320px branch column,
+            // or the trunk wrapper's natural span = the row above),
+            // and the card's own content (including a long instance
+            // path in its header) does NOT contribute to the parent's
+            // intrinsic-width calculation. Without containment, a
+            // long instance name on the trunk MIX card pushed the
+            // wrapper wider than the row above; with it, the trunk
+            // card lines up exactly with the row width.
+            + 'flex:0 0 auto;width:100%;contain:inline-size;';
 
         // Transit cards are collapsed-by-default. Render only a
         // one-line summary (instance name) until clicked.
@@ -9509,7 +9513,11 @@ export class SdcWidget {
             = 'display:flex;align-items:center;gap:6px;'
             + 'cursor:pointer;'
             + 'padding:4px 8px;font-size:12px;'
-            + 'color:var(--fg-primary);';
+            + 'color:var(--fg-primary);'
+            // min-width:0 lets the `head` span (with TRUNCATE_PATH_CSS)
+            // actually shrink and leading-ellipsize so a long
+            // `↑ via <leafname>` line doesn't push the card wider.
+            + 'min-width:0;';
         const arrow = document.createElement('span');
         arrow.style.cssText
             = 'color:var(--accent-tab);font-size:11px;'
@@ -9533,7 +9541,11 @@ export class SdcWidget {
             = 'display:flex;justify-content:space-between;'
             + 'gap:8px;align-items:baseline;'
             + 'font-size:11px;color:var(--fg-muted);'
-            + 'padding-bottom:2px;';
+            + 'padding-bottom:2px;'
+            // min-width:0 lets bodyHeadInst (with TRUNCATE_PATH_CSS)
+            // leading-ellipsize within the card's fixed width when
+            // the body is expanded.
+            + 'min-width:0;';
         const bodyHeadInst = document.createElement('span');
         bodyHeadInst.textContent = node.instance || '';
         bodyHeadInst.title = node.instance || '';
