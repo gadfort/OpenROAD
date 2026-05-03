@@ -9160,9 +9160,18 @@ export class SdcWidget {
             const branches = (node.branches || []).filter(b => b);
             if (!branches.length) return null;
             const row = document.createElement('div');
+            // `min-width:max-content` makes the row claim its full
+            // natural width (N * 320px + gaps). Without it, when the
+            // total exceeds the strip's visible width, the row gets
+            // squeezed by its parent's stretch and the fixed-width
+            // columns inside (which have flex-shrink:0) overflow,
+            // visually overlapping. With it, the row holds its size,
+            // wrapper grows to fit, and the strip's overflow-x:auto
+            // takes over for horizontal scrolling.
             row.style.cssText
                 = 'display:flex;flex-direction:row;gap:8px;'
-                + 'align-items:flex-end;justify-content:center;';
+                + 'align-items:flex-end;justify-content:center;'
+                + 'min-width:max-content;';
             for (const branch of branches) {
                 const col = document.createElement('div');
                 // Fixed 320px column — every sibling column is the
