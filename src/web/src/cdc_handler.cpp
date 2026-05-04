@@ -3306,6 +3306,837 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
   return jsonResponse(req.id, boost::json::serialize(root_obj));
 }
 
+// ── Mix-origin endpoint listing ─────────────────────────────────────────────
+
+// Lightweight cousin of walkClockMixNode used for the design-aggregate
+// listing: instead of building the full convergence tree, we walk
+// upstream until we hit the FIRST mixer (or terminal) and record only
+// that origin. This is cheap enough to run for every multi-clock
+// endpoint in the design provided we share a per-net cache across
+// endpoints — most endpoints in real designs come from a small number
+// of origin gates (one mux fans out 10k flops), so the cache hit-rate
+// is very high.
+//
+// The walk semantics MUST match walkClockMixNode's data-path/clock-path
+// rules verbatim or the listing will disagree with the trace tool the
+// user opens from a row's `↑ trace mix` action. Ports / depth-limit /
+// feedback / stuck terminate the walk same as the trace; only the
+// "build a tree" recursion is collapsed into a forward-iteration on
+// pass-throughs and CK hops.
+struct MixOrigin
+{
+  enum class Kind
+  {
+    Mixer,        // ≥2 contributing comb-cell inputs (no covering input)
+    NetMixer,     // ≥2 drivers on a flat net (no covering driver)
+    Port,         // top-level port — clocks come from set_input_delay
+    DepthLimit,   // hit kMaxDepth without finding a mixer
+    Feedback,     // cycle in the back-walk
+    Stuck,        // no input intersects cur_clocks (phantom propagation)
+    Unresolved,   // no driver / no liberty cell / no pins
+    NoOrigin,     // single-driver chain reached an undefined boundary
+  };
+  Kind kind = Kind::Unresolved;
+  const sta::Instance* inst = nullptr;  // mixer cell / feedback cell
+  const sta::Pin* pin = nullptr;        // origin output pin (or port pin)
+  std::set<std::string> clocks;         // cur_clocks at the origin
+};
+
+static const char* mixOriginKindString(MixOrigin::Kind k)
+{
+  switch (k) {
+    case MixOrigin::Kind::Mixer: return "mixer";
+    case MixOrigin::Kind::NetMixer: return "net_mixer";
+    case MixOrigin::Kind::Port: return "port";
+    case MixOrigin::Kind::DepthLimit: return "depth_limit";
+    case MixOrigin::Kind::Feedback: return "feedback";
+    case MixOrigin::Kind::Stuck: return "stuck";
+    case MixOrigin::Kind::Unresolved: return "unresolved";
+    case MixOrigin::Kind::NoOrigin: return "no_origin";
+  }
+  return "unresolved";
+}
+
+// Cache key: (driver flat net, sorted clocks). Two endpoints that reach
+// the same flat net with the same clock set produce identical results,
+// so we memoize on that pair. Feedback / Stuck results depend on the
+// path's `seen` set and are NOT cached (rare cases that would otherwise
+// poison the cache for an unrelated walk that happens to share the
+// same flat net but has a different upstream history).
+struct MixOriginCacheKey
+{
+  odb::dbNet* net;
+  std::string clocks_key;
+  bool operator==(const MixOriginCacheKey& o) const
+  {
+    return net == o.net && clocks_key == o.clocks_key;
+  }
+};
+struct MixOriginCacheKeyHash
+{
+  size_t operator()(const MixOriginCacheKey& k) const
+  {
+    size_t h = std::hash<void*>()(k.net);
+    h ^= std::hash<std::string>()(k.clocks_key) + 0x9e3779b9 + (h << 6)
+         + (h >> 2);
+    return h;
+  }
+};
+using MixOriginCache
+    = std::unordered_map<MixOriginCacheKey, MixOrigin, MixOriginCacheKeyHash>;
+
+static std::string clocksKey(const std::set<std::string>& s)
+{
+  std::string out;
+  bool first = true;
+  for (const auto& c : s) {
+    if (!first) {
+      out.push_back(',');
+    }
+    out += c;
+    first = false;
+  }
+  return out;
+}
+
+static MixOrigin findMixOrigin(const sta::Pin* start_pin,
+                               std::set<std::string> cur_clocks,
+                               sta::dbSta* sta_eng,
+                               sta::Network* network,
+                               sta::dbNetwork* db_network,
+                               sta::Mode* mode,
+                               int max_depth,
+                               MixOriginCache& cache)
+{
+  MixOrigin result;
+  result.clocks = cur_clocks;
+  if (!start_pin || cur_clocks.empty()) {
+    result.kind = MixOrigin::Kind::Unresolved;
+    return result;
+  }
+
+  auto pinClockSet = [&](const sta::Pin* p) -> std::set<std::string> {
+    std::set<std::string> s;
+    if (!p || !sta_eng || !mode) {
+      return s;
+    }
+    sta::ClockSet cks = sta_eng->clockDomains(p, mode);
+    for (const sta::Clock* c : cks) {
+      if (c) {
+        s.insert(c->name());
+      }
+    }
+    return s;
+  };
+  auto setIntersection = [](const std::set<std::string>& a,
+                             const std::set<std::string>& b) {
+    std::set<std::string> r;
+    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(),
+                          std::inserter(r, r.begin()));
+    return r;
+  };
+
+  std::unordered_set<const sta::Instance*> seen;
+  if (sta::Instance* inst = network->instance(start_pin)) {
+    seen.insert(inst);
+  }
+
+  // Track cache keys we visit on this walk. When the walk terminates
+  // with a cacheable result we backfill every visited key, so the next
+  // endpoint that hits ANY of these nets short-circuits to the same
+  // origin. Cap the trail at max_depth — DepthLimit walks hit max_depth
+  // entries here naturally.
+  std::vector<MixOriginCacheKey> trail;
+  trail.reserve(max_depth + 1);
+
+  const sta::Pin* cur_pin = start_pin;
+  for (int depth = 0; depth <= max_depth; ++depth) {
+    if (depth >= max_depth) {
+      result.kind = MixOrigin::Kind::DepthLimit;
+      result.pin = cur_pin;
+      result.clocks = cur_clocks;
+      for (const auto& k : trail) {
+        cache[k] = result;
+      }
+      return result;
+    }
+
+    odb::dbNet* dnet = db_network ? db_network->findFlatDbNet(cur_pin) : nullptr;
+    MixOriginCacheKey ck{dnet, clocksKey(cur_clocks)};
+    if (dnet) {
+      auto it = cache.find(ck);
+      if (it != cache.end()) {
+        // Backfill earlier entries in the trail with the cached
+        // result — they all eventually reach the same origin.
+        for (const auto& k : trail) {
+          cache[k] = it->second;
+        }
+        return it->second;
+      }
+      trail.push_back(ck);
+    }
+
+    auto drivers = collectFlatNetDrivers(cur_pin, network);
+    if (drivers.empty()) {
+      result.kind = MixOrigin::Kind::NoOrigin;
+      result.pin = cur_pin;
+      result.clocks = cur_clocks;
+      for (const auto& k : trail) {
+        cache[k] = result;
+      }
+      return result;
+    }
+
+    if (drivers.size() > 1) {
+      // Multi-driver net: same cover-driver analysis as walkClockMixNode.
+      struct DriverInfo
+      {
+        const sta::Pin* pin = nullptr;
+        std::set<std::string> clocks;
+        std::set<std::string> intersection;
+      };
+      std::vector<DriverInfo> infos;
+      infos.reserve(drivers.size());
+      for (const sta::Pin* dp : drivers) {
+        DriverInfo di;
+        di.pin = dp;
+        di.clocks = pinClockSet(dp);
+        di.intersection = setIntersection(di.clocks, cur_clocks);
+        infos.push_back(std::move(di));
+      }
+      std::vector<size_t> contrib_idx;
+      for (size_t i = 0; i < infos.size(); ++i) {
+        if (!infos[i].intersection.empty()) {
+          contrib_idx.push_back(i);
+        }
+      }
+      if (contrib_idx.empty()) {
+        result.kind = MixOrigin::Kind::Stuck;
+        result.pin = cur_pin;
+        result.clocks = cur_clocks;
+        return result;  // no cache (Stuck is path-dependent)
+      }
+      size_t cover_idx = SIZE_MAX;
+      for (size_t i = 0; i < infos.size(); ++i) {
+        if (std::includes(infos[i].clocks.begin(), infos[i].clocks.end(),
+                          cur_clocks.begin(), cur_clocks.end())) {
+          cover_idx = i;
+          break;
+        }
+      }
+      if (cover_idx == SIZE_MAX) {
+        result.kind = MixOrigin::Kind::NetMixer;
+        result.pin = cur_pin;  // the load-side pin; the net is the mixer
+        result.clocks = cur_clocks;
+        for (const auto& k : trail) {
+          cache[k] = result;
+        }
+        return result;
+      }
+      drivers.assign({infos[cover_idx].pin});
+    }
+
+    const sta::Pin* driver = drivers.front();
+    if (network->isTopLevelPort(driver)) {
+      result.kind = MixOrigin::Kind::Port;
+      result.pin = driver;
+      result.clocks = cur_clocks;
+      for (const auto& k : trail) {
+        cache[k] = result;
+      }
+      return result;
+    }
+
+    sta::Instance* drv_inst = network->instance(driver);
+    if (!drv_inst) {
+      result.kind = MixOrigin::Kind::Unresolved;
+      result.pin = driver;
+      result.clocks = cur_clocks;
+      for (const auto& k : trail) {
+        cache[k] = result;
+      }
+      return result;
+    }
+    if (seen.count(drv_inst)) {
+      result.kind = MixOrigin::Kind::Feedback;
+      result.inst = drv_inst;
+      result.pin = driver;
+      result.clocks = cur_clocks;
+      return result;  // no cache (path-dependent)
+    }
+    seen.insert(drv_inst);
+
+    sta::LibertyCell* lc = network->libertyCell(drv_inst);
+    if (!lc) {
+      result.kind = MixOrigin::Kind::Unresolved;
+      result.inst = drv_inst;
+      result.pin = driver;
+      result.clocks = cur_clocks;
+      for (const auto& k : trail) {
+        cache[k] = result;
+      }
+      return result;
+    }
+
+    if (isPassThroughCell(lc)) {
+      auto inputs = findCombInputPins(drv_inst, network);
+      if (inputs.empty()) {
+        result.kind = MixOrigin::Kind::Unresolved;
+        result.inst = drv_inst;
+        result.pin = driver;
+        result.clocks = cur_clocks;
+        for (const auto& k : trail) {
+          cache[k] = result;
+        }
+        return result;
+      }
+      cur_pin = inputs.front();
+      continue;
+    }
+
+    if (lc->hasSequentials() && !lc->isClockGate()) {
+      const sta::Pin* ck_pin = findRegisterClockInput(drv_inst, network);
+      if (!ck_pin) {
+        result.kind = MixOrigin::Kind::Stuck;
+        result.inst = drv_inst;
+        result.pin = driver;
+        result.clocks = cur_clocks;
+        return result;
+      }
+      auto ck_clocks = pinClockSet(ck_pin);
+      auto intersect = setIntersection(ck_clocks, cur_clocks);
+      std::set<std::string> next_clocks;
+      if (!intersect.empty()) {
+        next_clocks = intersect;
+      } else {
+        next_clocks = ck_clocks;
+      }
+      if (next_clocks.empty()) {
+        // CK has no clocks; nothing to trace upstream.
+        result.kind = MixOrigin::Kind::Stuck;
+        result.inst = drv_inst;
+        result.pin = ck_pin;
+        result.clocks = cur_clocks;
+        return result;
+      }
+      cur_pin = ck_pin;
+      cur_clocks = std::move(next_clocks);
+      continue;
+    }
+
+    // Combinational (or ICG) — classify by per-input intersections.
+    auto inputs = findCombInputPins(drv_inst, network);
+    if (inputs.empty()) {
+      result.kind = MixOrigin::Kind::Unresolved;
+      result.inst = drv_inst;
+      result.pin = driver;
+      result.clocks = cur_clocks;
+      for (const auto& k : trail) {
+        cache[k] = result;
+      }
+      return result;
+    }
+    std::vector<size_t> contrib_idx;
+    size_t cover_idx = SIZE_MAX;
+    std::vector<std::set<std::string>> ic(inputs.size());
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      ic[i] = pinClockSet(inputs[i]);
+      auto inter = setIntersection(ic[i], cur_clocks);
+      if (!inter.empty()) {
+        contrib_idx.push_back(i);
+      }
+      if (cover_idx == SIZE_MAX
+          && std::includes(ic[i].begin(), ic[i].end(),
+                           cur_clocks.begin(), cur_clocks.end())) {
+        cover_idx = i;
+      }
+    }
+    if (contrib_idx.empty()) {
+      result.kind = MixOrigin::Kind::Stuck;
+      result.inst = drv_inst;
+      result.pin = driver;
+      result.clocks = cur_clocks;
+      return result;
+    }
+    if (cover_idx != SIZE_MAX) {
+      cur_pin = inputs[cover_idx];
+      continue;
+    }
+    // Mixer found.
+    result.kind = MixOrigin::Kind::Mixer;
+    result.inst = drv_inst;
+    result.pin = driver;
+    result.clocks = cur_clocks;
+    for (const auto& k : trail) {
+      cache[k] = result;
+    }
+    return result;
+  }
+  // Should be unreachable — the loop body returns on every path.
+  return result;
+}
+
+WebSocketResponse CdcHandler::handleCdcMixEndpoints(
+    const WebSocketRequest& req)
+{
+  static constexpr const char* kEmpty
+      = R"({"data_path":{"total_endpoints":0,"total_origins":0,)"
+        R"("kinds_total":{},"sync_total":{},"groups":[]},)"
+        R"("clock_path":{"total_endpoints":0,"total_origins":0,)"
+        R"("kinds_total":{},"groups":[]}})";
+  auto ctx = makeCdcContext(gen_);
+  if (!ctx || !ctx->network || !ctx->network->isLinked()) {
+    return jsonResponse(req.id, kEmpty);
+  }
+  sta::dbSta* sta_eng = ctx->sta;
+  sta::Network* network = ctx->network;
+  sta::dbNetwork* db_network = ctx->db_network;
+  sta_eng->ensureGraph();
+  sta::Search* search = sta_eng->search();
+  if (!search) {
+    return jsonResponse(req.id, kEmpty);
+  }
+
+  const std::string mode_name = extract_string(req.json, "mode");
+  sta::Mode* mode = nullptr;
+  if (!mode_name.empty()) {
+    mode = sta_eng->findMode(mode_name);
+  }
+  if (!mode) {
+    mode = sta_eng->cmdMode();
+  }
+  if (!mode) {
+    return jsonResponse(req.id, kEmpty);
+  }
+
+  // Single-clock fast-out: a mix needs ≥2 clocks anywhere. cmdMode's Sdc
+  // is the conservative check; a per-mode iteration would be more
+  // accurate but we only operate on the active mode here.
+  sta::Sdc* sdc = mode->sdc();
+  if (sdc) {
+    int nontrivial = 0;
+    for (const sta::Clock* c : sdc->clocks()) {
+      if (c) {
+        ++nontrivial;
+        if (nontrivial >= 2) {
+          break;
+        }
+      }
+    }
+    if (nontrivial < 2) {
+      return jsonResponse(req.id, kEmpty);
+    }
+  }
+
+  // Whitelist patterns for sync-status classification — same source as
+  // every other CDC handler reads. Snapshot under the lock to keep a
+  // concurrent cdc_set_whitelist from tearing the read.
+  std::vector<std::string> instance_patterns;
+  std::vector<std::string> master_patterns;
+  {
+    std::lock_guard<std::mutex> lock(whitelist_mutex_);
+    instance_patterns = instance_patterns_;
+    master_patterns = master_patterns_;
+  }
+
+  auto classify = [&](const sta::Pin* pin,
+                      const sta::Instance* inst) -> const char* {
+    if (network->isTopLevelPort(pin)) {
+      return "port";
+    }
+    sta::LibertyCell* lc = inst ? network->libertyCell(inst) : nullptr;
+    if (!lc) {
+      return "stdcell";
+    }
+    if (lc->isClockGate()) {
+      return "clock_gate";
+    }
+    if (lc->hasSequentials()) {
+      bool any_register = false;
+      bool any_latch = false;
+      for (const sta::Sequential& seq : lc->sequentials()) {
+        if (seq.isRegister()) {
+          any_register = true;
+        } else {
+          any_latch = true;
+        }
+      }
+      if (any_register && !any_latch) {
+        return "flipflop";
+      }
+      if (any_latch && !any_register) {
+        return "latch";
+      }
+    }
+    if (lc->isMacro() || lc->isMemory()) {
+      return "macro";
+    }
+    return "stdcell";
+  };
+
+  auto pinClockSet = [&](const sta::Pin* p) -> std::set<std::string> {
+    std::set<std::string> s;
+    if (!p) {
+      return s;
+    }
+    sta::ClockSet cks = sta_eng->clockDomains(p, mode);
+    for (const sta::Clock* c : cks) {
+      if (c) {
+        s.insert(c->name());
+      }
+    }
+    return s;
+  };
+
+  // One walk-cap per RPC; matches the trace handler.
+  constexpr int kMaxDepth = 20;
+
+  // Per-bucket aggregation. Group key carries the origin instance/pin
+  // identity AND the clock-set — per the user's earlier guidance,
+  // `{clk_a, clk_b}` and `{clk_a, clk_b, clk_c}` are distinct
+  // root-causes even if they share an origin gate.
+  struct GroupKey
+  {
+    const sta::Instance* origin_inst;  // nullptr for port/depth/no-origin
+    const sta::Pin* origin_pin;
+    MixOrigin::Kind origin_kind;
+    std::string clocks_key;
+    bool operator==(const GroupKey& o) const
+    {
+      return origin_inst == o.origin_inst && origin_pin == o.origin_pin
+             && origin_kind == o.origin_kind && clocks_key == o.clocks_key;
+    }
+  };
+  struct GroupKeyHash
+  {
+    size_t operator()(const GroupKey& k) const
+    {
+      size_t h = std::hash<const void*>()(k.origin_inst);
+      h ^= std::hash<const void*>()(k.origin_pin) + 0x9e3779b9 + (h << 6)
+           + (h >> 2);
+      h ^= std::hash<int>()(static_cast<int>(k.origin_kind)) + 0x9e3779b9
+           + (h << 6) + (h >> 2);
+      h ^= std::hash<std::string>()(k.clocks_key) + 0x9e3779b9 + (h << 6)
+           + (h >> 2);
+      return h;
+    }
+  };
+  struct EndpointEntry
+  {
+    const sta::Pin* pin = nullptr;
+    // When non-null the displayed entity is this instance, not `pin`.
+    // Set for clock-path-mix entries (where the user-facing entity is
+    // the flop, not its CK pin); leave null for data-path entries
+    // where the pin IS the entity.
+    const sta::Instance* link_inst = nullptr;
+    const char* kind = "stdcell";
+    std::string name;
+    std::vector<std::string> clocks;
+    SyncClass sync;  // only populated for data-path bucket
+  };
+  struct Group
+  {
+    GroupKey key;
+    MixOrigin origin;
+    std::vector<EndpointEntry> endpoints;
+  };
+
+  // Bucket order: insertion-stable, then sorted by endpoint-count desc
+  // for emission. Use a vector-of-pointers via a map for accumulation.
+  using GroupMap
+      = std::unordered_map<GroupKey, std::unique_ptr<Group>, GroupKeyHash>;
+  GroupMap data_groups;
+  GroupMap clock_groups;
+  MixOriginCache data_cache;
+  MixOriginCache clock_cache;
+
+  // Decide whether the (inst, pin) carry semantic identity at the group
+  // level. Mixer / NetMixer / Port name a specific gate or pad — two
+  // different cells/ports with the same clock-set are distinct
+  // root-causes and stay separate. The terminal kinds (DepthLimit,
+  // Feedback, Stuck, Unresolved, NoOrigin) are "we couldn't resolve"
+  // markers; the cur_pin / drv_inst they carry are debugging aids, not
+  // origins. Collapsing those by (kind, clocks) avoids the
+  // "10 separate '(no origin found)' rows for the same {clk_a, clk_b}"
+  // confusion the user flagged.
+  auto originHasIdentity = [](MixOrigin::Kind k) {
+    return k == MixOrigin::Kind::Mixer
+        || k == MixOrigin::Kind::NetMixer
+        || k == MixOrigin::Kind::Port;
+  };
+  auto recordHit = [&](GroupMap& gmap, const MixOrigin& mo,
+                       EndpointEntry entry) {
+    GroupKey gk;
+    gk.origin_kind = mo.kind;
+    gk.clocks_key = clocksKey(mo.clocks);
+    // Origin to STORE on the group. Mirrors the key collapsing above:
+    // for terminal kinds we emit kind+clocks only (no per-endpoint
+    // pin/inst leaking through to the group label), since the cur_pin
+    // is just where THIS endpoint's walk gave up — not the group's.
+    MixOrigin group_origin = mo;
+    if (originHasIdentity(mo.kind)) {
+      gk.origin_inst = mo.inst;
+      gk.origin_pin = mo.pin;
+    } else {
+      gk.origin_inst = nullptr;
+      gk.origin_pin = nullptr;
+      group_origin.inst = nullptr;
+      group_origin.pin = nullptr;
+    }
+    auto it = gmap.find(gk);
+    if (it == gmap.end()) {
+      auto g = std::make_unique<Group>();
+      g->key = gk;
+      g->origin = group_origin;
+      g->endpoints.push_back(std::move(entry));
+      gmap.emplace(gk, std::move(g));
+    } else {
+      it->second->endpoints.push_back(std::move(entry));
+    }
+  };
+
+  // Iterate every STA endpoint vertex once. Each vertex contributes to
+  // the data-path bucket (via clockDomains on the endpoint pin itself)
+  // and, if the pin's instance is sequential, to the clock-path bucket
+  // (via clockDomains on its CK pin). Clock-path entries are deduped
+  // by instance — a flop's CK pin is a single physical surface for the
+  // mix regardless of how many D pins (= STA endpoints) it has, and
+  // emitting one row per D pin would duplicate the same flop in the
+  // listing (e.g. a wide register array with 32 D-pin endpoints would
+  // appear as 32 identical clock-path-mix rows).
+  std::unordered_set<const sta::Instance*> clock_path_seen;
+  sta::VertexSet& endpoints = search->endpoints();
+  for (sta::Vertex* v : endpoints) {
+    if (!v) {
+      continue;
+    }
+    const sta::Pin* pin = v->pin();
+    if (!pin) {
+      continue;
+    }
+    sta::Instance* inst = network->instance(pin);
+    const char* kind = classify(pin, inst);
+
+    // ── Data-path mix bucket ──
+    auto dclocks = pinClockSet(pin);
+    if (dclocks.size() >= 2) {
+      auto mo = findMixOrigin(pin, dclocks, sta_eng, network, db_network,
+                              mode, kMaxDepth, data_cache);
+      EndpointEntry e;
+      e.pin = pin;
+      e.kind = kind;
+      e.name = network->pathName(pin);
+      e.clocks.assign(dclocks.begin(), dclocks.end());
+      // Sync-status only for register endpoints — ports / stdcells /
+      // macros don't carry the synchronizer-chain semantic.
+      if (inst && (std::string_view(kind) == "flipflop"
+                   || std::string_view(kind) == "latch")) {
+        // Use the FIRST capture clock as the chain-walk anchor; the
+        // sync-chain detector cares about the capture domain identity,
+        // not its specific clock.
+        sta::ClockSet cks = sta_eng->clockDomains(pin, mode);
+        const sta::Clock* anchor = nullptr;
+        for (const sta::Clock* c : cks) {
+          if (c) {
+            anchor = c;
+            break;
+          }
+        }
+        e.sync = classifyCdcEndpoint(inst, anchor, sta_eng, network, mode,
+                                     instance_patterns, master_patterns);
+      }
+      recordHit(data_groups, mo, std::move(e));
+    }
+
+    // ── Clock-path mix bucket ──
+    if (inst && !clock_path_seen.count(inst)) {
+      sta::LibertyCell* lc = network->libertyCell(inst);
+      if (lc && lc->hasSequentials() && !lc->isClockGate()) {
+        clock_path_seen.insert(inst);
+        const sta::Pin* ck_pin = findRegisterClockInput(inst, network);
+        if (ck_pin) {
+          auto cclocks = pinClockSet(ck_pin);
+          if (cclocks.size() >= 2) {
+            // Initial on_clock_path is implicit in the CK-pin start —
+            // the walk does not need to know, because the iterative
+            // version (findMixOrigin) doesn't differentiate; it only
+            // records the first mixer it hits.
+            auto mo = findMixOrigin(ck_pin, cclocks, sta_eng, network,
+                                    db_network, mode, kMaxDepth,
+                                    clock_cache);
+            EndpointEntry e;
+            // Display the flop instance, not the CK pin. The mix is a
+            // property of the flop and the instance path matches what
+            // the user sees in their schematic / SDC. The inspector
+            // hand-off uses the instance odb refs via `link_inst`.
+            e.pin = ck_pin;
+            e.link_inst = inst;
+            e.kind = kind;
+            e.name = network->pathName(inst);
+            e.clocks.assign(cclocks.begin(), cclocks.end());
+            // sync-status not meaningful for clock-path mix; left empty.
+            recordHit(clock_groups, mo, std::move(e));
+          }
+        }
+      }
+    }
+  }
+
+  // Emission ----------------------------------------------------------------
+
+  auto emitOrigin = [&](boost::json::object& g, const Group& grp) {
+    g["origin_kind"] = std::string(mixOriginKindString(grp.origin.kind));
+    if (grp.origin.inst) {
+      const std::string full = network->pathName(grp.origin.inst);
+      g["origin_inst"] = full;
+      g["origin_inst_full"] = full;
+      emitInstanceOdbBare(g, grp.origin.inst, db_network);
+      // emitInstanceOdbBare uses "odb_type"/"odb_id"; rewrite under
+      // origin_-prefixed keys for clarity.
+      if (auto it = g.find("odb_type"); it != g.end()) {
+        g["origin_inst_odb_type"] = it->value();
+        g.erase(it);
+      }
+      if (auto it = g.find("odb_id"); it != g.end()) {
+        g["origin_inst_odb_id"] = it->value();
+        g.erase(it);
+      }
+    } else {
+      g["origin_inst"] = nullptr;
+      g["origin_inst_full"] = nullptr;
+    }
+    if (grp.origin.pin) {
+      const std::string full = network->pathName(grp.origin.pin);
+      g["origin_pin"] = full;
+      g["origin_pin_full"] = full;
+      const char* tp = nullptr;
+      int id = 0;
+      if (resolvePinOdb(grp.origin.pin, db_network, tp, id)) {
+        g["origin_pin_odb_type"] = std::string(tp);
+        g["origin_pin_odb_id"] = id;
+      }
+    } else {
+      g["origin_pin"] = nullptr;
+      g["origin_pin_full"] = nullptr;
+    }
+    boost::json::array clk_arr;
+    for (const auto& c : grp.origin.clocks) {
+      clk_arr.push_back(boost::json::value(c));
+    }
+    g["clocks"] = std::move(clk_arr);
+    g["endpoint_count"] = static_cast<int>(grp.endpoints.size());
+  };
+
+  auto emitEndpoint = [&](boost::json::object& eo, const EndpointEntry& e,
+                          bool include_sync) {
+    eo["name"] = e.name;
+    eo["kind"] = std::string(e.kind);
+    boost::json::array ca;
+    for (const auto& c : e.clocks) {
+      ca.push_back(boost::json::value(c));
+    }
+    eo["clocks"] = std::move(ca);
+    // Linkify target: instance for clock-path-mix rows (the flop is
+    // the user-facing entity), pin otherwise. The frontend reads
+    // pin_odb_type/pin_odb_id and dispatches via _linkifyPin which
+    // already handles "inst" / "iterm" / "bterm" / "modinst".
+    if (e.link_inst) {
+      emitInstanceOdbBare(eo, e.link_inst, db_network);
+    } else {
+      emitPinOdbBare(eo, e.pin, db_network);
+    }
+    if (auto it = eo.find("odb_type"); it != eo.end()) {
+      eo["pin_odb_type"] = it->value();
+      eo.erase(it);
+    }
+    if (auto it = eo.find("odb_id"); it != eo.end()) {
+      eo["pin_odb_id"] = it->value();
+      eo.erase(it);
+    }
+    sta::Instance* inst = e.link_inst
+        ? const_cast<sta::Instance*>(e.link_inst)
+        : network->instance(e.pin);
+    if (inst && (e.link_inst || !network->isTopLevelPort(e.pin))) {
+      eo["instance"] = std::string(network->pathName(inst));
+    } else {
+      eo["instance"] = nullptr;
+    }
+    if (include_sync) {
+      boost::json::object so;
+      so["kind"] = e.sync.kind.empty() ? std::string("none") : e.sync.kind;
+      so["depth"] = e.sync.depth;
+      eo["sync_status"] = std::move(so);
+    }
+  };
+
+  auto emitBucket = [&](GroupMap& gmap, bool include_sync) {
+    boost::json::object bucket;
+    // Sort groups by endpoint-count desc; tie-break by origin pin name
+    // for deterministic ordering.
+    std::vector<Group*> groups_v;
+    groups_v.reserve(gmap.size());
+    for (auto& [k, gp] : gmap) {
+      groups_v.push_back(gp.get());
+    }
+    std::sort(groups_v.begin(), groups_v.end(), [](Group* a, Group* b) {
+      if (a->endpoints.size() != b->endpoints.size()) {
+        return a->endpoints.size() > b->endpoints.size();
+      }
+      return a->key.clocks_key < b->key.clocks_key;
+    });
+
+    int total_endpoints = 0;
+    std::map<std::string, int> kinds_total;
+    std::map<std::string, int> sync_total;
+    boost::json::array groups_arr;
+    for (Group* gp : groups_v) {
+      // Sort endpoints inside a group by name for deterministic output.
+      std::sort(gp->endpoints.begin(), gp->endpoints.end(),
+                [](const EndpointEntry& a, const EndpointEntry& b) {
+                  return a.name < b.name;
+                });
+      boost::json::object g;
+      emitOrigin(g, *gp);
+      boost::json::array eps;
+      for (const EndpointEntry& e : gp->endpoints) {
+        boost::json::object eo;
+        emitEndpoint(eo, e, include_sync);
+        eps.push_back(std::move(eo));
+        ++total_endpoints;
+        kinds_total[e.kind]++;
+        if (include_sync) {
+          const std::string& k
+              = e.sync.kind.empty() ? std::string("none") : e.sync.kind;
+          sync_total[k]++;
+        }
+      }
+      g["endpoints"] = std::move(eps);
+      groups_arr.push_back(std::move(g));
+    }
+    bucket["total_endpoints"] = total_endpoints;
+    bucket["total_origins"] = static_cast<int>(groups_v.size());
+    boost::json::object kinds_obj;
+    for (const auto& [k, v] : kinds_total) {
+      kinds_obj[k] = v;
+    }
+    bucket["kinds_total"] = std::move(kinds_obj);
+    if (include_sync) {
+      boost::json::object sync_obj;
+      for (const auto& [k, v] : sync_total) {
+        sync_obj[k] = v;
+      }
+      bucket["sync_total"] = std::move(sync_obj);
+    }
+    bucket["groups"] = std::move(groups_arr);
+    return bucket;
+  };
+
+  boost::json::object root;
+  root["data_path"] = emitBucket(data_groups, /*include_sync=*/true);
+  root["clock_path"] = emitBucket(clock_groups, /*include_sync=*/false);
+  return jsonResponse(req.id, boost::json::serialize(root));
+}
+
 void CdcHandler::registerRequests(RequestDispatcher& d)
 {
   d.add("cdc_overview",
@@ -3332,6 +4163,11 @@ void CdcHandler::registerRequests(RequestDispatcher& d)
         WebSocketRequest::kCdcClockMixTrace,
         [this](const WebSocketRequest& req, SessionState&) {
           return handleCdcClockMixTrace(req);
+        });
+  d.add("cdc_mix_endpoints",
+        WebSocketRequest::kCdcMixEndpoints,
+        [this](const WebSocketRequest& req, SessionState&) {
+          return handleCdcMixEndpoints(req);
         });
   d.add("cdc_set_whitelist",
         WebSocketRequest::kCdcSetWhitelist,

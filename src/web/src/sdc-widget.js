@@ -1081,14 +1081,13 @@ export class SdcWidget {
         const seen = {};
         for (const e of entries) {
             if (!nameOk(e.port) || !dirOk(e)) continue;
-            // Treat null/undefined clock as the widget's NONE
-            // sentinel by skipping — the populate map only keys on
-            // real clock names. The widget's noneCount affordance is
-            // not used by the Port Delays toolbar today (no
-            // exception-only rows in the fixture); if that changes,
-            // we'll thread a separate noneCount through here.
-            if (e.clock == null) continue;
-            const k = e.clock;
+            // Null/undefined clock collapses under the widget's
+            // `__none__` sentinel, which `_makeClockCheckboxFilter`'s
+            // populate() lifts into a "(no clock)" row. Common case:
+            // exception-only ports (set_max_delay / set_input_delay
+            // with no `-clock`) — they have no clock field but the
+            // user still wants to see + filter them.
+            const k = e.clock == null ? '__none__' : e.clock;
             if (!seen[k]) seen[k] = new Set();
             if (!seen[k].has(e.port)) {
                 seen[k].add(e.port);
@@ -7029,6 +7028,10 @@ export class SdcWidget {
             // cache — no second fetch needed.
             const data = await this._requestWithTimeout({ type: 'cdc_overview' });
             this._cdcOverview = data;
+            // Mix-endpoint listing is keyed on the same scan. Drop the
+            // cache so a Refresh re-walks the design instead of
+            // re-rendering stale origins.
+            this._cdcMixEndpointsCache = null;
             this._renderCdcMatrix(data);
             // After the first successful scan, swap "Scan" for "Refresh".
             if (this._cdcScanBtn) this._cdcScanBtn.style.display = 'none';
@@ -7632,6 +7635,671 @@ export class SdcWidget {
             'background:rgba(150,150,150,0.5);margin-right:4px;"></span>' +
             'all paths excluded by SDC';
         wrap.appendChild(legend);
+
+        // Mix-endpoint listing — two collapsible sections that surface
+        // every endpoint where ≥2 clocks reach a single pin, grouped
+        // by where the mix originates. Lazy-fetched on first expand.
+        // Renders below the matrix because that's where the user lands
+        // after reading the matrix totals and asks "which endpoints?".
+        if (allClocks.length >= 2) {
+            this._renderMixEndpointsSections(wrap, active);
+        }
+    }
+
+    // Build the two mix-endpoint sections (data-path + clock-path) and
+    // append them to `parent`. Both sections start collapsed; clicking
+    // a header lazy-fetches `cdc_mix_endpoints` once and caches the
+    // result for the session (re-fetched only when the active mode
+    // changes or _renderCdcMatrix is invoked with a fresh overview).
+    //
+    // The cache lives on `this._cdcMixEndpointsCache` keyed by mode
+    // name; both sections of a given mode share the same fetch result
+    // (the RPC returns both buckets in one call).
+    _renderMixEndpointsSections(parent, modeName) {
+        const wrap = document.createElement('div');
+        wrap.dataset.cdcMixEndpoints = '1';
+        wrap.style.cssText
+            = 'display:flex;flex-direction:column;gap:8px;'
+            + 'margin-top:14px;font-size:12px;';
+        parent.appendChild(wrap);
+
+        // Filter state — shared across both sections so a single Kind
+        // chip toggle filters everywhere. Sync-status only applies to
+        // the data-path bucket (clock-path mix has no synchronizer
+        // semantic). Default to "unsynchronized" because that's the bug
+        // list the user is actually triaging.
+        const state = {
+            mode: modeName || '',
+            sync: 'unsynchronized',
+            kinds: new Set(),  // empty = all kinds
+        };
+        // Stash the state on `this` so re-renders (mode changes, kind
+        // toggles) can mutate the same object without re-creating the
+        // section DOM.
+        this._cdcMixEndpointsState = state;
+
+        const dataSection = this._buildMixEndpointSection({
+            id: 'data',
+            label: 'Data-path mix endpoints',
+            includeSync: true,
+            state,
+        });
+        const clockSection = this._buildMixEndpointSection({
+            id: 'clock',
+            label: 'Clock-path mix endpoints',
+            includeSync: false,
+            state,
+        });
+        wrap.appendChild(dataSection.host);
+        wrap.appendChild(clockSection.host);
+        // Both sections share the same fetch promise; refreshing one
+        // re-renders both because filter changes affect the counts on
+        // both.
+        state.refreshAll = () => {
+            dataSection.refresh();
+            clockSection.refresh();
+        };
+    }
+
+    // Construct one collapsible section (host + header + body) and
+    // return refs the caller can use to expand/refresh.
+    _buildMixEndpointSection({id, label, includeSync, state}) {
+        const host = document.createElement('div');
+        host.dataset.cdcMixSection = id;
+        host.style.cssText
+            = 'border:1px solid var(--border);border-radius:3px;'
+            + 'background:var(--bg-secondary);';
+
+        const header = document.createElement('div');
+        header.style.cssText
+            = 'display:flex;align-items:center;gap:8px;'
+            + 'padding:6px 10px;cursor:pointer;'
+            + 'font-weight:600;color:var(--fg-primary);'
+            + 'user-select:none;';
+        header.title = id === 'data'
+            ? 'Endpoints whose D pin sees ≥2 clocks (data-path mix). '
+              + 'Click to load and group by where the mix originates.'
+            : 'Flops whose CK pin sees ≥2 clocks (clock-path mix). '
+              + 'Click to load and group by where the clock-OR mixes.';
+        const arrow = document.createElement('span');
+        arrow.textContent = '▸';
+        arrow.style.cssText = 'display:inline-block;width:10px;'
+            + 'transition:transform 120ms;';
+        const title = document.createElement('span');
+        title.textContent = label;
+        const counts = document.createElement('span');
+        counts.style.cssText = 'color:var(--fg-muted);font-weight:400;';
+        counts.textContent = '(— click to compute)';
+        header.appendChild(arrow);
+        header.appendChild(title);
+        header.appendChild(counts);
+        host.appendChild(header);
+
+        const body = document.createElement('div');
+        body.style.cssText = 'display:none;padding:8px 10px 10px;'
+            + 'border-top:1px solid var(--border);';
+        host.appendChild(body);
+
+        let expanded = false;
+        let loaded = false;
+        let loading = false;
+
+        const refresh = () => {
+            if (!loaded || !expanded) {
+                return;
+            }
+            this._refreshMixEndpointSection({
+                bodyEl: body,
+                headerCounts: counts,
+                bucketName: id === 'data' ? 'data_path' : 'clock_path',
+                includeSync,
+                state,
+            });
+        };
+
+        const expand = async () => {
+            expanded = true;
+            arrow.style.transform = 'rotate(90deg)';
+            body.style.display = 'block';
+            if (loaded) {
+                refresh();
+                return;
+            }
+            if (loading) {
+                return;
+            }
+            loading = true;
+            counts.textContent = '(loading…)';
+            try {
+                await this._fetchCdcMixEndpoints(state.mode);
+                loaded = true;
+                refresh();
+            } catch (e) {
+                console.warn('[CDC] mix-endpoints fetch failed', e);
+                counts.textContent = '(load failed — click to retry)';
+                loading = false;
+            }
+            loading = false;
+        };
+        const collapse = () => {
+            expanded = false;
+            arrow.style.transform = '';
+            body.style.display = 'none';
+        };
+        header.addEventListener('click', () => {
+            if (expanded) {
+                collapse();
+            } else {
+                expand();
+            }
+        });
+
+        return {host, refresh};
+    }
+
+    // Lazy fetch + cache. The promise is shared across both sections
+    // and across the filter-driven re-renders.
+    async _fetchCdcMixEndpoints(modeName) {
+        if (!this._cdcMixEndpointsCache) {
+            this._cdcMixEndpointsCache = new Map();
+        }
+        const key = modeName || '';
+        if (this._cdcMixEndpointsCache.has(key)) {
+            return this._cdcMixEndpointsCache.get(key);
+        }
+        await this._app.websocketManager.readyPromise;
+        const promise = this._requestWithTimeout({
+            type: 'cdc_mix_endpoints',
+            mode: modeName,
+        });
+        // Cache the promise so two concurrent expand calls share one
+        // RPC. Replace with the resolved data after it lands so later
+        // accesses are sync.
+        this._cdcMixEndpointsCache.set(key, promise);
+        try {
+            const data = await promise;
+            this._cdcMixEndpointsCache.set(key, data);
+            return data;
+        } catch (e) {
+            this._cdcMixEndpointsCache.delete(key);
+            throw e;
+        }
+    }
+
+    // Render (or re-render) a section body from the cached payload,
+    // applying current filters and updating the section header counts.
+    _refreshMixEndpointSection({
+        bodyEl, headerCounts, bucketName, includeSync, state
+    }) {
+        const cached = this._cdcMixEndpointsCache
+            ? this._cdcMixEndpointsCache.get(state.mode || '') : null;
+        if (!cached || cached.then) {
+            // Still resolving (we shouldn't be here); skip.
+            return;
+        }
+        const bucket = (cached && cached[bucketName]) || {
+            groups: [], total_endpoints: 0, total_origins: 0,
+            kinds_total: {}, sync_total: {},
+        };
+        bodyEl.innerHTML = '';
+
+        // ── Section description ──
+        // Each bucket shows a short explainer so the meaning of a row +
+        // an expanded card is self-evident. The user shouldn't have
+        // to read source to figure out what "origin" or "endpoint"
+        // refers to in the listing.
+        const desc = document.createElement('div');
+        desc.style.cssText
+            = 'margin-bottom:8px;color:var(--fg-muted);'
+            + 'font-size:11px;line-height:1.4;';
+        if (bucketName === 'data_path') {
+            desc.textContent
+                = 'Each card is a gate where two or more clock domains '
+                + 'converge on a data path. Expand to see the capture '
+                + 'flops downstream of that gate (where the mixed data '
+                + 'is sampled). "Unsynced" rows are likely CDC bugs.';
+        } else {
+            desc.textContent
+                = 'Each card is a gate where two or more clocks '
+                + 'converge on a clock-network path. Expand to see '
+                + 'the flops whose CK pin is fed by that mix — they '
+                + 'launch for multiple capture domains at once.';
+        }
+        bodyEl.appendChild(desc);
+
+        // ── Filter bar ──
+        // Always-visible kind chips on top; sync-status radio only on
+        // the data-path bucket.
+        const filterBar = document.createElement('div');
+        filterBar.style.cssText
+            = 'display:flex;flex-wrap:wrap;align-items:center;'
+            + 'gap:8px 12px;margin-bottom:8px;';
+        if (includeSync) {
+            filterBar.appendChild(
+                this._buildMixSyncRadio(state, bucket.sync_total || {}));
+        }
+        filterBar.appendChild(
+            this._buildMixKindChips(state, bucket.kinds_total || {}));
+        bodyEl.appendChild(filterBar);
+
+        // ── Filter the cached data ──
+        const filtered = this._filterMixBucket(bucket, includeSync, state);
+
+        // ── Header counts ──
+        // Data-path bucket counts STA endpoints (one per D-pin); the
+        // clock-path bucket dedupes to one row per flop instance, so
+        // the unit there is "flops" not "endpoints".
+        const groupCount = filtered.groups.length;
+        const epCount = filtered.totalEndpoints;
+        const epWord = bucketName === 'clock_path' ? 'flop' : 'endpoint';
+        const epWordPl = bucketName === 'clock_path' ? 'flops' : 'endpoints';
+        if (epCount === 0) {
+            headerCounts.textContent
+                = bucket.total_endpoints === 0
+                    ? `(no multi-clock ${epWordPl})`
+                    : `(0 ${epWordPl} match filters)`;
+        } else {
+            headerCounts.textContent
+                = `(${epCount} ${epCount === 1 ? epWord : epWordPl} `
+                + `from ${groupCount} `
+                + `${groupCount === 1 ? 'origin' : 'origins'})`;
+        }
+
+        // ── Render groups ──
+        if (filtered.groups.length === 0) {
+            const empty = document.createElement('div');
+            empty.style.cssText
+                = 'padding:8px;color:var(--fg-muted);'
+                + 'font-style:italic;';
+            empty.textContent = bucket.total_endpoints === 0
+                ? 'No endpoints in this bucket.'
+                : 'No endpoints match the active filters.';
+            bodyEl.appendChild(empty);
+            return;
+        }
+        for (const grp of filtered.groups) {
+            const ec = (grp.endpoints || []).length;
+            grp._unitWord = ec === 1 ? epWord : epWordPl;
+            bodyEl.appendChild(
+                this._buildMixOriginGroup(grp, includeSync));
+        }
+    }
+
+    // Sync-status radio (data-path only). Counts reflect the unfiltered
+    // bucket so the user can see how many endpoints exist in each
+    // category before narrowing.
+    _buildMixSyncRadio(state, syncTotal) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText
+            = 'display:inline-flex;align-items:center;gap:6px;';
+        const labelEl = document.createElement('span');
+        labelEl.textContent = 'Sync:';
+        labelEl.style.cssText = 'color:var(--fg-muted);';
+        wrap.appendChild(labelEl);
+        const opts = [
+            {key: 'unsynchronized',
+             label: 'unsynchronized',
+             count: this._mixSyncUnsyncedCount(syncTotal)},
+            {key: 'all', label: 'all', count: this._mixSyncTotal(syncTotal)},
+            {key: 'synced',
+             label: 'synced',
+             count: this._mixSyncSyncedCount(syncTotal)},
+        ];
+        for (const o of opts) {
+            const btn = document.createElement('span');
+            const selected = state.sync === o.key;
+            btn.style.cssText
+                = 'padding:2px 8px;border-radius:10px;cursor:pointer;'
+                + 'border:1px solid var(--border);'
+                + (selected
+                    ? 'background:var(--accent-tab);color:var(--bg-primary);'
+                    : 'background:var(--bg-primary);color:var(--fg-primary);');
+            btn.textContent = `${o.label} (${o.count})`;
+            btn.addEventListener('click', () => {
+                if (state.sync !== o.key) {
+                    state.sync = o.key;
+                    state.refreshAll();
+                }
+            });
+            wrap.appendChild(btn);
+        }
+        return wrap;
+    }
+
+    _mixSyncUnsyncedCount(syncTotal) {
+        // "unsynchronized" = chain detection found no synchronizer.
+        return +(syncTotal['none'] || 0);
+    }
+    _mixSyncSyncedCount(syncTotal) {
+        return +(syncTotal['ff_chain'] || 0)
+             + +(syncTotal['liberty_sync'] || 0)
+             + +(syncTotal['composite'] || 0)
+             + +(syncTotal['whitelisted'] || 0);
+    }
+    _mixSyncTotal(syncTotal) {
+        let t = 0;
+        for (const k of Object.keys(syncTotal || {})) {
+            t += +(syncTotal[k] || 0);
+        }
+        return t;
+    }
+
+    // Endpoint-kind chip filter — same convention as the SDC Endpoints
+    // tab. An empty selection means "all kinds". Counts reflect the
+    // unfiltered bucket.
+    _buildMixKindChips(state, kindsTotal) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText
+            = 'display:inline-flex;align-items:center;gap:6px;'
+            + 'flex-wrap:wrap;';
+        const labelEl = document.createElement('span');
+        labelEl.textContent = 'Kind:';
+        labelEl.style.cssText = 'color:var(--fg-muted);';
+        wrap.appendChild(labelEl);
+        const order = ['flipflop', 'latch', 'port', 'macro', 'clock_gate',
+                       'stdcell'];
+        const labelMap = {
+            flipflop: 'FF', latch: 'latch', port: 'port',
+            macro: 'macro', clock_gate: 'ICG', stdcell: 'stdcell',
+        };
+        for (const k of order) {
+            const cnt = +(kindsTotal[k] || 0);
+            if (cnt === 0) {
+                continue;
+            }
+            const chip = document.createElement('span');
+            const selected = state.kinds.has(k);
+            chip.style.cssText
+                = 'padding:2px 8px;border-radius:10px;cursor:pointer;'
+                + 'border:1px solid var(--border);'
+                + (selected
+                    ? 'background:var(--accent-tab);color:var(--bg-primary);'
+                    : 'background:var(--bg-primary);color:var(--fg-primary);');
+            chip.textContent = `${labelMap[k] || k} (${cnt})`;
+            chip.addEventListener('click', () => {
+                if (state.kinds.has(k)) {
+                    state.kinds.delete(k);
+                } else {
+                    state.kinds.add(k);
+                }
+                state.refreshAll();
+            });
+            wrap.appendChild(chip);
+        }
+        return wrap;
+    }
+
+    // Apply the active filters to a bucket and return the visible
+    // groups + total endpoint count. Groups with zero matching
+    // endpoints after filtering are dropped entirely.
+    _filterMixBucket(bucket, includeSync, state) {
+        const groups = (bucket && bucket.groups) || [];
+        const out = [];
+        let totalEndpoints = 0;
+        for (const g of groups) {
+            const eps = (g.endpoints || []).filter(e => {
+                if (state.kinds.size > 0 && !state.kinds.has(e.kind)) {
+                    return false;
+                }
+                if (includeSync && state.sync !== 'all') {
+                    const k = (e.sync_status && e.sync_status.kind) || 'none';
+                    if (state.sync === 'unsynchronized' && k !== 'none') {
+                        return false;
+                    }
+                    if (state.sync === 'synced' && k === 'none') {
+                        return false;
+                    }
+                }
+                return true;
+            });
+            if (eps.length === 0) {
+                continue;
+            }
+            out.push({...g, endpoints: eps});
+            totalEndpoints += eps.length;
+        }
+        return {groups: out, totalEndpoints};
+    }
+
+    // One mix-origin group: header (origin label + clock-set + count)
+    // collapses an endpoint table.
+    _buildMixOriginGroup(grp, includeSync) {
+        const host = document.createElement('div');
+        host.style.cssText
+            = 'border:1px solid var(--border-faint, var(--border));'
+            + 'border-radius:3px;margin-top:6px;'
+            + 'background:var(--bg-primary);';
+
+        const header = document.createElement('div');
+        header.style.cssText
+            = 'display:flex;align-items:center;gap:8px;'
+            + 'padding:5px 8px;cursor:pointer;user-select:none;';
+        const arrow = document.createElement('span');
+        arrow.textContent = '▸';
+        arrow.style.cssText = 'display:inline-block;width:10px;'
+            + 'color:var(--fg-muted);transition:transform 120ms;';
+        header.appendChild(arrow);
+
+        // Origin label: short last-segment by default, full path in
+        // tooltip. Long hierarchical paths leading-ellipsis-truncate
+        // via the same TRUNCATE_PATH_CSS the trace-mix cards use, so
+        // the tail (the actual gate name) stays visible. The title
+        // lives on the OUTER wrapper, not the rtl-truncated inner
+        // span — browsers inherit the element's `direction` property
+        // into the native tooltip and a tooltip on a `direction:rtl`
+        // element renders right-aligned, which is what the user
+        // reported as misaligned.
+        const originLblWrap = document.createElement('span');
+        originLblWrap.style.cssText
+            = 'flex:0 1 auto;min-width:0;'
+            + 'display:flex;align-items:baseline;';
+        originLblWrap.title = this._mixOriginTooltip(grp);
+        const originLbl = document.createElement('span');
+        originLbl.style.cssText
+            = 'font-family:monospace;flex:0 1 auto;min-width:0;'
+            + TRUNCATE_PATH_CSS;
+        const labelText = this._mixOriginLabel(grp);
+        originLbl.textContent = labelText;
+        originLblWrap.appendChild(originLbl);
+        header.appendChild(originLblWrap);
+
+        const clocksLbl = document.createElement('span');
+        clocksLbl.style.cssText
+            = 'display:inline-flex;align-items:center;gap:4px;'
+            + 'flex:0 0 auto;';
+        for (const c of (grp.clocks || [])) {
+            clocksLbl.appendChild(this._cdcMakeClockChip(c));
+        }
+        header.appendChild(clocksLbl);
+
+        const cntLbl = document.createElement('span');
+        cntLbl.style.cssText
+            = 'margin-left:auto;color:var(--fg-muted);'
+            + 'flex:0 0 auto;';
+        const ec = (grp.endpoints || []).length;
+        // Word matches the section's unit (set on the host by the
+        // section builder) so the per-group label tracks the per-
+        // section header.
+        const word = grp._unitWord || (ec === 1 ? 'endpoint' : 'endpoints');
+        cntLbl.textContent = `${ec} ${word}`;
+        header.appendChild(cntLbl);
+        host.appendChild(header);
+
+        const body = document.createElement('div');
+        body.style.cssText = 'display:none;padding:6px 8px 6px 22px;'
+            + 'border-top:1px solid var(--border-faint, var(--border));';
+        host.appendChild(body);
+
+        let expanded = false;
+        header.addEventListener('click', () => {
+            expanded = !expanded;
+            arrow.style.transform = expanded ? 'rotate(90deg)' : '';
+            body.style.display = expanded ? 'block' : 'none';
+            if (expanded && body.children.length === 0) {
+                this._renderMixGroupEndpoints(body, grp, includeSync);
+            }
+        });
+        return host;
+    }
+
+    // Origin label rules:
+    //   Mixer / NetMixer  → "<inst>/<pin>"  (the gate/net mixing clocks)
+    //   Port              → "port: <pin>"   (multi-clock arrives via SDC)
+    //   DepthLimit / Feedback / Stuck / Unresolved / NoOrigin →
+    //     short "(<reason>)" placeholder. The pin/inst these terminals
+    //     carried was where ONE endpoint's walk gave up — not the group
+    //     identity — so the backend collapses them by (kind, clocks)
+    //     and we show only the kind here.
+    _mixOriginLabel(grp) {
+        const k = grp.origin_kind;
+        const inst = grp.origin_inst || '';
+        const pin = grp.origin_pin || '';
+        if (k === 'mixer' || k === 'net_mixer') {
+            // For net_mixer the origin "pin" is the load-side pin (the
+            // net itself is the mixer), so showing the load pin is the
+            // most informative label.
+            return pin || inst || '(unknown origin)';
+        }
+        if (k === 'port') {
+            return `port: ${pin || '(unknown)'}`;
+        }
+        if (k === 'depth_limit') return '(walk depth limit)';
+        if (k === 'feedback') return '(feedback loop)';
+        if (k === 'stuck') return '(stuck — no upstream contributor)';
+        return '(no origin found)';
+    }
+    // Per-kind tooltip explanation. Surfaces what each terminal kind
+    // actually means so users don't have to read source to understand
+    // the listing — particularly important for the "(feedback)" /
+    // "(walk depth limit)" cases that look cryptic at first.
+    _mixOriginKindHelp(k) {
+        switch (k) {
+            case 'mixer':
+                return 'A combinational gate where two or more clock '
+                     + 'domains converge. This is the typical CDC '
+                     + 'origin — fix it with a synchronizer or by '
+                     + 'narrowing the data path to a single domain.';
+            case 'net_mixer':
+                return 'A net with multiple drivers, each on a '
+                     + 'different clock. Treated like a comb-cell '
+                     + 'mixer; fix at the driver level.';
+            case 'port':
+                return 'Multi-clock data arrives via a top-level '
+                     + 'port (set_input_delay attaches multiple '
+                     + 'clocks). Fix in SDC or with a domain-aware '
+                     + 'wrapper.';
+            case 'depth_limit':
+                return 'The mix-origin walk reached its depth cap '
+                     + '(20 stages) without finding a converging '
+                     + 'gate. Likely a deep clock tree or buffered '
+                     + 'data path; the actual mix is further '
+                     + 'upstream. Open the per-row trace to walk '
+                     + 'further.';
+            case 'feedback':
+                return 'The walk hit a cycle (combinational loop or '
+                     + 'feedback path) before finding a converging '
+                     + 'gate. Often benign in clock-mux structures; '
+                     + 'inspect the cycle to confirm.';
+            case 'stuck':
+                return 'No input on the gate intersected the clocks '
+                     + 'we were tracking — phantom propagation. '
+                     + 'Usually a sign that STA propagated clocks '
+                     + 'across a constant or disabled arc.';
+            case 'unresolved':
+            case 'no_origin':
+                return 'The walk could not find a driver for this '
+                     + 'net (undefined boundary, blackbox, or '
+                     + 'partially-linked design). The mix is real '
+                     + 'but the origin is not resolvable from the '
+                     + 'current netlist.';
+        }
+        return '';
+    }
+    _mixOriginTooltip(grp) {
+        const lbl = this._mixOriginLabel(grp);
+        const full = grp.origin_pin_full || grp.origin_inst_full || '';
+        const clk = (grp.clocks || []).join(', ');
+        const lines = [lbl];
+        if (full && full !== lbl) {
+            lines.push(full);
+        }
+        if (clk) {
+            lines.push(`clocks: ${clk}`);
+        }
+        const help = this._mixOriginKindHelp(grp.origin_kind);
+        if (help) {
+            lines.push('');  // blank separator
+            lines.push(help);
+        }
+        return lines.join('\n');
+    }
+
+    _renderMixGroupEndpoints(parent, grp, includeSync) {
+        const eps = grp.endpoints || [];
+        for (const e of eps) {
+            const row = document.createElement('div');
+            row.style.cssText
+                = 'display:flex;align-items:center;gap:8px;'
+                + 'padding:3px 0;font-size:12px;';
+            // Outer wrapper holds the `title` so the native tooltip
+            // doesn't inherit `direction:rtl` from the truncated inner
+            // span and end up right-aligned.
+            const nameWrap = document.createElement('span');
+            nameWrap.style.cssText
+                = 'flex:1 1 auto;min-width:0;display:flex;'
+                + 'align-items:baseline;';
+            nameWrap.title = e.name;
+            const nameEl = document.createElement('span');
+            nameEl.style.cssText
+                = 'font-family:monospace;flex:1 1 auto;min-width:0;'
+                + TRUNCATE_PATH_CSS;
+            nameEl.textContent = e.name;
+            // _linkifyPin makes the pin name clickable into the
+            // inspector. The pin reference shape it expects matches
+            // {odb_type, odb_id, name} — emit endpoints carry exactly
+            // those fields plus 'kind' / 'clocks' / 'sync_status'.
+            this._linkifyPin(nameEl, {
+                odb_type: e.pin_odb_type,
+                odb_id: e.pin_odb_id,
+                name: e.name,
+            }, 'name');
+            nameWrap.appendChild(nameEl);
+            row.appendChild(nameWrap);
+
+            const kindEl = document.createElement('span');
+            kindEl.style.cssText
+                = 'color:var(--fg-muted);flex:0 0 auto;font-size:11px;';
+            kindEl.textContent = e.kind;
+            row.appendChild(kindEl);
+
+            const clocksEl = document.createElement('span');
+            clocksEl.style.cssText
+                = 'display:inline-flex;align-items:center;gap:3px;'
+                + 'flex:0 0 auto;';
+            for (const c of (e.clocks || [])) {
+                clocksEl.appendChild(this._cdcMakeClockChip(c));
+            }
+            row.appendChild(clocksEl);
+
+            if (includeSync && e.sync_status) {
+                const syncEl = document.createElement('span');
+                const k = e.sync_status.kind || 'none';
+                const isUnsynced = k === 'none';
+                syncEl.textContent = isUnsynced
+                    ? 'unsynced'
+                    : (k === 'whitelisted'
+                        ? 'whitelisted'
+                        : `${k} (depth ${e.sync_status.depth || 0})`);
+                syncEl.style.cssText
+                    = 'flex:0 0 auto;font-size:11px;'
+                    + (isUnsynced
+                        ? 'color:var(--sdc-text-hold,#ff6b6b);font-weight:600;'
+                        : 'color:var(--fg-muted);');
+                row.appendChild(syncEl);
+            }
+
+            parent.appendChild(row);
+        }
     }
 
     // Fetch the first page of paths for a (launch, capture) cell and

@@ -233,6 +233,29 @@ TEST_F(NullStaTest, PinFanInReturnsEmptyEnvelope)
   EXPECT_TRUE(o.at("stages").as_array().empty());
 }
 
+// `cdc_mix_endpoints` returns the empty two-bucket envelope when STA
+// is not loaded — same shape the success path emits, just with empty
+// arrays. The frontend's section header collapses to "(no multi-clock
+// endpoints)" without special-casing.
+TEST_F(NullStaTest, MixEndpointsReturnsEmptyEnvelope)
+{
+  auto resp = handler_->handleCdcMixEndpoints(
+      makeReq(8, WebSocketRequest::kCdcMixEndpoints));
+  EXPECT_EQ(resp.id, 8u);
+  auto v = parsePayload(resp);
+  ASSERT_TRUE(v.is_object());
+  const auto& o = v.as_object();
+  ASSERT_TRUE(o.contains("data_path"));
+  ASSERT_TRUE(o.contains("clock_path"));
+  const auto& data = o.at("data_path").as_object();
+  EXPECT_EQ(data.at("total_endpoints").as_int64(), 0);
+  EXPECT_EQ(data.at("total_origins").as_int64(), 0);
+  EXPECT_TRUE(data.at("groups").as_array().empty());
+  const auto& clk = o.at("clock_path").as_object();
+  EXPECT_EQ(clk.at("total_endpoints").as_int64(), 0);
+  EXPECT_TRUE(clk.at("groups").as_array().empty());
+}
+
 // `cdc_clock_mix_trace` returns a null `tree` field when STA is not
 // loaded — same end shape (no stages to render) as the fan-in
 // envelope, just expressed via a single root reference.
@@ -650,6 +673,11 @@ class CdcWithStaTest : public tst::Nangate45Fixture
         {{"capture_odb_id", itermId(capture_inst, d_term)}});
     return parsePayload(handler_->handleCdcPathDetail(req));
   }
+  bj::value getMixEndpoints()
+  {
+    return parsePayload(handler_->handleCdcMixEndpoints(
+        makeReq(103, WebSocketRequest::kCdcMixEndpoints)));
+  }
 
   sta::LibertyLibrary* library_{nullptr};
   sta::dbNetwork* db_network_{nullptr};
@@ -752,6 +780,90 @@ TEST_F(CdcWithStaTest, OverviewListsAllThreeClocks)
   EXPECT_NE(std::find(names.begin(), names.end(), "clk_a"), names.end());
   EXPECT_NE(std::find(names.begin(), names.end(), "clk_b"), names.end());
   EXPECT_NE(std::find(names.begin(), names.end(), "clk_c"), names.end());
+}
+
+// ─── Mix-endpoint listing (cdc_mix_endpoints) ──────────────────────────────
+
+// The fixture's `ff_mix_b` has `q_a` and `q_b` ANDed together at
+// `inst_and_mix` and the AND output drives the flop's D pin. Two
+// distinct clocks (clk_a, clk_b) reach D, so it must surface as a
+// data-path-mix endpoint, with the AND gate as the mix origin.
+TEST_F(CdcWithStaTest, MixEndpointsReportsDataPathMix)
+{
+  auto v = getMixEndpoints();
+  ASSERT_TRUE(v.is_object());
+  const auto& root = v.as_object();
+  const auto& data = root.at("data_path").as_object();
+  ASSERT_GE(data.at("total_endpoints").as_int64(), 1);
+  ASSERT_GE(data.at("groups").as_array().size(), 1u);
+
+  // Locate the group that contains ff_mix_b/D.
+  const auto& groups = data.at("groups").as_array();
+  const std::string mix_d = std::string(db_network_->pathName(
+      sta_->getDbNetwork()->dbToSta(ff_mix_b_->findITerm("D"))));
+  bool found = false;
+  std::string origin_inst;
+  for (const auto& g : groups) {
+    const auto& go = g.as_object();
+    for (const auto& e : go.at("endpoints").as_array()) {
+      if (e.as_object().at("name").as_string() == mix_d.c_str()) {
+        found = true;
+        if (go.contains("origin_inst") && go.at("origin_inst").is_string()) {
+          origin_inst = std::string(go.at("origin_inst").as_string());
+        }
+        EXPECT_EQ(go.at("origin_kind").as_string(), "mixer");
+        // Both clk_a and clk_b should land on the group's clock-set.
+        std::set<std::string> clks;
+        for (const auto& c : go.at("clocks").as_array()) {
+          clks.insert(std::string(c.as_string()));
+        }
+        EXPECT_TRUE(clks.count("clk_a"));
+        EXPECT_TRUE(clks.count("clk_b"));
+      }
+    }
+  }
+  EXPECT_TRUE(found) << "ff_mix_b/D missing from data_path bucket";
+  // The mix origin must be the AND2 cell that's mixing q_a and q_b.
+  // Fixture names it `mix_and` (see buildDesign).
+  EXPECT_NE(origin_inst.find("mix_and"), std::string::npos)
+      << "origin_inst was: " << origin_inst;
+}
+
+// Each endpoint row carries pin_odb refs, the kind classification,
+// the contributing clocks, and a sync_status object whose `kind`
+// reuses the cdc_overview tier vocabulary.
+TEST_F(CdcWithStaTest, MixEndpointsRowSchema)
+{
+  auto v = getMixEndpoints();
+  const auto& groups
+      = v.as_object().at("data_path").as_object().at("groups").as_array();
+  ASSERT_FALSE(groups.empty());
+  const auto& first_endpoint
+      = groups.front().as_object().at("endpoints").as_array().front();
+  const auto& eo = first_endpoint.as_object();
+  EXPECT_TRUE(eo.contains("name"));
+  EXPECT_TRUE(eo.contains("kind"));
+  EXPECT_TRUE(eo.contains("clocks"));
+  EXPECT_TRUE(eo.contains("pin_odb_type"));
+  EXPECT_TRUE(eo.contains("pin_odb_id"));
+  ASSERT_TRUE(eo.contains("sync_status"));
+  const std::string sync_kind
+      = std::string(eo.at("sync_status").as_object().at("kind").as_string());
+  static const std::set<std::string> kAllowed
+      = {"none", "ff_chain", "liberty_sync", "composite", "whitelisted"};
+  EXPECT_TRUE(kAllowed.count(sync_kind))
+      << "unexpected sync_status.kind: " << sync_kind;
+}
+
+// The fixture has no flops with multi-clock CK, so the clock-path
+// bucket must be empty. (When the multi-clock-CK demo eventually
+// ships in the test fixture this turns into a positive assertion.)
+TEST_F(CdcWithStaTest, MixEndpointsClockPathEmptyForSingleClockCk)
+{
+  auto v = getMixEndpoints();
+  const auto& clk = v.as_object().at("clock_path").as_object();
+  EXPECT_EQ(clk.at("total_endpoints").as_int64(), 0);
+  EXPECT_TRUE(clk.at("groups").as_array().empty());
 }
 
 // ─── Path-list filtering and pagination ────────────────────────────────────
