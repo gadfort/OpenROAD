@@ -7641,8 +7641,22 @@ export class SdcWidget {
         // by where the mix originates. Lazy-fetched on first expand.
         // Renders below the matrix because that's where the user lands
         // after reading the matrix totals and asks "which endpoints?".
+        //
+        // The container is a SIBLING of `wrap`, not a child — `wrap`
+        // has `min-width:max-content` so the matrix grid sizes to its
+        // natural width (no column overlap). If the section lived
+        // inside `wrap`, every section row would inherit that
+        // constraint and never truncate. Anchoring at `_cdcBody`
+        // level lets sections fill the panel's actual viewport width
+        // and lets row contents (origin labels, pin names, clock
+        // pills) shrink/truncate when there isn't room.
         if (allClocks.length >= 2) {
-            this._renderMixEndpointsSections(wrap, active);
+            const mixHost = document.createElement('div');
+            mixHost.style.cssText
+                = 'margin-top:14px;width:100%;'
+                + 'box-sizing:border-box;';
+            this._cdcBody.appendChild(mixHost);
+            this._renderMixEndpointsSections(mixHost, active);
         }
     }
 
@@ -7667,11 +7681,14 @@ export class SdcWidget {
         // chip toggle filters everywhere. Sync-status only applies to
         // the data-path bucket (clock-path mix has no synchronizer
         // semantic). Default to "unsynchronized" because that's the bug
-        // list the user is actually triaging.
+        // list the user is actually triaging. `pattern` is a
+        // glob/substring (Enter-to-commit) over endpoint name + origin
+        // path — same semantic as the Endpoints / Port Delays tabs.
         const state = {
             mode: modeName || '',
             sync: 'unsynchronized',
             kinds: new Set(),  // empty = all kinds
+            pattern: '',        // glob/substring on endpoint/origin name
         };
         // Stash the state on `this` so re-renders (mode changes, kind
         // toggles) can mutate the same object without re-creating the
@@ -7869,11 +7886,15 @@ export class SdcWidget {
 
         // ── Filter bar ──
         // Always-visible kind chips on top; sync-status radio only on
-        // the data-path bucket.
+        // the data-path bucket. The name search input is on the same
+        // row so all three filters are visible together — large
+        // designs can have hundreds of mixed endpoints; a name filter
+        // is the fastest way to focus on a specific module.
         const filterBar = document.createElement('div');
         filterBar.style.cssText
             = 'display:flex;flex-wrap:wrap;align-items:center;'
             + 'gap:8px 12px;margin-bottom:8px;';
+        filterBar.appendChild(this._buildMixSearchInput(state));
         if (includeSync) {
             filterBar.appendChild(
                 this._buildMixSyncRadio(state, bucket.sync_total || {}));
@@ -7923,6 +7944,55 @@ export class SdcWidget {
             bodyEl.appendChild(
                 this._buildMixOriginGroup(grp, includeSync));
         }
+    }
+
+    // Search input — Enter-to-commit, mirrors the convention used by
+    // the Endpoints / Port Delays / CDC paths search boxes. A bare
+    // word with no `*`/`?` folds into `*word*` (substring match) so
+    // typing `mux` finds every name containing `mux` without the
+    // user having to remember glob syntax.
+    _buildMixSearchInput(state) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText
+            = 'display:inline-flex;align-items:center;gap:6px;'
+            + 'flex:1 1 220px;min-width:160px;';
+        const labelEl = document.createElement('span');
+        labelEl.textContent = 'Name:';
+        labelEl.style.cssText = 'color:var(--fg-muted);';
+        wrap.appendChild(labelEl);
+        const input = document.createElement('input');
+        input.type = 'search';
+        input.placeholder = 'glob or substring (Enter to apply)';
+        input.value = state.pattern || '';
+        input.style.cssText
+            = 'flex:1 1 auto;min-width:0;padding:2px 6px;'
+            + 'font-size:12px;border:1px solid var(--border);'
+            + 'border-radius:3px;background:var(--bg-primary);'
+            + 'color:var(--fg-primary);';
+        const apply = () => {
+            const v = input.value.trim();
+            if (v === state.pattern) {
+                return;
+            }
+            state.pattern = v;
+            state.refreshAll();
+        };
+        input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                apply();
+            }
+        });
+        // Clearing the box (browser's "x" button) fires `search` with
+        // empty value — apply immediately so users don't have to also
+        // hit Enter to see the unfiltered list back.
+        input.addEventListener('search', () => {
+            if (input.value.trim() === '') {
+                apply();
+            }
+        });
+        wrap.appendChild(input);
+        return wrap;
     }
 
     // Sync-status radio (data-path only). Counts reflect the unfiltered
@@ -8032,11 +8102,27 @@ export class SdcWidget {
     // Apply the active filters to a bucket and return the visible
     // groups + total endpoint count. Groups with zero matching
     // endpoints after filtering are dropped entirely.
+    //
+    // The name pattern matches against (a) each endpoint's name and
+    // (b) the group's origin label / full path — so typing `mux`
+    // brings up every endpoint feeding from a clock-mux gate AND
+    // every endpoint whose own pin is named `*mux*`. This is more
+    // forgiving than name-only matching and matches the user's
+    // mental model: "show me everything related to `mux`".
     _filterMixBucket(bucket, includeSync, state) {
         const groups = (bucket && bucket.groups) || [];
+        const nameOk = state.pattern
+            ? this._compileGlob(state.pattern)
+            : null;
         const out = [];
         let totalEndpoints = 0;
         for (const g of groups) {
+            const groupNameMatches = nameOk
+                ? (nameOk(g.origin_inst || '')
+                   || nameOk(g.origin_pin || '')
+                   || nameOk(g.origin_inst_full || '')
+                   || nameOk(g.origin_pin_full || ''))
+                : false;
             const eps = (g.endpoints || []).filter(e => {
                 if (state.kinds.size > 0 && !state.kinds.has(e.kind)) {
                     return false;
@@ -8047,6 +8133,13 @@ export class SdcWidget {
                         return false;
                     }
                     if (state.sync === 'synced' && k === 'none') {
+                        return false;
+                    }
+                }
+                if (nameOk) {
+                    if (!groupNameMatches
+                        && !nameOk(e.name || '')
+                        && !nameOk(e.instance || '')) {
                         return false;
                     }
                 }
@@ -8100,17 +8193,31 @@ export class SdcWidget {
             + TRUNCATE_PATH_CSS;
         const labelText = this._mixOriginLabel(grp);
         originLbl.textContent = labelText;
+        // Make the origin clickable into the inspector when the
+        // backend resolved a real ODB target. For Mixer / NetMixer
+        // the natural target is the mixer cell's instance (so the
+        // user lands on the AND/OR cell with all its pin context);
+        // for Port the target is the port pin itself. Terminal kinds
+        // (depth_limit / feedback / stuck / unresolved / no_origin)
+        // have no useful target so they stay non-clickable.
+        const k = grp.origin_kind;
+        if (k === 'mixer' || k === 'net_mixer') {
+            this._linkifyPin(originLbl, grp, 'origin_inst');
+        } else if (k === 'port') {
+            this._linkifyPin(originLbl, grp, 'origin_pin');
+        }
+        // Suppress click bubbling so the linkified origin doesn't
+        // also toggle the group's expand/collapse arrow.
+        originLbl.addEventListener('click', (ev) => ev.stopPropagation());
         originLblWrap.appendChild(originLbl);
         header.appendChild(originLblWrap);
 
-        const clocksLbl = document.createElement('span');
-        clocksLbl.style.cssText
-            = 'display:inline-flex;align-items:center;gap:4px;'
-            + 'flex:0 0 auto;';
-        for (const c of (grp.clocks || [])) {
-            clocksLbl.appendChild(this._cdcMakeClockChip(c));
-        }
-        header.appendChild(clocksLbl);
+        // Group header shows up to 4 clock pills, with overflow into
+        // a `+N` indicator. A group-key collapsing to {clk_a, clk_b}
+        // typically has 2; multi-mode or 3-clock-mix groups can hit
+        // 4+ and would otherwise push the count label off-screen.
+        header.appendChild(
+            this._cdcMakeClocksPillRow(grp.clocks || [], 4));
 
         const cntLbl = document.createElement('span');
         cntLbl.style.cssText
@@ -8272,14 +8379,10 @@ export class SdcWidget {
             kindEl.textContent = e.kind;
             row.appendChild(kindEl);
 
-            const clocksEl = document.createElement('span');
-            clocksEl.style.cssText
-                = 'display:inline-flex;align-items:center;gap:3px;'
-                + 'flex:0 0 auto;';
-            for (const c of (e.clocks || [])) {
-                clocksEl.appendChild(this._cdcMakeClockChip(c));
-            }
-            row.appendChild(clocksEl);
+            // Per-row pills are tighter (3 visible) so name + sync
+            // chip + actions stay on one line on narrower panels.
+            row.appendChild(
+                this._cdcMakeClocksPillRow(e.clocks || [], 3));
 
             // Trace-mix button — opens the existing convergence-tree
             // tracer, anchored to this row (placement:'after' so the
@@ -8402,19 +8505,36 @@ export class SdcWidget {
         cells[0].scrollIntoView(
             {behavior: 'smooth', block: 'center', inline: 'center'});
 
-        // Two-stage flash: ring overlay (outline) on every matched
-        // cell so the user can spot multiple matches at a glance.
-        // Outline doesn't affect layout (unlike border), so the
-        // matrix doesn't shift while the highlight is on.
+        // Ring overlay (outline) on every matched cell so the user
+        // can spot multiple matches at a glance. Outline doesn't
+        // affect layout (unlike border), so the matrix doesn't shift
+        // while the highlight is on.
+        //
+        // Stash the pre-flash outline + the timer on the cell itself
+        // so repeated clicks restart the flash without leaking the
+        // highlight state — earlier we'd snapshot the FLASHED outline
+        // as "previous" on a second click and then "restore" the cell
+        // into a permanently-flashed state. With per-cell tracking,
+        // we only save the original outline once, and clearing the
+        // existing timer stops the prior restore from running.
         const RING_MS = 1400;
         for (const cell of cells) {
-            const prevOutline = cell.style.outline;
-            const prevOutlineOffset = cell.style.outlineOffset;
+            if (cell._cdcMixFlashTimer) {
+                clearTimeout(cell._cdcMixFlashTimer);
+            } else {
+                cell._cdcMixFlashSaved = {
+                    outline: cell.style.outline,
+                    outlineOffset: cell.style.outlineOffset,
+                };
+            }
             cell.style.outline = '2px solid var(--accent-tab)';
             cell.style.outlineOffset = '-2px';
-            setTimeout(() => {
-                cell.style.outline = prevOutline;
-                cell.style.outlineOffset = prevOutlineOffset;
+            cell._cdcMixFlashTimer = setTimeout(() => {
+                const saved = cell._cdcMixFlashSaved || {};
+                cell.style.outline = saved.outline || '';
+                cell.style.outlineOffset = saved.outlineOffset || '';
+                cell._cdcMixFlashTimer = null;
+                cell._cdcMixFlashSaved = null;
             }, RING_MS);
         }
     }
@@ -10508,6 +10628,40 @@ export class SdcWidget {
     // Tinted clock chip used inside the clock-mix renderer. Same
     // hash-to-hue background as the rest of the diagram so the
     // legend stays consistent (user feedback 2026-05-02 round 3).
+    // Render a row of clock pills with an overflow cap. Past `maxVisible`
+    // clocks the row collapses the tail into a single `+N` pill whose
+    // tooltip lists every clock. The parent tile stays at a bounded
+    // width even when an endpoint sees 8+ clocks (3-clock-mux deep
+    // trees, multi-mode designs) which would otherwise push the row
+    // past the panel width and break per-row layout.
+    _cdcMakeClocksPillRow(clocks, maxVisible) {
+        const wrap = document.createElement('span');
+        wrap.style.cssText
+            = 'display:inline-flex;align-items:center;gap:3px;'
+            + 'flex:0 0 auto;';
+        if (!clocks || clocks.length === 0) {
+            return wrap;
+        }
+        const max = (typeof maxVisible === 'number' && maxVisible > 0)
+            ? maxVisible : 3;
+        const list = clocks.slice();
+        const visible = list.slice(0, max);
+        for (const c of visible) {
+            wrap.appendChild(this._cdcMakeClockChip(c));
+        }
+        if (list.length > max) {
+            const more = document.createElement('span');
+            more.textContent = `+${list.length - max}`;
+            more.style.cssText
+                = 'padding:0 6px;border-radius:8px;font-size:11px;'
+                + 'background:var(--bg-header);color:var(--fg-muted);'
+                + 'white-space:nowrap;cursor:default;';
+            more.title = 'all clocks: ' + list.join(', ');
+            wrap.appendChild(more);
+        }
+        return wrap;
+    }
+
     _cdcMakeClockChip(name) {
         const chip = document.createElement('span');
         chip.textContent = name;
