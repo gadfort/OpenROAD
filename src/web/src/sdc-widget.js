@@ -1062,6 +1062,42 @@ export class SdcWidget {
         f.textContent = text;
     }
 
+    // Compute a per-clock port-count map from `_pdAllEntries` under
+    // the current pattern + direction filters (but NOT the clock
+    // filter — each row's count answers "switching to this clock
+    // would show me N ports given my other filters"). Same convention
+    // the backend's clocks_total uses for the Endpoints tab.
+    _pdComputeClockCounts() {
+        const entries = this._pdAllEntries || [];
+        const pattern = (this._pdSearchInput
+                         && this._pdSearchInput.value) || '';
+        const nameOk = this._compileGlob(pattern);
+        const dirFilter = this._pdDirFilter || 'all';
+        const dirOk = dirFilter === 'all'
+            ? () => true
+            : (e) => (e.direction
+                      || (e.is_input ? 'input' : 'output')) === dirFilter;
+        const counts = {};
+        const seen = {};
+        for (const e of entries) {
+            if (!nameOk(e.port) || !dirOk(e)) continue;
+            // Treat null/undefined clock as the widget's NONE
+            // sentinel by skipping — the populate map only keys on
+            // real clock names. The widget's noneCount affordance is
+            // not used by the Port Delays toolbar today (no
+            // exception-only rows in the fixture); if that changes,
+            // we'll thread a separate noneCount through here.
+            if (e.clock == null) continue;
+            const k = e.clock;
+            if (!seen[k]) seen[k] = new Set();
+            if (!seen[k].has(e.port)) {
+                seen[k].add(e.port);
+                counts[k] = (counts[k] || 0) + 1;
+            }
+        }
+        return counts;
+    }
+
     _applyPortDelayFilter() {
         this._pdScrollArea.innerHTML = '';
         // Refresh the direction-chip counts so they reflect the new
@@ -1070,6 +1106,15 @@ export class SdcWidget {
         // reflected the user's filter — confusing on a search like
         // "u_pad*" that matches 12 of 200 input ports.
         this._updatePdFilterCounts();
+        // Refresh the clock dropdown's per-clock counts and visible
+        // entries the same way: clocks that no longer match the
+        // pattern shouldn't sit in the dropdown with their old
+        // design-wide totals (or appear at all if zero match).
+        // Selection state is preserved by `populate` for any clock
+        // still in the new map.
+        if (this._pdClockFilter) {
+            this._pdClockFilter.populate(this._pdComputeClockCounts());
+        }
         const entries  = this._pdAllEntries || [];
         const timeUnit = this._pdTimeUnit   || 'ns';
         const filter   = this._pdDirFilter  || 'all';
