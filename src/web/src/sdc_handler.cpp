@@ -2725,18 +2725,6 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
     }
     const char* kind = classify(pin);
     sta::Instance* inst = network->instance(pin);
-    // Pre-filter instance-deduped tally.
-    if (std::string_view(kind) == "flipflop") {
-      seen_flop.insert(inst);
-    } else if (std::string_view(kind) == "latch") {
-      seen_latch.insert(inst);
-    } else if (std::string_view(kind) == "macro") {
-      seen_macro.insert(inst);
-    } else if (std::string_view(kind) == "clock_gate") {
-      seen_clock_gate.insert(inst);
-    } else {
-      seen_stdcell.insert(inst);
-    }
     // Cache the clockDomains() result so we don't recompute it per
     // emit. Done here (not later) because the clock filter and the
     // clocks_total tally both need it before we slice the page.
@@ -2749,17 +2737,43 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
         }
       }
     }
-    for (const auto& cn : clk_names) {
-      clocks_total_insts[cn].insert(inst);
+    std::string name = network->pathName(pin);
+    const bool name_match = !pat || pat->match(name.c_str());
+    const bool clock_match = clockMatches(clk_names);
+
+    // Per-kind tally answers "how many endpoints of this kind would
+    // surface if I selected the kind chip, given my current pattern
+    // and clock filters?" — apply those two but NOT the kind filter
+    // itself. Without this the chip counts stayed at design-wide
+    // totals when the user typed a search and never updated.
+    if (name_match && clock_match) {
+      if (std::string_view(kind) == "flipflop") {
+        seen_flop.insert(inst);
+      } else if (std::string_view(kind) == "latch") {
+        seen_latch.insert(inst);
+      } else if (std::string_view(kind) == "macro") {
+        seen_macro.insert(inst);
+      } else if (std::string_view(kind) == "clock_gate") {
+        seen_clock_gate.insert(inst);
+      } else {
+        seen_stdcell.insert(inst);
+      }
+    }
+    // Per-clock tally: same idea — apply pattern + kind filter but
+    // not the clock filter itself, so each clock chip's count
+    // reflects "what I'd get if I selected this clock".
+    if (name_match && kindMatches(kind)) {
+      for (const auto& cn : clk_names) {
+        clocks_total_insts[cn].insert(inst);
+      }
     }
     if (!kindMatches(kind)) {
       continue;
     }
-    std::string name = network->pathName(pin);
-    if (pat && !pat->match(name.c_str())) {
+    if (!name_match) {
       continue;
     }
-    if (!clockMatches(clk_names)) {
+    if (!clock_match) {
       continue;
     }
     hits.push_back({pin, kind, std::move(name), std::move(clk_names)});

@@ -860,30 +860,42 @@ export class SdcWidget {
     // backend response didn't carry `directions_total` (older server).
     _updatePdFilterCounts() {
         if (!this._pdFilterBtns) return;
-        let counts;
-        if (this._pdDirectionsTotal) {
-            counts = {
-                all:    +(this._pdDirectionsTotal.all || 0),
-                input:  +(this._pdDirectionsTotal.input  || 0),
-                output: +(this._pdDirectionsTotal.output || 0),
-                inout:  +(this._pdDirectionsTotal.inout  || 0),
-            };
-        } else {
-            const entries = this._pdAllEntries || [];
-            const seen = {
-                input: new Set(), output: new Set(), inout: new Set(),
-            };
-            for (const e of entries) {
-                const dir = e.direction || (e.is_input ? 'input' : 'output');
-                if (seen[dir]) seen[dir].add(e.port);
-            }
-            counts = {
-                all:    seen.input.size + seen.output.size + seen.inout.size,
-                input:  seen.input.size,
-                output: seen.output.size,
-                inout:  seen.inout.size,
-            };
+        // Counts always come from a client-side scan of `_pdAllEntries`
+        // so they can apply the user's current pattern and clock
+        // filters. The backend-supplied `_pdDirectionsTotal` only
+        // matches when no client-side filters are active — using it
+        // unconditionally produced stale chip counts that didn't
+        // update on search (chips would show design-wide totals while
+        // the cards below reflected the pattern match).
+        const entries = this._pdAllEntries || [];
+        const pattern = (this._pdSearchInput
+                         && this._pdSearchInput.value) || '';
+        const nameOk = this._compileGlob(pattern);
+        const clkOk = this._pdClockFilter
+            ? (e) => this._pdClockFilter.matches(e.clock)
+            : () => true;
+
+        // Per-chip the count answers "how many ports would match if I
+        // selected this direction filter, with my current pattern and
+        // clock filters?" — so each chip's count applies all OTHER
+        // filters but not its own direction. The "all" chip applies
+        // pattern + clock without any direction restriction.
+        const seen = {
+            input: new Set(), output: new Set(), inout: new Set(),
+        };
+        const seenAll = new Set();
+        for (const e of entries) {
+            if (!nameOk(e.port) || !clkOk(e)) continue;
+            const dir = e.direction || (e.is_input ? 'input' : 'output');
+            seenAll.add(e.port);
+            if (seen[dir]) seen[dir].add(e.port);
         }
+        const counts = {
+            all:    seenAll.size,
+            input:  seen.input.size,
+            output: seen.output.size,
+            inout:  seen.inout.size,
+        };
         for (const [key, btn] of Object.entries(this._pdFilterBtns)) {
             const base = btn.dataset.pdLabel || btn.textContent;
             const n = counts[key] || 0;
@@ -1052,6 +1064,12 @@ export class SdcWidget {
 
     _applyPortDelayFilter() {
         this._pdScrollArea.innerHTML = '';
+        // Refresh the direction-chip counts so they reflect the new
+        // search pattern + clock filter. Without this the chips kept
+        // showing design-wide totals while the cards below already
+        // reflected the user's filter — confusing on a search like
+        // "u_pad*" that matches 12 of 200 input ports.
+        this._updatePdFilterCounts();
         const entries  = this._pdAllEntries || [];
         const timeUnit = this._pdTimeUnit   || 'ns';
         const filter   = this._pdDirFilter  || 'all';

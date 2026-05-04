@@ -1636,6 +1636,50 @@ TEST_F(SdcHandlerWithStaTest, EndpointListKindsTotalIsConsistent)
   }
 }
 
+// `kinds_total` and `clocks_total` should reflect the active pattern
+// filter — the frontend's chip counts are reactive to the search box,
+// so the user can see "switching to this kind would give N matches"
+// given their current glob. Pre-fix the tally was design-wide and
+// never changed when the user typed a search.
+TEST_F(SdcHandlerWithStaTest, EndpointListChipCountsApplyPattern)
+{
+  // Baseline: no pattern → counts reflect the whole design.
+  auto baseVal = parsePayload(handler_->handleSdcEndpointList(
+      makeReq(1, WebSocketRequest::kSdcEndpointList)));
+  const auto& baseKinds = baseVal.as_object().at("kinds_total").as_object();
+  const auto& baseClocks = baseVal.as_object().at("clocks_total").as_object();
+  double baseFlop = baseKinds.contains("flipflop")
+                        ? asNumber(baseKinds.at("flipflop"))
+                        : 0.0;
+  double baseClkSum = 0.0;
+  for (const auto& [_, v] : baseClocks) {
+    baseClkSum += asNumber(v);
+  }
+  ASSERT_GT(baseFlop, 0.0);
+  ASSERT_GT(baseClkSum, 0.0);
+
+  // Pattern that's guaranteed not to match any endpoint in the
+  // fixture. Counts should collapse to 0 across the board.
+  WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
+  req.raw_json = makeJson({{"pattern", "definitely_no_such_pin_xyz_*"}});
+  auto val = parsePayload(handler_->handleSdcEndpointList(req));
+  const auto& obj = val.as_object();
+  const auto& kinds = obj.at("kinds_total").as_object();
+  const auto& clocks = obj.at("clocks_total").as_object();
+  double pruneFlop = kinds.contains("flipflop")
+                         ? asNumber(kinds.at("flipflop"))
+                         : 0.0;
+  double pruneClkSum = 0.0;
+  for (const auto& [_, v] : clocks) {
+    pruneClkSum += asNumber(v);
+  }
+  EXPECT_EQ(pruneFlop, 0.0)
+      << "kinds_total[flipflop] should reflect pattern filter";
+  EXPECT_EQ(pruneClkSum, 0.0)
+      << "clocks_total entries should reflect pattern filter";
+  EXPECT_EQ(asNumber(obj.at("total")), 0.0);
+}
+
 // Pagination doesn't necessarily preserve a stable total ordering
 // across calls (the underlying endpoint set is hash-ordered), but the
 // total count, kinds_total, and page-size handling must be coherent.
