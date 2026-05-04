@@ -2080,13 +2080,8 @@ dbNet* dbNetwork::flatNet(const Term* term) const
   staToDb(term, iterm, bterm, modbterm);
 
   if (bterm) {
-    return bterm->getNet();
-  }
-  if (modbterm) {
-    if (odb::dbModNet* modnet = modbterm->getModNet()) {
-      return modnet->findRelatedNet();
-    }
-    return nullptr;
+    dbNet* dnet = bterm->getNet();
+    return dnet;
   }
   logger_->error(
       ORD, 2029, "Illegal term for getting a flat net, must be bterm");
