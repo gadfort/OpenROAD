@@ -559,7 +559,7 @@ static const sta::Pin* findSingleNetDriver(const sta::Pin* load_pin,
   if (!db_net) {
     return nullptr;
   }
-  odb::dbNet* flat = db_net->flatNet(load_pin);
+  odb::dbNet* flat = db_net->findFlatDbNet(load_pin);
   if (!flat) {
     return nullptr;
   }
@@ -616,7 +616,7 @@ static std::vector<const sta::Pin*> collectFlatNetDrivers(
   if (!db_net) {
     return drivers;
   }
-  odb::dbNet* flat = db_net->flatNet(load_pin);
+  odb::dbNet* flat = db_net->findFlatDbNet(load_pin);
   if (!flat) {
     return drivers;
   }
@@ -1774,7 +1774,7 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
       b.nullField("out_net");
       return;
     }
-    odb::dbNet* dnet = ctx->db_network->flatNet(out_pin);
+    odb::dbNet* dnet = ctx->db_network->findFlatDbNet(out_pin);
     if (!dnet) {
       b.nullField("out_net");
       return;
@@ -1812,7 +1812,7 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
           if (pt.out_pin) {
             b.field("out_pin", std::string(ctx->network->pathName(pt.out_pin)));
             emitOdbPinFields("out_pin", pt.out_pin);
-            odb::dbNet* dnet = ctx->db_network->flatNet(pt.out_pin);
+            odb::dbNet* dnet = ctx->db_network->findFlatDbNet(pt.out_pin);
             if (dnet) {
               b.beginObject("out_net");
               b.field("name", std::string(dnet->getName()));
@@ -2095,7 +2095,7 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
         if (pt.out_pin) {
           b.field("out_pin", std::string(ctx->network->pathName(pt.out_pin)));
           emitOdbPinFields("out_pin", pt.out_pin);
-          odb::dbNet* dnet = ctx->db_network->flatNet(pt.out_pin);
+          odb::dbNet* dnet = ctx->db_network->findFlatDbNet(pt.out_pin);
           if (dnet) {
             b.beginObject("out_net");
             b.field("name", std::string(dnet->getName()));
@@ -2370,7 +2370,7 @@ WebSocketResponse CdcHandler::handleCdcPinFanIn(const WebSocketRequest& req)
       b.nullField("out_net");
       return;
     }
-    odb::dbNet* dnet = ctx->db_network->flatNet(out_pin);
+    odb::dbNet* dnet = ctx->db_network->findFlatDbNet(out_pin);
     if (!dnet) {
       b.nullField("out_net");
       return;
@@ -2406,7 +2406,7 @@ WebSocketResponse CdcHandler::handleCdcPinFanIn(const WebSocketRequest& req)
               b.field("out_pin",
                       std::string(ctx->network->pathName(pt.out_pin)));
               emitOdbPinFields("out_pin", pt.out_pin);
-              odb::dbNet* dnet = ctx->db_network->flatNet(pt.out_pin);
+              odb::dbNet* dnet = ctx->db_network->findFlatDbNet(pt.out_pin);
               if (dnet) {
                 b.beginObject("out_net");
                 b.field("name", std::string(dnet->getName()));
@@ -3159,7 +3159,7 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
         b.nullField("out_net");
         return;
       }
-      odb::dbNet* dnet = db_network->flatNet(out_pin);
+      odb::dbNet* dnet = db_network->findFlatDbNet(out_pin);
       if (!dnet) {
         b.nullField("out_net");
         return;
