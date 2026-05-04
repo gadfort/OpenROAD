@@ -3,12 +3,16 @@
 
 #pragma once
 
+#include <boost/json/object.hpp>
+#include <boost/json/value.hpp>
+#include <boost/json/value_to.hpp>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -25,6 +29,12 @@ namespace web {
 class RequestDispatcher;
 class TimingReport;
 class ClockTreeReport;
+
+// Sentinel string set as the Tcl result by WebServer::tclExitHandler
+// when the browser-side Tcl `exit`/`quit` is invoked.  TclHandler
+// detects this in handleTclEval and converts the response to a clean
+// shutdown signal for the browser.
+inline constexpr const char* kExitResultMsg = "_WEB_EXITING_";
 
 // Thread-safe Tcl command evaluation with output capture.
 struct TclEvaluator
@@ -123,7 +133,15 @@ struct WebSocketRequest
 
   uint32_t id = 0;
   Type type = kUnknown;
-  std::string raw_json;  // original JSON message for field extraction
+  boost::json::object json;  // parsed payload; empty on parse failure
+  // Original `"type"` string from the JSON, even when not registered.
+  // Used by the kUnknown error path for diagnosability.  Empty when
+  // the message was malformed (parse threw) or had no `type` field.
+  std::string raw_type;
+  // Set to the boost::json exception message when JSON parsing or one
+  // of the required envelope reads (id/type) failed.  Surfaced in the
+  // kUnknown error payload so WEB-0043 names the actual parse error.
+  std::string parse_error;
 };
 
 struct WebSocketResponse
@@ -138,6 +156,10 @@ struct WebSocketResponse
   uint32_t id = 0;
   PayloadType type = kJson;
   std::vector<unsigned char> payload;
+  // Original `"type"` string from the request, used by the kError
+  // logging path for diagnosability.  Annotated by WebSocketSession::on_read
+  // after the handler returns; handlers do not need to set it.
+  std::string request_type;
 };
 
 // Shared mutable state for a WebSocket session.
@@ -176,17 +198,86 @@ struct SessionState
   std::string active_heatmap;
 };
 
-// Minimal JSON field extraction (no JSON library dependency).
-std::string extract_string(const std::string& json, const std::string& key);
-int extract_int(const std::string& json, const std::string& key);
-int extract_int_or(const std::string& json,
-                   const std::string& key,
-                   int default_val);
-float extract_float_or(const std::string& json,
-                       const std::string& key,
-                       float default_val);
-std::set<std::string> extract_string_array(const std::string& json,
-                                           const std::string& key);
+// Optional-field accessor: returns the JSON value at `key` converted to T,
+// or `default_val` when the key is missing.  Throws
+// (boost::system::system_error) when the key is present but the JSON type
+// doesn't convert to T — that's a frontend/backend contract violation, surface
+// it.
+//
+// For required fields, prefer the bare boost::json idiom
+// `obj.at(key).as_int64()` / `as_string()` / `as_bool()` / `as_double()`,
+// which throws on either missing or wrong-typed input.
+template <class T>
+T jsonOr(const boost::json::object& obj, std::string_view key, T default_val)
+{
+  if (auto* v = obj.if_contains(key)) {
+    return boost::json::value_to<T>(*v);
+  }
+  return default_val;
+}
+
+// Lenient extractors used by the SDC / CDC handlers that pre-date the
+// upstream boost::json migration. They return a default-constructed
+// value when the key is missing OR when the value's JSON type doesn't
+// match — handlers built on these expect "field is optional, treat
+// type mismatch as absent" semantics throughout. Newer call sites
+// should prefer `jsonOr<T>()` (above) or the bare `.at().as_*()`
+// idiom for required fields.
+inline std::string extract_string(const boost::json::object& obj,
+                                  std::string_view key)
+{
+  if (auto* v = obj.if_contains(key)) {
+    if (v->is_string()) {
+      return std::string(v->as_string());
+    }
+  }
+  return {};
+}
+
+inline int extract_int(const boost::json::object& obj, std::string_view key)
+{
+  if (auto* v = obj.if_contains(key)) {
+    if (v->is_int64()) {
+      return static_cast<int>(v->as_int64());
+    }
+    if (v->is_double()) {
+      return static_cast<int>(v->as_double());
+    }
+  }
+  return 0;
+}
+
+inline int extract_int_or(const boost::json::object& obj,
+                          std::string_view key,
+                          int default_val)
+{
+  if (auto* v = obj.if_contains(key)) {
+    if (v->is_int64()) {
+      return static_cast<int>(v->as_int64());
+    }
+    if (v->is_double()) {
+      return static_cast<int>(v->as_double());
+    }
+  }
+  return default_val;
+}
+
+inline std::set<std::string> extract_string_array(
+    const boost::json::object& obj,
+    std::string_view key)
+{
+  std::set<std::string> result;
+  if (auto* v = obj.if_contains(key)) {
+    if (v->is_array()) {
+      for (const auto& e : v->as_array()) {
+        if (e.is_string()) {
+          result.insert(std::string(e.as_string()));
+        }
+      }
+    }
+  }
+  return result;
+}
 
 // Handles SELECT, INSPECT, and HOVER requests.
 class SelectHandler

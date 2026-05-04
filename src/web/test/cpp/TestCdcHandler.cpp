@@ -80,41 +80,33 @@ static WebSocketRequest makeReq(uint32_t id, WebSocketRequest::Type type)
   WebSocketRequest req;
   req.id = id;
   req.type = type;
-  req.raw_json = "{}";
+  // Empty payload is the common default — handlers that read fields
+  // assign their own makeJson() result on top.
   return req;
 }
 
-// Inline JSON literal helper. Test-only — values are simple identifiers so
-// no escaping is needed.
-static std::string makeJson(
+// Inline JSON-object helper. Returns boost::json::object directly so
+// callers assign straight to `WebSocketRequest::json`.
+static bj::object makeJson(
     std::initializer_list<std::pair<const char*, std::string>> string_fields,
     std::initializer_list<std::pair<const char*, int>> int_fields = {})
 {
-  std::string out = "{";
-  bool first = true;
+  bj::object out;
   for (const auto& [k, v] : string_fields) {
-    if (!first) {
-      out += ",";
-    }
-    out += "\"";
-    out += k;
-    out += "\":\"";
-    out += v;
-    out += "\"";
-    first = false;
+    out[k] = v;
   }
   for (const auto& [k, v] : int_fields) {
-    if (!first) {
-      out += ",";
-    }
-    out += "\"";
-    out += k;
-    out += "\":";
-    out += std::to_string(v);
-    first = false;
+    out[k] = v;
   }
-  out += "}";
   return out;
+}
+
+// Parse a JSON-string literal into boost::json::object. For tests that
+// build a request body with embedded escapes / dynamic substitutions
+// rather than using makeJson.
+static bj::object parseObj(const std::string& s)
+{
+  return bj::parse(s).as_object();
 }
 
 // Resolve a (launch, capture) cell out of an overview response. The
@@ -200,7 +192,7 @@ TEST_F(NullStaTest, OverviewReturnsEmptyEnvelope)
 TEST_F(NullStaTest, PathsReturnsEmptyEnvelope)
 {
   auto req = makeReq(2, WebSocketRequest::kCdcPaths);
-  req.raw_json
+  req.json
       = makeJson({{"launch_clock", "clk_a"}, {"capture_clock", "clk_b"}});
   auto resp = handler_->handleCdcPaths(req);
   auto v = parsePayload(resp);
@@ -230,7 +222,7 @@ TEST_F(NullStaTest, PathDetailReturnsEmptyEnvelope)
 TEST_F(NullStaTest, PinFanInReturnsEmptyEnvelope)
 {
   auto req = makeReq(4, WebSocketRequest::kCdcPinFanIn);
-  req.raw_json = makeJson(
+  req.json = makeJson(
       {{"pin_odb_type", "iterm"}, {"clock", "clk_a"}},
       {{"pin_odb_id", 0}});
   auto resp = handler_->handleCdcPinFanIn(req);
@@ -247,7 +239,7 @@ TEST_F(NullStaTest, PinFanInReturnsEmptyEnvelope)
 TEST_F(NullStaTest, ClockMixTraceReturnsEmptyEnvelope)
 {
   auto req = makeReq(7, WebSocketRequest::kCdcClockMixTrace);
-  req.raw_json = makeJson({{"pin_odb_type", "iterm"}},
+  req.json = makeJson({{"pin_odb_type", "iterm"}},
                           {{"pin_odb_id", 0}});
   auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
   ASSERT_TRUE(v.is_object());
@@ -272,7 +264,7 @@ TEST_F(NullStaTest, WhitelistGetEmptyByDefault)
 TEST_F(NullStaTest, WhitelistSetThenGetRoundtrips)
 {
   auto setReq = makeReq(5, WebSocketRequest::kCdcSetWhitelist);
-  setReq.raw_json = makeJson({{"instance_patterns", "u_top/u_sync,*flop*"},
+  setReq.json = makeJson({{"instance_patterns", "u_top/u_sync,*flop*"},
                               {"master_patterns", "SYNC_FF,*MUX*"}});
   auto setResp = handler_->handleCdcSetWhitelist(setReq);
   auto sv = parsePayload(setResp);
@@ -302,13 +294,13 @@ TEST_F(NullStaTest, WhitelistEmptyValuesClearTheList)
 {
   // Seed the lists.
   auto setReq = makeReq(1, WebSocketRequest::kCdcSetWhitelist);
-  setReq.raw_json
+  setReq.json
       = makeJson({{"instance_patterns", "*"}, {"master_patterns", "DFF*"}});
   handler_->handleCdcSetWhitelist(setReq);
 
   // Empty values clear both lists.
   auto clearReq = makeReq(2, WebSocketRequest::kCdcSetWhitelist);
-  clearReq.raw_json
+  clearReq.json
       = makeJson({{"instance_patterns", ""}, {"master_patterns", ""}});
   auto clearResp = handler_->handleCdcSetWhitelist(clearReq);
   auto cv = parsePayload(clearResp);
@@ -320,7 +312,7 @@ TEST_F(NullStaTest, WhitelistCsvHandlesWhitespace)
 {
   // Spaces and tabs around tokens should be trimmed.
   auto req = makeReq(1, WebSocketRequest::kCdcSetWhitelist);
-  req.raw_json = makeJson({{"instance_patterns", "  *flop* , u_top/u_sync\t"},
+  req.json = makeJson({{"instance_patterns", "  *flop* , u_top/u_sync\t"},
                            {"master_patterns", "  SYNC_FF "}});
   auto v = parsePayload(handler_->handleCdcSetWhitelist(req));
   const auto& iarr = v.as_object().at("instance_patterns").as_array();
@@ -336,7 +328,7 @@ TEST_F(NullStaTest, WhitelistCsvIgnoresEmptyEntries)
 {
   // Empty tokens between commas should be silently dropped.
   auto req = makeReq(1, WebSocketRequest::kCdcSetWhitelist);
-  req.raw_json = makeJson({{"instance_patterns", ",,*flop*,, ,u_top/u_sync,,"},
+  req.json = makeJson({{"instance_patterns", ",,*flop*,, ,u_top/u_sync,,"},
                            {"master_patterns", ""}});
   auto v = parsePayload(handler_->handleCdcSetWhitelist(req));
   const auto& iarr = v.as_object().at("instance_patterns").as_array();
@@ -349,13 +341,13 @@ TEST_F(NullStaTest, WhitelistOnlyInstanceClearsMaster)
 {
   // Seed.
   auto seed = makeReq(1, WebSocketRequest::kCdcSetWhitelist);
-  seed.raw_json
+  seed.json
       = makeJson({{"instance_patterns", "*"}, {"master_patterns", "DFF*"}});
   handler_->handleCdcSetWhitelist(seed);
   // Sending a payload with only `instance_patterns` should overwrite
   // both lists — empty is the explicit "clear" signal for master.
   auto req = makeReq(2, WebSocketRequest::kCdcSetWhitelist);
-  req.raw_json
+  req.json
       = makeJson({{"instance_patterns", "*new*"}, {"master_patterns", ""}});
   auto v = parsePayload(handler_->handleCdcSetWhitelist(req));
   EXPECT_EQ(v.as_object().at("instance_patterns").as_array().size(), 1u);
@@ -636,7 +628,7 @@ class CdcWithStaTest : public tst::Nangate45Fixture
                      const std::string& category = "all")
   {
     auto req = makeReq(101, WebSocketRequest::kCdcPaths);
-    req.raw_json = makeJson({{"launch_clock", launch},
+    req.json = makeJson({{"launch_clock", launch},
                              {"capture_clock", capture},
                              {"category", category}});
     return parsePayload(handler_->handleCdcPaths(req));
@@ -653,7 +645,7 @@ class CdcWithStaTest : public tst::Nangate45Fixture
                           const std::string& launch_clock)
   {
     auto req = makeReq(102, WebSocketRequest::kCdcPathDetail);
-    req.raw_json = makeJson(
+    req.json = makeJson(
         {{"capture_odb_type", "iterm"}, {"launch_clock", launch_clock}},
         {{"capture_odb_id", itermId(capture_inst, d_term)}});
     return parsePayload(handler_->handleCdcPathDetail(req));
@@ -831,7 +823,7 @@ TEST_F(CdcWithStaTest, PathsPaginationOffsetLimitTrimsResults)
 {
   // Limit 2 — first batch only returns 2 rows; offset 2 returns the rest.
   auto req1 = makeReq(1, WebSocketRequest::kCdcPaths);
-  req1.raw_json = makeJson({{"launch_clock", "clk_a"},
+  req1.json = makeJson({{"launch_clock", "clk_a"},
                             {"capture_clock", "clk_b"},
                             {"category", "all"}},
                            {{"offset", 0}, {"limit", 2}});
@@ -840,7 +832,7 @@ TEST_F(CdcWithStaTest, PathsPaginationOffsetLimitTrimsResults)
   EXPECT_EQ(v1.as_object().at("paths").as_array().size(), 2u);
 
   auto req2 = makeReq(2, WebSocketRequest::kCdcPaths);
-  req2.raw_json = makeJson({{"launch_clock", "clk_a"},
+  req2.json = makeJson({{"launch_clock", "clk_a"},
                             {"capture_clock", "clk_b"},
                             {"category", "all"}},
                            {{"offset", 2}, {"limit", 100}});
@@ -866,7 +858,7 @@ TEST_F(CdcWithStaTest, PathsPatternFiltersByCapturePin)
   auto req = makeReq(1, WebSocketRequest::kCdcPaths);
   // Only the unsynced sink ff_unsynced has "unsynced" in its path —
   // the synced and combinational variants don't.
-  req.raw_json = makeJson({{"launch_clock", "clk_a"},
+  req.json = makeJson({{"launch_clock", "clk_a"},
                            {"capture_clock", "clk_b"},
                            {"category", "all"},
                            {"pattern", "*unsynced*"}});
@@ -895,7 +887,7 @@ TEST_F(CdcWithStaTest, PathsPatternFiltersByCapturePin)
 TEST_F(CdcWithStaTest, PathsPatternEmptyResultStillReportsCategoryTotal)
 {
   auto req = makeReq(1, WebSocketRequest::kCdcPaths);
-  req.raw_json = makeJson({{"launch_clock", "clk_a"},
+  req.json = makeJson({{"launch_clock", "clk_a"},
                            {"capture_clock", "clk_b"},
                            {"category", "all"},
                            {"pattern", "*no_such_pin*"}});
@@ -922,7 +914,7 @@ TEST_F(CdcWithStaTest, PinFanInFromMixGateInputLandsOnSourceFlop)
   odb::dbITerm* a2 = inst_and_mix_->findITerm("A2");
   ASSERT_NE(a2, nullptr);
   auto req = makeReq(1, WebSocketRequest::kCdcPinFanIn);
-  req.raw_json = makeJson({{"pin_odb_type", "iterm"},
+  req.json = makeJson({{"pin_odb_type", "iterm"},
                            {"clock", "clk_b"}},
                           {{"pin_odb_id", static_cast<int>(a2->getId())}});
   auto v = parsePayload(handler_->handleCdcPinFanIn(req));
@@ -951,7 +943,7 @@ TEST_F(CdcWithStaTest, PinFanInMissingIdReturnsEmpty)
 {
   auto req = makeReq(1, WebSocketRequest::kCdcPinFanIn);
   // No pin_odb_id field — extract_int_or returns -1.
-  req.raw_json = makeJson({{"pin_odb_type", "iterm"},
+  req.json = makeJson({{"pin_odb_type", "iterm"},
                            {"clock", "clk_a"}});
   auto v = parsePayload(handler_->handleCdcPinFanIn(req));
   ASSERT_TRUE(v.is_object());
@@ -977,7 +969,7 @@ TEST_F(CdcWithStaTest, PinFanInStopsWhenRequestedClockNotPresent)
   // — neither input carries it, so the walk must produce no
   // stages (or stop at the first non-matching gate without
   // reporting a flop in the wrong domain).
-  req.raw_json = makeJson({{"pin_odb_type", "iterm"},
+  req.json = makeJson({{"pin_odb_type", "iterm"},
                            {"clock", "clk_c"}},
                           {{"pin_odb_id", static_cast<int>(d->getId())}});
   auto v = parsePayload(handler_->handleCdcPinFanIn(req));
@@ -1011,7 +1003,7 @@ TEST_F(CdcWithStaTest, PinFanInMatchesPathDetailLaunchSide)
   odb::dbITerm* d = ff_mix_b_->findITerm("D");
   ASSERT_NE(d, nullptr);
   auto req = makeReq(1, WebSocketRequest::kCdcPinFanIn);
-  req.raw_json = makeJson({{"pin_odb_type", "iterm"},
+  req.json = makeJson({{"pin_odb_type", "iterm"},
                            {"clock", "clk_a"}},
                           {{"pin_odb_id", static_cast<int>(d->getId())}});
   auto fan_in = parsePayload(handler_->handleCdcPinFanIn(req))
@@ -1107,7 +1099,7 @@ TEST_F(CdcWithStaTest, ClockMixFromMixedDPinFindsMixerGate)
   odb::dbITerm* d = ff_mix_b_->findITerm("D");
   ASSERT_NE(d, nullptr);
   auto req = makeReq(1, WebSocketRequest::kCdcClockMixTrace);
-  req.raw_json = makeJson({{"pin_odb_type", "iterm"}},
+  req.json = makeJson({{"pin_odb_type", "iterm"}},
                           {{"pin_odb_id", static_cast<int>(d->getId())}});
   auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
   ASSERT_TRUE(v.is_object());
@@ -1141,7 +1133,7 @@ TEST_F(CdcWithStaTest, ClockMixOnSingleClockPinHasNoMixerStages)
   odb::dbITerm* a1 = inst_and_mix_->findITerm("A1");
   ASSERT_NE(a1, nullptr);
   auto req = makeReq(1, WebSocketRequest::kCdcClockMixTrace);
-  req.raw_json = makeJson({{"pin_odb_type", "iterm"}},
+  req.json = makeJson({{"pin_odb_type", "iterm"}},
                           {{"pin_odb_id", static_cast<int>(a1->getId())}});
   auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
   ASSERT_TRUE(v.is_object());
@@ -1161,7 +1153,7 @@ TEST_F(CdcWithStaTest, ClockMixTreatsRedundantClockRouteAsTransit)
   odb::dbITerm* d = ff_comb_b_->findITerm("D");
   ASSERT_NE(d, nullptr);
   auto req = makeReq(1, WebSocketRequest::kCdcClockMixTrace);
-  req.raw_json = makeJson({{"pin_odb_type", "iterm"}},
+  req.json = makeJson({{"pin_odb_type", "iterm"}},
                           {{"pin_odb_id", static_cast<int>(d->getId())}});
   auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
   ASSERT_TRUE(v.is_object());
@@ -1208,7 +1200,7 @@ TEST_F(CdcWithStaTest, ClockMixTreatsRedundantClockRouteAsTransit)
 TEST_F(CdcWithStaTest, ClockMixMissingIdReturnsEmpty)
 {
   auto req = makeReq(1, WebSocketRequest::kCdcClockMixTrace);
-  req.raw_json = makeJson({{"pin_odb_type", "iterm"}});
+  req.json = makeJson({{"pin_odb_type", "iterm"}});
   auto v = parsePayload(handler_->handleCdcClockMixTrace(req));
   ASSERT_TRUE(v.is_object());
   EXPECT_TRUE(v.as_object().at("tree").is_null());
@@ -1381,7 +1373,7 @@ TEST_F(CdcWithStaTest, PathDetailMissingPinReturnsEmpty)
 TEST_F(CdcWithStaTest, PathDetailUnsupportedOdbTypeReturnsEmpty)
 {
   auto req = makeReq(1, WebSocketRequest::kCdcPathDetail);
-  req.raw_json
+  req.json
       = makeJson({{"capture_odb_type", "bterm"}}, {{"capture_odb_id", 1}});
   auto v = parsePayload(handler_->handleCdcPathDetail(req));
   EXPECT_TRUE(v.as_object().at("stages").as_array().empty());
@@ -1397,7 +1389,7 @@ TEST_F(CdcWithStaTest, InstanceWhitelistReclassifiesAsSynchronized)
 
   // Whitelist ff_unsynced specifically.
   auto req = makeReq(1, WebSocketRequest::kCdcSetWhitelist);
-  req.raw_json = makeJson(
+  req.json = makeJson(
       {{"instance_patterns", "ff_unsynced"}, {"master_patterns", ""}});
   handler_->handleCdcSetWhitelist(req);
 
@@ -1429,7 +1421,7 @@ TEST_F(CdcWithStaTest, MasterWhitelistReclassifiesEveryDff)
 
   // Whitelist ALL DFF_X1 cells via master pattern.
   auto req = makeReq(1, WebSocketRequest::kCdcSetWhitelist);
-  req.raw_json
+  req.json
       = makeJson({{"instance_patterns", ""}, {"master_patterns", "DFF_X1"}});
   handler_->handleCdcSetWhitelist(req);
 
@@ -1453,7 +1445,7 @@ TEST_F(CdcWithStaTest, WhitelistGlobMatchesMultipleInstances)
   // Glob matches every comb/mix capture flop (ff_comb_b, ff_mix_b).
   // Doesn't match ff_unsynced — it stays in the unsynced bucket.
   auto req = makeReq(1, WebSocketRequest::kCdcSetWhitelist);
-  req.raw_json
+  req.json
       = makeJson({{"instance_patterns", "ff_*_b"}, {"master_patterns", ""}});
   handler_->handleCdcSetWhitelist(req);
 
@@ -1472,7 +1464,7 @@ TEST_F(CdcWithStaTest, WhitelistChangeInvalidatesPairCache)
   // Apply a whitelist; cache should be cleared so the NEXT overview
   // re-walks and reflects the new patterns.
   auto setReq = makeReq(1, WebSocketRequest::kCdcSetWhitelist);
-  setReq.raw_json = makeJson(
+  setReq.json = makeJson(
       {{"instance_patterns", "ff_unsynced"}, {"master_patterns", ""}});
   handler_->handleCdcSetWhitelist(setReq);
   EXPECT_EQ(
@@ -1481,7 +1473,7 @@ TEST_F(CdcWithStaTest, WhitelistChangeInvalidatesPairCache)
   // Clear the whitelist; counts must return to the original — proves
   // the cache didn't pin the previous classification.
   auto clearReq = makeReq(2, WebSocketRequest::kCdcSetWhitelist);
-  clearReq.raw_json
+  clearReq.json
       = makeJson({{"instance_patterns", ""}, {"master_patterns", ""}});
   handler_->handleCdcSetWhitelist(clearReq);
   EXPECT_EQ(

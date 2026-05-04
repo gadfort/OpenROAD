@@ -841,14 +841,14 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
   // Pagination: clamp offset/limit to the assembled raw list.
   // limit < 0 → "no limit" (legacy behavior).
   const int total = static_cast<int>(raw.size());
-  int offset = extract_int_or(req.raw_json, "offset", 0);
+  int offset = extract_int_or(req.json, "offset", 0);
   if (offset < 0) {
     offset = 0;
   }
   if (offset > total) {
     offset = total;
   }
-  int limit = extract_int_or(req.raw_json, "limit", -1);
+  int limit = extract_int_or(req.json, "limit", -1);
   if (limit < 0) {
     limit = total - offset;
   }
@@ -2386,7 +2386,7 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
   // (hierarchical, prefix-pruned) plus a separate port search since
   // SdcNetwork's pin search excludes top-level ports (mirrors `get_pins`
   // vs `get_ports` SDC semantics).
-  const std::string pat = extract_string(req.raw_json, "pin");
+  const std::string pat = extract_string(req.json, "pin");
   std::vector<const sta::Pin*> matched;
   if (sta::patternWildcards(pat)) {
     sta::PatternMatch pattern(pat);
@@ -2429,14 +2429,14 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
   // walks) is the expensive part on globs that match thousands of pins.
   // Slice the matched list so the frontend can stream results in batches.
   const int total = static_cast<int>(matched.size());
-  int offset = extract_int_or(req.raw_json, "offset", 0);
+  int offset = extract_int_or(req.json, "offset", 0);
   if (offset < 0) {
     offset = 0;
   }
   if (offset > total) {
     offset = total;
   }
-  int limit = extract_int_or(req.raw_json, "limit", -1);
+  int limit = extract_int_or(req.json, "limit", -1);
   if (limit < 0) {
     limit = total - offset;
   }
@@ -2635,14 +2635,14 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
   // matching the kind + glob filters. We tally per-kind totals before
   // applying the kind filter so the frontend toolbar can show the full
   // picture even when narrowed.
-  const std::string pattern = extract_string(req.raw_json, "pattern");
+  const std::string pattern = extract_string(req.json, "pattern");
   std::unique_ptr<sta::PatternMatch> pat;
   if (!pattern.empty()) {
     // Glob-style match (default ctor uses unix-glob semantics, which is
     // what SDC-style get_pins / get_ports expect).
     pat = std::make_unique<sta::PatternMatch>(pattern);
   }
-  const std::string kind_filter = extract_string(req.raw_json, "kind");
+  const std::string kind_filter = extract_string(req.json, "kind");
   auto kindMatches = [&](const char* k) {
     if (kind_filter.empty() || kind_filter == "all") {
       return true;
@@ -2656,7 +2656,7 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
   // likes.
   std::set<std::string> clock_whitelist;
   {
-    const std::string cf = extract_string(req.raw_json, "clock");
+    const std::string cf = extract_string(req.json, "clock");
     if (!cf.empty() && cf != "all") {
       std::string::size_type i = 0;
       while (i <= cf.size()) {
@@ -2801,14 +2801,14 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
   }
   const int total_instances = static_cast<int>(hit_insts_unique.size());
 
-  int offset = extract_int_or(req.raw_json, "offset", 0);
+  int offset = extract_int_or(req.json, "offset", 0);
   if (offset < 0) {
     offset = 0;
   }
   if (offset > total) {
     offset = total;
   }
-  int limit = extract_int_or(req.raw_json, "limit", -1);
+  int limit = extract_int_or(req.json, "limit", -1);
   if (limit < 0) {
     limit = total - offset;
   }
@@ -3031,7 +3031,7 @@ WebSocketResponse SdcHandler::handleSdcSetMode(const WebSocketRequest& req)
                         R"({"ok":false,"error":"no sta","current":""})");
   }
 
-  const std::string target = extract_string(req.raw_json, "mode");
+  const std::string target = extract_string(req.json, "mode");
   if (target.empty()) {
     return jsonResponse(
         req.id, R"({"ok":false,"error":"empty mode name","current":""})");
@@ -3141,7 +3141,7 @@ WebSocketResponse SdcHandler::handleSdcResolveGenClocks(
 
 // Registration entry point — called from web.cpp at session
 // construction to wire every kSdc* type into the dispatcher. Each
-// handler reads its own fields from req.raw_json.
+// handler reads its own fields from req.json.
 void SdcHandler::registerRequests(RequestDispatcher& d)
 {
   d.add("sdc_clocks",

@@ -3,159 +3,90 @@
 
 #pragma once
 
+// TRANSITIONAL SHIM. Upstream master converted JSON I/O to boost::json
+// directly (commit 194c489c2d, "[web] Convert JSON I/O from hand-rolled
+// code to Boost.JSON") and removed this header. The SDC and CDC handlers
+// in this branch still have ~900 callsites of the streaming JsonBuilder
+// API; this shim keeps that API working by buffering writes into a
+// `boost::json::value` tree and serializing on `str()`.
+//
+// The shim should go away once the SDC/CDC handlers are migrated to the
+// upstream idiom (build `boost::json::object` directly, `boost::json::
+// serialize` at the response edge). Tracking entry: see TODO in
+// plans/cdc-visualizer-plan.md.
+
+#include <boost/json/array.hpp>
+#include <boost/json/object.hpp>
+#include <boost/json/serialize.hpp>
+#include <boost/json/value.hpp>
 #include <cassert>
-#include <cstdio>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace web {
 
-// Escape a string for safe inclusion in a JSON string value.
-// Handles: \\ \" \n \r \t and control characters below 0x20.
-inline std::string json_escape(const std::string& s)
-{
-  std::string out;
-  out.reserve(s.size());
-  for (char c : s) {
-    switch (c) {
-      case '\\':
-        out += "\\\\";
-        break;
-      case '"':
-        out += "\\\"";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\r':
-        out += "\\r";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        if (static_cast<unsigned char>(c) < 0x20) {
-          char buf[8];
-          std::snprintf(
-              buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-          out += buf;
-        } else {
-          out += c;
-        }
-        break;
-    }
-  }
-  return out;
-}
-
-// Lightweight streaming JSON builder.
-//
-// Usage:
-//   JsonBuilder builder;
-//   builder.beginObject();
-//   builder.field("name", some_string);
-//   builder.field("count", 42);
-//   builder.field("active", true);
-//   builder.beginArray("items");
-//     builder.beginObject();
-//     builder.field("id", 1);
-//     builder.endObject();
-//   builder.endArray();
-//   builder.endObject();
-//   std::string json = builder.str();
-//
 class JsonBuilder
 {
  public:
-  JsonBuilder() { buf_.reserve(256); }
+  JsonBuilder() = default;
 
   // -- Containers --
 
-  void beginObject()
-  {
-    maybeComma();
-    buf_ += '{';
-    pushContext();
-  }
+  void beginObject() { openContainer(boost::json::object{}); }
 
   void beginObject(const char* key)
   {
-    writeKey(key);
-    buf_ += '{';
-    pushContext();
+    pending_key_ = key;
+    has_pending_key_ = true;
+    openContainer(boost::json::object{});
   }
   void beginObject(const std::string& key) { beginObject(key.c_str()); }
 
-  void endObject()
-  {
-    buf_ += '}';
-    popContext();
-  }
+  void endObject() { closeContainer(); }
 
-  void beginArray()
-  {
-    maybeComma();
-    buf_ += '[';
-    pushContext();
-  }
+  void beginArray() { openContainer(boost::json::array{}); }
 
   void beginArray(const char* key)
   {
-    writeKey(key);
-    buf_ += '[';
-    pushContext();
+    pending_key_ = key;
+    has_pending_key_ = true;
+    openContainer(boost::json::array{});
   }
   void beginArray(const std::string& key) { beginArray(key.c_str()); }
 
-  void endArray()
-  {
-    buf_ += ']';
-    popContext();
-  }
+  void endArray() { closeContainer(); }
 
   // -- Named fields (inside objects) --
 
   void field(const char* key, const std::string& val)
   {
-    writeKey(key);
-    writeString(val);
+    insertIntoParent(key, boost::json::value(val));
   }
   void field(const std::string& key, const std::string& val)
   {
     field(key.c_str(), val);
   }
-
   void field(const char* key, const char* val)
   {
-    writeKey(key);
-    writeString(val);
+    insertIntoParent(key, boost::json::value(val));
   }
-
   void field(const char* key, int val)
   {
-    writeKey(key);
-    buf_ += std::to_string(val);
+    insertIntoParent(key, boost::json::value(val));
   }
-
   void field(const char* key, float val)
   {
-    writeKey(key);
-    writeFloat(val);
+    insertIntoParent(key, boost::json::value(val));
   }
-
   void field(const char* key, double val)
   {
-    writeKey(key);
-    writeDouble(val);
+    insertIntoParent(key, boost::json::value(val));
   }
-
   void field(const char* key, bool val)
   {
-    writeKey(key);
-    buf_ += val ? "true" : "false";
+    insertIntoParent(key, boost::json::value(val));
   }
-
   void field(const std::string& key, const char* val)
   {
     field(key.c_str(), val);
@@ -169,136 +100,133 @@ class JsonBuilder
 
   void value(const std::string& val)
   {
-    maybeComma();
-    writeString(val);
+    insertIntoArray(boost::json::value(val));
   }
+  void value(const char* val) { insertIntoArray(boost::json::value(val)); }
+  void value(int val) { insertIntoArray(boost::json::value(val)); }
+  void value(float val) { insertIntoArray(boost::json::value(val)); }
+  void value(double val) { insertIntoArray(boost::json::value(val)); }
+  void value(bool val) { insertIntoArray(boost::json::value(val)); }
 
-  void value(const char* val)
-  {
-    maybeComma();
-    writeString(val);
-  }
-
-  void value(int val)
-  {
-    maybeComma();
-    buf_ += std::to_string(val);
-  }
-
-  void value(float val)
-  {
-    maybeComma();
-    writeFloat(val);
-  }
-
-  void value(double val)
-  {
-    maybeComma();
-    writeDouble(val);
-  }
-
-  void value(bool val)
-  {
-    maybeComma();
-    buf_ += val ? "true" : "false";
-  }
-
-  // Emit a named field with a JSON null value.
   void nullField(const char* key)
   {
-    writeKey(key);
-    buf_ += "null";
+    insertIntoParent(key, boost::json::value(nullptr));
   }
   void nullField(const std::string& key) { nullField(key.c_str()); }
 
-  // Emit a null value inside an array.
-  void nullValue()
-  {
-    maybeComma();
-    buf_ += "null";
-  }
+  void nullValue() { insertIntoArray(boost::json::value(nullptr)); }
 
   // -- Output --
 
-  const std::string& str() const { return buf_; }
-  std::string&& take() { return std::move(buf_); }
+  std::string str() const
+  {
+    finalize();
+    return boost::json::serialize(serialized_);
+  }
 
  private:
-  // need_comma_ is sized dynamically so a deeper-than-expected
-  // emission can't silently overflow a fixed buffer. Recursive
-  // tree emitters (clock-mix tracer, hierarchy walks) routinely
-  // hit 60+ nested levels on real designs, and a fixed cap that's
-  // smaller than the actual depth corrupts surrounding stack via
-  // out-of-bounds writes — surfacing later as malformed JSON
-  // (leading commas in arrays, missing keys) when the corrupted
-  // need_comma_ state is read back.
-  std::vector<bool> need_comma_;
-  int depth_ = 0;
-
-  std::string buf_;
-
-  void pushContext()
+  // Each stack frame is the container currently being built. Storing
+  // by value (not by pointer into a parent's storage) avoids the
+  // pointer-invalidation problem that arises when boost::json::array
+  // reallocates its backing on push_back: we only insert into the
+  // parent when the frame is popped, so every operation sees a
+  // stable address for the current container.
+  struct Frame
   {
-    if (static_cast<int>(need_comma_.size()) <= depth_) {
-      need_comma_.resize(depth_ + 1, false);
+    boost::json::value container;
+    std::string key;       // key to use when inserting into parent object
+    bool keyed = false;    // false → parent is an array (or this is root)
+  };
+
+  // Open a new container frame on the stack. If a pending key was
+  // queued by `beginObject(key)` / `beginArray(key)`, attach it now.
+  void openContainer(boost::json::value v)
+  {
+    Frame f;
+    f.container = std::move(v);
+    if (has_pending_key_) {
+      f.key = std::move(pending_key_);
+      f.keyed = true;
+      pending_key_.clear();
+      has_pending_key_ = false;
     }
-    need_comma_[depth_] = false;
-    depth_++;
+    stack_.push_back(std::move(f));
   }
 
-  void popContext()
+  // Pop the top frame and insert it into its parent. If we're closing
+  // the root frame, store it as the serialization root.
+  void closeContainer()
   {
-    depth_--;
-    if (depth_ > 0) {
-      need_comma_[depth_ - 1] = true;
+    assert(!stack_.empty());
+    Frame f = std::move(stack_.back());
+    stack_.pop_back();
+    placeFrame(std::move(f));
+  }
+
+  // Place a leaf value into the parent. `key` is the field name when
+  // the parent is an object.
+  void insertIntoParent(const char* key, boost::json::value v)
+  {
+    Frame f;
+    f.container = std::move(v);
+    f.key = key;
+    f.keyed = true;
+    placeFrame(std::move(f));
+  }
+
+  // Place a value into the parent array.
+  void insertIntoArray(boost::json::value v)
+  {
+    Frame f;
+    f.container = std::move(v);
+    placeFrame(std::move(f));
+  }
+
+  void placeFrame(Frame f)
+  {
+    if (stack_.empty()) {
+      root_ = std::move(f.container);
+      root_set_ = true;
+      return;
+    }
+    auto& parent = stack_.back().container;
+    if (parent.is_object()) {
+      assert(f.keyed);
+      parent.as_object()[f.key] = std::move(f.container);
+    } else if (parent.is_array()) {
+      parent.as_array().push_back(std::move(f.container));
+    } else {
+      assert(false && "JsonBuilder: parent is not a container");
     }
   }
 
-  void maybeComma()
+  // Snapshot the current state for serialization. If the user never
+  // explicitly closed the root container (e.g. their last call was
+  // `b.beginObject(); ...` and they invoked `str()` without
+  // `b.endObject()`), recover gracefully by treating the top frame
+  // as the root. This matches the streaming-builder semantics where
+  // `str()` was usable mid-construction.
+  void finalize() const
   {
-    if (depth_ > 0 && need_comma_[depth_ - 1]) {
-      buf_ += ", ";
+    if (root_set_) {
+      serialized_ = root_;
+      return;
     }
-    if (depth_ > 0) {
-      need_comma_[depth_ - 1] = true;
+    if (!stack_.empty()) {
+      serialized_ = stack_.front().container;
+      return;
     }
+    serialized_ = boost::json::value(nullptr);
   }
 
-  void writeKey(const char* key)
-  {
-    maybeComma();
-    buf_ += '"';
-    buf_ += json_escape(key);
-    buf_ += "\": ";
-  }
-
-  void writeString(const std::string& s)
-  {
-    buf_ += '"';
-    buf_ += json_escape(s);
-    buf_ += '"';
-  }
-
-  void writeString(const char* s)
-  {
-    buf_ += '"';
-    buf_ += json_escape(s);
-    buf_ += '"';
-  }
-
-  void writeFloat(float val)
-  {
-    char buf[32];
-    int n = std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(val));
-    buf_.append(buf, n);
-  }
-
-  void writeDouble(double val)
-  {
-    char buf[32];
-    int n = std::snprintf(buf, sizeof(buf), "%g", val);
-    buf_.append(buf, n);
-  }
+  std::vector<Frame> stack_;
+  boost::json::value root_;
+  bool root_set_ = false;
+  std::string pending_key_;
+  bool has_pending_key_ = false;
+  // Snapshot for str(); must remain valid for the lifetime of the
+  // returned reference if any caller stores `str()` by ref.
+  mutable boost::json::value serialized_;
 };
 
 }  // namespace web

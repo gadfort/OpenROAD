@@ -1407,17 +1407,17 @@ WebSocketResponse CdcHandler::handleCdcPaths(const WebSocketRequest& req)
   }
 
   const std::string launch_filter
-      = extract_string(req.raw_json, "launch_clock");
+      = extract_string(req.json, "launch_clock");
   const std::string capture_filter
-      = extract_string(req.raw_json, "capture_clock");
-  const std::string category_filter = extract_string(req.raw_json, "category");
+      = extract_string(req.json, "capture_clock");
+  const std::string category_filter = extract_string(req.json, "category");
   // Optional capture-pin glob — mirrors `sdc_endpoint_list`'s
   // `pattern` affordance. Empty / absent means no name narrowing.
   // Unix-glob semantics via sta::PatternMatch: `*` matches any
   // sequence, `?` matches one character, otherwise exact match.
   // (For substring-style "type a bare word" matching, the frontend
   // wraps the user's input in `*…*` before sending.)
-  const std::string pin_pattern = extract_string(req.raw_json, "pattern");
+  const std::string pin_pattern = extract_string(req.json, "pattern");
   std::unique_ptr<sta::PatternMatch> pin_pat;
   if (!pin_pattern.empty()) {
     pin_pat = std::make_unique<sta::PatternMatch>(pin_pattern);
@@ -1430,7 +1430,7 @@ WebSocketResponse CdcHandler::handleCdcPaths(const WebSocketRequest& req)
   // legacy behaviour). When the frontend caches a multi-mode overview
   // it threads the active matrix's mode name through here so per-cell
   // drill-in is consistent with the matrix the user clicked.
-  const std::string mode_name = extract_string(req.raw_json, "mode");
+  const std::string mode_name = extract_string(req.json, "mode");
   sta::Mode* mode = nullptr;
   if (!mode_name.empty()) {
     mode = ctx->sta->findMode(mode_name);
@@ -1520,14 +1520,14 @@ WebSocketResponse CdcHandler::handleCdcPaths(const WebSocketRequest& req)
   });
 
   const int total = static_cast<int>(hits.size());
-  int offset = extract_int_or(req.raw_json, "offset", 0);
+  int offset = extract_int_or(req.json, "offset", 0);
   if (offset < 0) {
     offset = 0;
   }
   if (offset > total) {
     offset = total;
   }
-  int limit = extract_int_or(req.raw_json, "limit", -1);
+  int limit = extract_int_or(req.json, "limit", -1);
   if (limit < 0) {
     limit = total - offset;
   }
@@ -1600,8 +1600,8 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
   // logic to the launch flop) is deferred until we wire in
   // findPathEnds; for now we emit only the capture-side chain since
   // that's enough to validate "how was it identified".
-  const std::string odb_type = extract_string(req.raw_json, "capture_odb_type");
-  const int odb_id = extract_int_or(req.raw_json, "capture_odb_id", -1);
+  const std::string odb_type = extract_string(req.json, "capture_odb_type");
+  const int odb_id = extract_int_or(req.json, "capture_odb_id", -1);
   odb::dbBlock* block = gen_ ? gen_->getBlock() : nullptr;
   if (!block || odb_type.empty() || odb_id < 0) {
     return jsonResponse(
@@ -1634,7 +1634,7 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
 
   // Mode resolution mirrors handleCdcPaths — explicit field if set,
   // otherwise current cmdMode.
-  const std::string mode_name = extract_string(req.raw_json, "mode");
+  const std::string mode_name = extract_string(req.json, "mode");
   sta::Mode* mode = nullptr;
   if (!mode_name.empty()) {
     mode = ctx->sta->findMode(mode_name);
@@ -1720,7 +1720,7 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
   // through avoids a recompute and supports multi-launch endpoints
   // where clockDomains() returns several clocks. Empty when omitted.
   const std::string requested_launch
-      = extract_string(req.raw_json, "launch_clock");
+      = extract_string(req.json, "launch_clock");
 
   // Resolve the launch clock up front — needed both for the capture
   // stage's `launch_clock` field, to tint launch-side comb / launch-
@@ -2160,9 +2160,9 @@ WebSocketResponse CdcHandler::handleCdcSetWhitelist(const WebSocketRequest& req)
   // the corresponding list. Caller is responsible for re-fetching the
   // overview / paths after setting — we don't push an event ourselves.
   const std::string inst_csv
-      = extract_string(req.raw_json, "instance_patterns");
+      = extract_string(req.json, "instance_patterns");
   const std::string master_csv
-      = extract_string(req.raw_json, "master_patterns");
+      = extract_string(req.json, "master_patterns");
 
   std::vector<std::string> new_insts = splitPatterns(inst_csv);
   std::vector<std::string> new_masters = splitPatterns(master_csv);
@@ -2235,8 +2235,8 @@ WebSocketResponse CdcHandler::handleCdcPinFanIn(const WebSocketRequest& req)
   }
   // Resolve the starting pin — same odb_type/odb_id pattern as
   // `cdc_path_detail` uses for the capture pin.
-  const std::string odb_type = extract_string(req.raw_json, "pin_odb_type");
-  const int odb_id = extract_int_or(req.raw_json, "pin_odb_id", -1);
+  const std::string odb_type = extract_string(req.json, "pin_odb_type");
+  const int odb_id = extract_int_or(req.json, "pin_odb_id", -1);
   odb::dbBlock* block = gen_ ? gen_->getBlock() : nullptr;
   if (!block || odb_type.empty() || odb_id < 0) {
     return jsonResponse(req.id, kEmpty);
@@ -2254,7 +2254,7 @@ WebSocketResponse CdcHandler::handleCdcPinFanIn(const WebSocketRequest& req)
   }
 
   // Mode resolution mirrors handleCdcPaths.
-  const std::string mode_name = extract_string(req.raw_json, "mode");
+  const std::string mode_name = extract_string(req.json, "mode");
   sta::Mode* mode = nullptr;
   if (!mode_name.empty()) {
     mode = ctx->sta->findMode(mode_name);
@@ -2266,7 +2266,7 @@ WebSocketResponse CdcHandler::handleCdcPinFanIn(const WebSocketRequest& req)
   // Resolve the requested clock — used by the back-walk to pick
   // which input of a multi-input gate to follow. Empty / missing
   // clock falls back to the first available input.
-  const std::string clock_name = extract_string(req.raw_json, "clock");
+  const std::string clock_name = extract_string(req.json, "clock");
   const sta::Clock* clk = nullptr;
   if (!clock_name.empty()) {
     if (sta::Sdc* sdc = sdcForMode(mode)) {
@@ -3033,8 +3033,8 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
   if (!ctx) {
     return jsonResponse(req.id, kEmpty);
   }
-  const std::string odb_type = extract_string(req.raw_json, "pin_odb_type");
-  const int odb_id = extract_int_or(req.raw_json, "pin_odb_id", -1);
+  const std::string odb_type = extract_string(req.json, "pin_odb_type");
+  const int odb_id = extract_int_or(req.json, "pin_odb_id", -1);
   odb::dbBlock* block = gen_ ? gen_->getBlock() : nullptr;
   if (!block || odb_type.empty() || odb_id < 0) {
     return jsonResponse(req.id, kEmpty);
@@ -3051,7 +3051,7 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
     return jsonResponse(req.id, kEmpty);
   }
 
-  const std::string mode_name = extract_string(req.raw_json, "mode");
+  const std::string mode_name = extract_string(req.json, "mode");
   sta::Mode* mode = nullptr;
   if (!mode_name.empty()) {
     mode = ctx->sta->findMode(mode_name);
@@ -3061,7 +3061,7 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
   }
 
   std::set<std::string> requested_clocks
-      = extract_string_array(req.raw_json, "clocks");
+      = extract_string_array(req.json, "clocks");
   if (requested_clocks.empty() && mode) {
     sta::ClockSet cks = ctx->sta->clockDomains(start_pin, mode);
     for (const sta::Clock* c : cks) {

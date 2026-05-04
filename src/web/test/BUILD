@@ -136,6 +136,13 @@ js_test(
 )
 
 js_test(
+    name = "menu_bar_test",
+    data = DOM_TEST_DATA,
+    entry_point = "js/test-menu-bar.js",
+    no_copy_to_bin = JS_FILES,
+)
+
+js_test(
     name = "status_indicator_test",
     data = DOM_TEST_DATA,
     entry_point = "js/test-status-indicator.js",
@@ -279,18 +286,6 @@ cc_test(
     ],
 )
 
-cc_test(
-    name = "json_builder_test",
-    srcs = ["cpp/TestJsonBuilder.cpp"],
-    copts = ["-Isrc/web/src"],
-    features = ["-layering_check"],
-    deps = [
-        "//src/web",
-        "@boost.json",
-        "@googletest//:gtest",
-        "@googletest//:gtest_main",
-    ],
-)
 
 cc_test(
     name = "debug_graphics_test",

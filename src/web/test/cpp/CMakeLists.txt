@@ -101,19 +101,6 @@ gtest_discover_tests(TestGlyphCache
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-add_executable(TestJsonBuilder TestJsonBuilder.cpp)
-
-target_link_libraries(TestJsonBuilder ${TEST_LIBS})
-
-target_include_directories(TestJsonBuilder
-  PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src
-)
-
-gtest_discover_tests(TestJsonBuilder
-  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-
 add_dependencies(build_and_test
   TestTileGenerator
   TestRequestHandler
@@ -122,5 +109,4 @@ add_dependencies(build_and_test
   TestCdcHandler
   TestDebugGraphics
   TestGlyphCache
-  TestJsonBuilder
 )

@@ -112,44 +112,34 @@ static WebSocketRequest makeReq(uint32_t id, WebSocketRequest::Type type)
   WebSocketRequest req;
   req.id = id;
   req.type = type;
-  // Empty raw_json is fine — extract_string returns "" and
-  // extract_int_or returns the default when keys are missing.
-  req.raw_json = "{}";
+  // Empty json is fine — extract_string returns "" and extract_int_or
+  // returns the default when keys are missing.
   return req;
 }
 
-// Convenience: assemble a minimal raw_json with the given key/value
-// pairs. Strings are JSON-quoted, ints aren't. Test helper only — no
-// escaping for embedded quotes since values here are simple identifiers.
-static std::string makeJson(
+// Convenience: assemble a minimal request body with the given key/value
+// pairs. Returns a boost::json::object directly so the test can assign
+// it straight into `WebSocketRequest::json`.
+static bj::object makeJson(
     std::initializer_list<std::pair<const char*, std::string>> string_fields,
     std::initializer_list<std::pair<const char*, int>> int_fields = {})
 {
-  std::string out = "{";
-  bool first = true;
+  bj::object out;
   for (const auto& [k, v] : string_fields) {
-    if (!first) {
-      out += ",";
-    }
-    out += "\"";
-    out += k;
-    out += "\":\"";
-    out += v;
-    out += "\"";
-    first = false;
+    out[k] = v;
   }
   for (const auto& [k, v] : int_fields) {
-    if (!first) {
-      out += ",";
-    }
-    out += "\"";
-    out += k;
-    out += "\":";
-    out += std::to_string(v);
-    first = false;
+    out[k] = v;
   }
-  out += "}";
   return out;
+}
+
+// Parse a JSON-string literal into a `boost::json::object`. Convenience
+// for the few tests that hand-craft a raw JSON string instead of using
+// `makeJson` (escaped names, dynamic substitutions, etc.).
+static bj::object parseObj(const std::string& s)
+{
+  return bj::parse(s).as_object();
 }
 
 // ─── NullStaTest: parameterised null-fallback coverage ──────────────────────
@@ -233,15 +223,15 @@ TEST_P(NullStaTest, EnvelopeAndKeys)
   // corrupts the heap when downstream code reads it (manifests as
   // std::bad_alloc — was reproducible on the SetMode case).
   if (tc.pin_name && tc.mode_name) {
-    req.raw_json = makeJson({{"pin", tc.pin_name},
+    req.json = makeJson({{"pin", tc.pin_name},
                              {"pattern", tc.pin_name},
                              {"mode", tc.mode_name}});
   } else if (tc.pin_name) {
-    req.raw_json = makeJson({{"pin", tc.pin_name}, {"pattern", tc.pin_name}});
+    req.json = makeJson({{"pin", tc.pin_name}, {"pattern", tc.pin_name}});
   } else if (tc.mode_name) {
-    req.raw_json = makeJson({{"mode", tc.mode_name}});
+    req.json = makeJson({{"mode", tc.mode_name}});
   } else {
-    req.raw_json = makeJson({});
+    req.json = makeJson({});
   }
 
   auto resp = dispatch(req);
@@ -310,7 +300,7 @@ TEST(NullStaSpecific, EndpointReportsNotFound)
 {
   SdcHandler handler(nullptr);
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpoint);
-  req.raw_json = makeJson({{"pin", "no_such_pin"}});
+  req.json = makeJson({{"pin", "no_such_pin"}});
 
   auto val = bj::parse(payloadStr(handler.handleSdcEndpoint(req)));
   ASSERT_TRUE(val.is_object());
@@ -325,7 +315,7 @@ TEST(NullStaSpecific, SetModeReportsFailure)
 {
   SdcHandler handler(nullptr);
   WebSocketRequest req = makeReq(2, WebSocketRequest::kSdcSetMode);
-  req.raw_json = makeJson({{"mode", "any"}});
+  req.json = makeJson({{"mode", "any"}});
 
   auto val = bj::parse(payloadStr(handler.handleSdcSetMode(req)));
   const auto& obj = val.as_object();
@@ -352,7 +342,7 @@ TEST(NullStaSpecific, PortDelaysOffsetClampedToZero)
 {
   SdcHandler handler(nullptr);
   WebSocketRequest req = makeReq(4, WebSocketRequest::kSdcPortDelays);
-  req.raw_json = makeJson({}, {{"offset", -5}, {"limit", 10}});
+  req.json = makeJson({}, {{"offset", -5}, {"limit", 10}});
 
   auto val = bj::parse(payloadStr(handler.handleSdcPortDelays(req)));
   const auto& obj = val.as_object();
@@ -1092,7 +1082,7 @@ TEST_F(SdcHandlerWithStaTest, PortDelaysCarryCorrectDelayValues)
 TEST_F(SdcHandlerWithStaTest, PortDelaysPaginationLimitsResults)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcPortDelays);
-  req.raw_json = makeJson({}, {{"offset", 0}, {"limit", 2}});
+  req.json = makeJson({}, {{"offset", 0}, {"limit", 2}});
   auto val = parsePayload(handler_->handleSdcPortDelays(req));
   EXPECT_LE(val.as_object().at("port_delays").as_array().size(), 2u);
   EXPECT_GE(asNumber(val.as_object().at("total")), 4.0);
@@ -1241,7 +1231,7 @@ TEST_F(SdcHandlerWithStaTest, EndpointResolvesPinAndReportsClockDomain)
   // pick a flop-D pin here because both D pins carry set_case_analysis /
   // set_logic_one in the fixture, which disables timing through them).
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpoint);
-  req.raw_json = makeJson({{"pin", "out1"}});
+  req.json = makeJson({{"pin", "out1"}});
   auto val = parsePayload(handler_->handleSdcEndpoint(req));
   const auto& obj = val.as_object();
   EXPECT_TRUE(obj.at("found").as_bool());
@@ -1266,7 +1256,7 @@ TEST_F(SdcHandlerWithStaTest, EndpointResolvesPinAndReportsClockDomain)
 TEST_F(SdcHandlerWithStaTest, EndpointReturnsFalseForMissingPin)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpoint);
-  req.raw_json = makeJson({{"pin", "definitely_not_a_pin"}});
+  req.json = makeJson({{"pin", "definitely_not_a_pin"}});
   auto val = parsePayload(handler_->handleSdcEndpoint(req));
   EXPECT_FALSE(val.as_object().at("found").as_bool());
 }
@@ -1287,7 +1277,7 @@ TEST_F(SdcHandlerWithStaTest, EndpointCountsReportsPerClockTotals)
 TEST_F(SdcHandlerWithStaTest, EndpointListEnumeratesEndpoints)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
-  req.raw_json = makeJson({}, {{"offset", 0}, {"limit", 100}});
+  req.json = makeJson({}, {{"offset", 0}, {"limit", 100}});
   auto val = parsePayload(handler_->handleSdcEndpointList(req));
   const auto& obj = val.as_object();
   EXPECT_GT(asNumber(obj.at("total")), 0.0);
@@ -1325,7 +1315,7 @@ TEST_F(SdcHandlerWithStaTest, ListModesReportsCurrentMode)
 TEST_F(SdcHandlerWithStaTest, SetModeRejectsUnknownMode)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcSetMode);
-  req.raw_json = makeJson({{"mode", "no_such_mode_xyz"}});
+  req.json = makeJson({{"mode", "no_such_mode_xyz"}});
   auto val = parsePayload(handler_->handleSdcSetMode(req));
   const auto& obj = val.as_object();
   EXPECT_FALSE(obj.at("ok").as_bool());
@@ -1522,7 +1512,7 @@ TEST_F(SdcHandlerWithStaTest, LimitsReportsDesignWideLimits)
 TEST_F(SdcHandlerWithStaTest, EndpointListKindFilterRestrictsResults)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
-  req.raw_json
+  req.json
       = makeJson({{"kind", "flipflop"}}, {{"offset", 0}, {"limit", 100}});
   auto val = parsePayload(handler_->handleSdcEndpointList(req));
   const auto& eps = val.as_object().at("endpoints").as_array();
@@ -1538,7 +1528,7 @@ TEST_F(SdcHandlerWithStaTest, EndpointListKindFilterRestrictsResults)
 TEST_F(SdcHandlerWithStaTest, EndpointListGlobPatternFiltersResults)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
-  req.raw_json = makeJson({{"pattern", "no_match_anywhere_*"}},
+  req.json = makeJson({{"pattern", "no_match_anywhere_*"}},
                           {{"offset", 0}, {"limit", 100}});
   auto val = parsePayload(handler_->handleSdcEndpointList(req));
   EXPECT_EQ(asNumber(val.as_object().at("total")), 0.0);
@@ -1551,7 +1541,7 @@ TEST_F(SdcHandlerWithStaTest, EndpointListGlobPatternFiltersResults)
 TEST_F(SdcHandlerWithStaTest, EndpointMultiResultEmitsAllMatches)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpoint);
-  req.raw_json = makeJson({{"pin", "ff*/Q"}});
+  req.json = makeJson({{"pin", "ff*/Q"}});
   auto val = parsePayload(handler_->handleSdcEndpoint(req));
   const auto& obj = val.as_object();
   EXPECT_TRUE(obj.at("found").as_bool());
@@ -1585,7 +1575,7 @@ TEST_F(SdcHandlerWithStaTest, SetModeAcceptsCurrentMode)
   ASSERT_FALSE(current.empty());
 
   WebSocketRequest req = makeReq(2, WebSocketRequest::kSdcSetMode);
-  req.raw_json = makeJson({{"mode", current}});
+  req.json = makeJson({{"mode", current}});
   auto val = parsePayload(handler_->handleSdcSetMode(req));
   const auto& obj = val.as_object();
   EXPECT_TRUE(obj.at("ok").as_bool()) << "switching to current mode is a no-op";
@@ -1598,7 +1588,7 @@ TEST_F(SdcHandlerWithStaTest, SetModeAcceptsCurrentMode)
 TEST_F(SdcHandlerWithStaTest, EndpointResolvesGeneratedClockSource)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpoint);
-  req.raw_json = makeJson({{"pin", "ff1/Q"}});
+  req.json = makeJson({{"pin", "ff1/Q"}});
   auto val = parsePayload(handler_->handleSdcEndpoint(req));
   ASSERT_TRUE(val.as_object().at("found").as_bool());
   const auto& pins = val.as_object().at("pins").as_array();
@@ -1622,7 +1612,7 @@ TEST_F(SdcHandlerWithStaTest, EndpointResolvesGeneratedClockSource)
 TEST_F(SdcHandlerWithStaTest, EndpointListKindsTotalIsConsistent)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
-  req.raw_json = makeJson({}, {{"offset", 0}, {"limit", 1000}});
+  req.json = makeJson({}, {{"offset", 0}, {"limit", 1000}});
   auto val = parsePayload(handler_->handleSdcEndpointList(req));
   const auto& obj = val.as_object();
   const double total = asNumber(obj.at("total"));
@@ -1661,7 +1651,7 @@ TEST_F(SdcHandlerWithStaTest, EndpointListChipCountsApplyPattern)
   // Pattern that's guaranteed not to match any endpoint in the
   // fixture. Counts should collapse to 0 across the board.
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
-  req.raw_json = makeJson({{"pattern", "definitely_no_such_pin_xyz_*"}});
+  req.json = makeJson({{"pattern", "definitely_no_such_pin_xyz_*"}});
   auto val = parsePayload(handler_->handleSdcEndpointList(req));
   const auto& obj = val.as_object();
   const auto& kinds = obj.at("kinds_total").as_object();
@@ -1686,7 +1676,7 @@ TEST_F(SdcHandlerWithStaTest, EndpointListChipCountsApplyPattern)
 TEST_F(SdcHandlerWithStaTest, EndpointListPaginationLimitsPageSize)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
-  req.raw_json = makeJson({}, {{"offset", 0}, {"limit", 1}});
+  req.json = makeJson({}, {{"offset", 0}, {"limit", 1}});
   auto val = parsePayload(handler_->handleSdcEndpointList(req));
   const auto& obj = val.as_object();
   EXPECT_LE(obj.at("endpoints").as_array().size(), 1u);
@@ -1715,7 +1705,7 @@ TEST_F(SdcHandlerWithStaTest, PortDelaysCarryDirectionField)
 TEST_F(SdcHandlerWithStaTest, EndpointListReportsClockGateKind)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
-  req.raw_json = makeJson({}, {{"offset", 0}, {"limit", 100}});
+  req.json = makeJson({}, {{"offset", 0}, {"limit", 100}});
   auto val = parsePayload(handler_->handleSdcEndpointList(req));
   const auto& obj = val.as_object();
   ASSERT_TRUE(obj.contains("kinds_total"));
@@ -1738,14 +1728,14 @@ TEST_F(SdcHandlerWithStaTest, EndpointListReportsClockGateKind)
 TEST_F(SdcHandlerWithStaTest, KindsTotalIsStableAcrossKindFilter)
 {
   WebSocketRequest req_all = makeReq(1, WebSocketRequest::kSdcEndpointList);
-  req_all.raw_json
+  req_all.json
       = makeJson({{"kind", "all"}}, {{"offset", 0}, {"limit", 100}});
   auto val_all = parsePayload(handler_->handleSdcEndpointList(req_all));
   const auto& kinds_all = val_all.as_object().at("kinds_total").as_object();
   const double cg_all = asNumber(kinds_all.at("clock_gate"));
 
   WebSocketRequest req_cg = makeReq(2, WebSocketRequest::kSdcEndpointList);
-  req_cg.raw_json
+  req_cg.json
       = makeJson({{"kind", "clock_gate"}}, {{"offset", 0}, {"limit", 100}});
   auto val_cg = parsePayload(handler_->handleSdcEndpointList(req_cg));
   const auto& kinds_cg = val_cg.as_object().at("kinds_total").as_object();
@@ -1766,7 +1756,7 @@ TEST_F(SdcHandlerWithStaTest, ClockGateEndpointEmitsFlavorAndPinRoles)
 {
   // Filter the endpoint list to just clock_gate kind.
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpointList);
-  req.raw_json
+  req.json
       = makeJson({{"kind", "clock_gate"}}, {{"offset", 0}, {"limit", 100}});
   auto val = parsePayload(handler_->handleSdcEndpointList(req));
   const auto& eps = val.as_object().at("endpoints").as_array();
