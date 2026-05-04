@@ -12,9 +12,10 @@
 #include <string_view>
 #include <vector>
 
+#include <boost/json.hpp>
+
 #include "db_sta/dbNetwork.hh"
 #include "db_sta/dbSta.hh"
-#include "json_builder.h"
 #include "request_dispatcher.h"
 #include "request_handler.h"
 #include "sta/Clock.hh"
@@ -153,7 +154,7 @@ static std::optional<SdcContext> makeSdcContext(
 
 // Emit a RiseFallMinMax as four nullable JSON fields (rise_max, rise_min,
 // fall_max, fall_min). When `rfmm` is null, every slot is emitted as null.
-static void emitRiseFallMinMax(JsonBuilder& b,
+static void emitRiseFallMinMax(boost::json::object& obj,
                                const sta::RiseFallMinMax* rfmm,
                                float scale)
 {
@@ -177,9 +178,9 @@ static void emitRiseFallMinMax(JsonBuilder& b,
       exists = false;
     }
     if (exists) {
-      b.field(s.key, static_cast<double>(val / scale));
+      obj[s.key] = static_cast<double>(val / scale);
     } else {
-      b.nullField(s.key);
+      obj[s.key] = nullptr;
     }
   }
 }
@@ -257,7 +258,7 @@ static bool resolvePinOdb(const sta::Pin* pin,
 // Emit "<prefix>_odb_type" / "<prefix>_odb_id" so the frontend can dispatch
 // an inspect-by-ODB without a name-resolution round-trip. Emits nothing for
 // unresolved pins; _linkifyPin on the frontend no-ops in that case.
-static void emitPinOdbRef(JsonBuilder& b,
+static void emitPinOdbRef(boost::json::object& obj,
                           const std::string& prefix,
                           const sta::Pin* pin,
                           sta::dbNetwork* db_network)
@@ -265,27 +266,27 @@ static void emitPinOdbRef(JsonBuilder& b,
   const char* type = nullptr;
   int id = 0;
   if (resolvePinOdb(pin, db_network, type, id)) {
-    b.field(prefix + "_odb_type", std::string(type));
-    b.field(prefix + "_odb_id", id);
+    obj[prefix + "_odb_type"] = std::string(type);
+    obj[prefix + "_odb_id"] = id;
   }
 }
 
 // Bare-field variant of emitPinOdbRef for arrays of {name, odb_type, odb_id}.
-static void emitPinOdbBare(JsonBuilder& b,
+static void emitPinOdbBare(boost::json::object& obj,
                            const sta::Pin* pin,
                            sta::dbNetwork* db_network)
 {
   const char* type = nullptr;
   int id = 0;
   if (resolvePinOdb(pin, db_network, type, id)) {
-    b.field("odb_type", std::string(type));
-    b.field("odb_id", id);
+    obj["odb_type"] = std::string(type);
+    obj["odb_id"] = id;
   }
 }
 
 // Emit bare "odb_type" / "odb_id" for an Instance: dbInst → "inst",
 // dbModInst → "modinst".
-static void emitInstanceOdbBare(JsonBuilder& b,
+static void emitInstanceOdbBare(boost::json::object& obj,
                                 const sta::Instance* inst,
                                 sta::dbNetwork* db_network)
 {
@@ -296,11 +297,11 @@ static void emitInstanceOdbBare(JsonBuilder& b,
   odb::dbModInst* dmi = nullptr;
   db_network->staToDb(inst, di, dmi);
   if (di) {
-    b.field("odb_type", std::string("inst"));
-    b.field("odb_id", static_cast<int>(di->getId()));
+    obj["odb_type"] = std::string("inst");
+    obj["odb_id"] = static_cast<int>(di->getId());
   } else if (dmi) {
-    b.field("odb_type", std::string("modinst"));
-    b.field("odb_id", static_cast<int>(dmi->getId()));
+    obj["odb_type"] = std::string("modinst");
+    obj["odb_id"] = static_cast<int>(dmi->getId());
   }
 }
 
@@ -329,21 +330,21 @@ static UncertaintyValues extractUncertainty(const sta::ClockUncertainties* unc)
 
 // Emit two scaled fields for the setup/hold pair. Missing values become
 // nullField so the JSON shape stays uniform.
-static void emitUncertainty(JsonBuilder& b,
+static void emitUncertainty(boost::json::object& obj,
                             const char* setup_key,
                             const char* hold_key,
                             const UncertaintyValues& u,
                             float scale)
 {
   if (u.setup_exists) {
-    b.field(setup_key, static_cast<double>(u.setup_val / scale));
+    obj[setup_key] = static_cast<double>(u.setup_val / scale);
   } else {
-    b.nullField(setup_key);
+    obj[setup_key] = nullptr;
   }
   if (u.hold_exists) {
-    b.field(hold_key, static_cast<double>(u.hold_val / scale));
+    obj[hold_key] = static_cast<double>(u.hold_val / scale);
   } else {
-    b.nullField(hold_key);
+    obj[hold_key] = nullptr;
   }
 }
 
@@ -365,26 +366,27 @@ static std::map<const sta::Clock*, std::vector<sta::Clock*>> buildChildrenMap(
   return children;
 }
 
-// Recursively emit a clock-tree node (name + nested children array).
-static void emitTreeNode(
-    JsonBuilder& b,
+// Recursively build a clock-tree node (name + nested children array).
+static boost::json::object buildTreeNode(
     const sta::Clock* clk,
     const std::map<const sta::Clock*, std::vector<sta::Clock*>>& children)
 {
+  boost::json::object node;
   if (!clk) {
-    return;
+    return node;
   }
-  b.beginObject();
-  b.field("name", std::string(clk->name()));
-  b.beginArray("children");
+  node["name"] = std::string(clk->name());
+  boost::json::array kids;
   auto it = children.find(clk);
   if (it != children.end()) {
     for (sta::Clock* child : it->second) {
-      emitTreeNode(b, child, children);
+      if (child) {
+        kids.push_back(buildTreeNode(child, children));
+      }
     }
   }
-  b.endArray();
-  b.endObject();
+  node["children"] = std::move(kids);
+  return node;
 }
 
 // ── SdcHandler ──────────────────────────────────────────────────────────────
@@ -409,191 +411,170 @@ WebSocketResponse SdcHandler::handleSdcClocks(const WebSocketRequest& req)
 
   auto childrenMap = buildChildrenMap(clocks);
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("time_unit", time_suffix);
+  boost::json::object root;
+  root["time_unit"] = time_suffix;
 
   // ── "clocks" array ──────────────────────────────────────────────────────
-  b.beginArray("clocks");
-  for (sta::Clock* clk : clocks) {
-    if (!clk) {
-      continue;
-    }
-    b.beginObject();
-    b.field("name", std::string(clk->name()));
-
-    // period() is always a float scalar — safe to read directly.
-    b.field("period", scaleTime(clk->period(), time_scale));
-
-    // Waveform: alternating rise/fall edge times. May be empty.
-    const sta::FloatSeq& waveform = clk->waveform();
-    if (!waveform.empty()) {
-      b.beginArray("waveform");
-      for (float t : waveform) {
-        b.value(scaleTime(t, time_scale));
+  {
+    boost::json::array clocks_arr;
+    for (sta::Clock* clk : clocks) {
+      if (!clk) {
+        continue;
       }
-      b.endArray();
-    } else {
-      // Synthesize a default 50% duty-cycle waveform from the period.
-      b.beginArray("waveform");
-      b.value(0.0);
-      b.value(scaleTime(clk->period(), time_scale) / 2.0);
-      b.endArray();
-    }
+      boost::json::object o;
+      o["name"] = std::string(clk->name());
 
-    b.field("is_generated", clk->isGenerated());
-    b.field("is_virtual", clk->isVirtual());
-    b.field("is_propagated", clk->isPropagated());
-    // create_clock -add: when true, this clock was added to existing pins
-    // rather than replacing them. Surfaced so users can spot multi-clock
-    // pins.
-    b.field("add_to_pins", clk->addToPins());
-    // Generated-clock diagnostics (omitted/null on primary clocks).
-    if (clk->isGenerated()) {
-      // create_generated_clock -combinational: the master clock is reached
-      // through combinational logic only (no flop in between).
-      b.field("combinational", clk->combinational());
-      // True when STA inferred the master clock from the graph rather than
-      // the user specifying it explicitly with -master_clock. Useful
-      // diagnostic when chasing why STA picked a particular master.
-      b.field("master_inferred", clk->masterClkInfered());
-      // True when STA has computed the generated waveform from the master
-      // clock. False = the period/waveform shown is stale (typically until
-      // update_generated_clks runs). The toolbar's "Resolve generated"
-      // button surfaces this in aggregate; this field exposes it per-card
-      // so the user can see which specific generated clocks are stale.
-      // (Clock::generatedUpToDate is declared but not implemented in
-      // OpenSTA today — waveformValid() carries the same meaning and is
-      // the same check used elsewhere in this handler.)
-      b.field("generated_up_to_date", clk->waveformValid());
-    } else {
-      b.nullField("combinational");
-      b.nullField("master_inferred");
-      b.nullField("generated_up_to_date");
-    }
-    // Comment carried by Clock (and other SdcCmdComment subclasses) — set
-    // via `-comment` on `create_clock`.  Always emit (empty string when
-    // none) so the JSON shape is uniform.
-    b.field("comment", clk->comment());
+      // period() is always a float scalar — safe to read directly.
+      o["period"] = scaleTime(clk->period(), time_scale);
 
-    // master_clock: non-null only for generated clocks.
-    sta::Clock* master = clk->masterClk();
-    if (master) {
-      b.field("master_clock", std::string(master->name()));
-    } else {
-      b.nullField("master_clock");
-    }
-
-    // Generated-clock-specific fields.
-    if (clk->isGenerated()) {
-      int div = clk->divideBy();
-      int mul = clk->multiplyBy();
-      if (div > 0) {
-        b.field("divide_by", div);
-      } else {
-        b.nullField("divide_by");
-      }
-      if (mul > 0) {
-        b.field("multiply_by", mul);
-      } else {
-        b.nullField("multiply_by");
-      }
-      b.field("invert", clk->invert());
-
-      // -edges form: edge indices into the master-clock waveform.
-      const sta::IntSeq& edges = clk->edges();
-      if (!edges.empty()) {
-        b.beginArray("edges");
-        for (int e : edges) {
-          b.value(e);
+      // Waveform: alternating rise/fall edge times. May be empty.
+      const sta::FloatSeq& waveform = clk->waveform();
+      {
+        boost::json::array wf;
+        if (!waveform.empty()) {
+          for (float t : waveform) {
+            wf.push_back(scaleTime(t, time_scale));
+          }
+        } else {
+          // Synthesize a default 50% duty-cycle waveform from the period.
+          wf.push_back(0.0);
+          wf.push_back(scaleTime(clk->period(), time_scale) / 2.0);
         }
-        b.endArray();
+        o["waveform"] = std::move(wf);
+      }
+
+      o["is_generated"] = clk->isGenerated();
+      o["is_virtual"] = clk->isVirtual();
+      o["is_propagated"] = clk->isPropagated();
+      // create_clock -add: when true, this clock was added to existing pins
+      // rather than replacing them. Surfaced so users can spot multi-clock
+      // pins.
+      o["add_to_pins"] = clk->addToPins();
+      // Generated-clock diagnostics (omitted/null on primary clocks).
+      if (clk->isGenerated()) {
+        o["combinational"] = clk->combinational();
+        o["master_inferred"] = clk->masterClkInfered();
+        o["generated_up_to_date"] = clk->waveformValid();
       } else {
-        b.nullField("edges");
+        o["combinational"] = nullptr;
+        o["master_inferred"] = nullptr;
+        o["generated_up_to_date"] = nullptr;
       }
+      o["comment"] = std::string(clk->comment());
 
-      // -edge_shift values paired with -edges.
-      const sta::FloatSeq& shifts = clk->edgeShifts();
-      if (!shifts.empty()) {
-        b.beginArray("edge_shifts");
-        for (float s : shifts) {
-          b.value(scaleTime(s, time_scale));
-        }
-        b.endArray();
+      sta::Clock* master = clk->masterClk();
+      if (master) {
+        o["master_clock"] = std::string(master->name());
       } else {
-        b.nullField("edge_shifts");
+        o["master_clock"] = nullptr;
       }
 
-      // Source pin (the design pin where this generated clock originates).
-      sta::Pin* src = clk->srcPin();
-      if (src && network) {
-        b.field("src_pin", std::string(network->pathName(src)));
-        emitPinOdbRef(b, "src_pin", src, db_network);
+      if (clk->isGenerated()) {
+        int div = clk->divideBy();
+        int mul = clk->multiplyBy();
+        if (div > 0) {
+          o["divide_by"] = div;
+        } else {
+          o["divide_by"] = nullptr;
+        }
+        if (mul > 0) {
+          o["multiply_by"] = mul;
+        } else {
+          o["multiply_by"] = nullptr;
+        }
+        o["invert"] = clk->invert();
+
+        const sta::IntSeq& edges = clk->edges();
+        if (!edges.empty()) {
+          boost::json::array arr;
+          for (int e : edges) {
+            arr.push_back(e);
+          }
+          o["edges"] = std::move(arr);
+        } else {
+          o["edges"] = nullptr;
+        }
+
+        const sta::FloatSeq& shifts = clk->edgeShifts();
+        if (!shifts.empty()) {
+          boost::json::array arr;
+          for (float s : shifts) {
+            arr.push_back(scaleTime(s, time_scale));
+          }
+          o["edge_shifts"] = std::move(arr);
+        } else {
+          o["edge_shifts"] = nullptr;
+        }
+
+        sta::Pin* src = clk->srcPin();
+        if (src && network) {
+          o["src_pin"] = std::string(network->pathName(src));
+          emitPinOdbRef(o, "src_pin", src, db_network);
+        } else {
+          o["src_pin"] = nullptr;
+        }
       } else {
-        b.nullField("src_pin");
+        o["divide_by"] = nullptr;
+        o["multiply_by"] = nullptr;
+        o["invert"] = false;
+        o["edges"] = nullptr;
+        o["edge_shifts"] = nullptr;
+        o["src_pin"] = nullptr;
       }
-    } else {
-      // Primary clock — emit null placeholders so the schema is uniform.
-      b.nullField("divide_by");
-      b.nullField("multiply_by");
-      b.field("invert", false);
-      b.nullField("edges");
-      b.nullField("edge_shifts");
-      b.nullField("src_pin");
-    }
 
-    // Source pins (the design pins this clock is defined on).
-    // Parallel arrays: sources[i] is the display name, sources_odb[i] is
-    // the ODB handle {type, id} — or null when the pin couldn't be
-    // resolved. Using parallel arrays (rather than an array of objects)
-    // keeps existing consumers of `sources[i]` working unchanged.
-    b.beginArray("sources");
-    if (network) {
-      for (const sta::Pin* pin : clk->pins()) {
-        if (pin) {
-          b.value(std::string(network->pathName(pin)));
+      // Source pins.
+      {
+        boost::json::array sources;
+        if (network) {
+          for (const sta::Pin* pin : clk->pins()) {
+            if (pin) {
+              sources.push_back(boost::json::value(network->pathName(pin)));
+            }
+          }
         }
+        o["sources"] = std::move(sources);
       }
-    }
-    b.endArray();
-    b.beginArray("sources_odb");
-    if (network) {
-      for (const sta::Pin* pin : clk->pins()) {
-        if (!pin) {
-          continue;
+      {
+        boost::json::array sources_odb;
+        if (network) {
+          for (const sta::Pin* pin : clk->pins()) {
+            if (!pin) {
+              continue;
+            }
+            boost::json::object inner;
+            emitPinOdbBare(inner, pin, db_network);
+            sources_odb.push_back(std::move(inner));
+          }
         }
-        b.beginObject();
-        emitPinOdbBare(b, pin, db_network);
-        b.endObject();
+        o["sources_odb"] = std::move(sources_odb);
       }
+
+      emitUncertainty(o,
+                      "uncertainty_setup",
+                      "uncertainty_hold",
+                      extractUncertainty(&clk->uncertainties()),
+                      time_scale);
+
+      clocks_arr.push_back(std::move(o));
     }
-    b.endArray();
-
-    // Uncertainty from set_clock_uncertainty for this clock.
-    emitUncertainty(b,
-                    "uncertainty_setup",
-                    "uncertainty_hold",
-                    extractUncertainty(&clk->uncertainties()),
-                    time_scale);
-
-    b.endObject();
+    root["clocks"] = std::move(clocks_arr);
   }
-  b.endArray();
 
   // ── "clock_tree" array — root clocks with recursive generated children ──
-  b.beginArray("clock_tree");
-  for (sta::Clock* clk : clocks) {
-    if (!clk) {
-      continue;
+  {
+    boost::json::array tree;
+    for (sta::Clock* clk : clocks) {
+      if (!clk) {
+        continue;
+      }
+      if (!clk->masterClk()) {
+        tree.push_back(buildTreeNode(clk, childrenMap));
+      }
     }
-    if (!clk->masterClk()) {
-      emitTreeNode(b, clk, childrenMap);
-    }
+    root["clock_tree"] = std::move(tree);
   }
-  b.endArray();
 
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 WebSocketResponse SdcHandler::handleSdcClockModes(const WebSocketRequest& req)
@@ -613,55 +594,54 @@ WebSocketResponse SdcHandler::handleSdcClockModes(const WebSocketRequest& req)
     mode_name = mode->name();
   }
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("current_mode", mode_name);
+  boost::json::object root;
+  root["current_mode"] = mode_name;
 
-  // Active scene name only (full MMMC scene enumeration is not exposed yet).
-  b.beginArray("scene_names");
-  b.value(scene->name());
-  b.endArray();
-
-  // Case-analysis values (set_case_analysis).
-  // set_case_analysis: constants pinned on mux selects, etc.
-  b.beginArray("case_analysis");
-  for (const auto& [pin, val] : sdc->caseLogicValues()) {
-    if (!pin) {
-      continue;
-    }
-    b.beginObject();
-    if (network) {
-      b.field("pin", std::string(network->pathName(pin)));
-    } else {
-      b.field("pin", "");
-    }
-    b.field("value", logicValueStr(val));
-    emitPinOdbRef(b, "pin", pin, db_network);
-    b.endObject();
+  {
+    boost::json::array scene_names;
+    scene_names.push_back(boost::json::value(scene->name()));
+    root["scene_names"] = std::move(scene_names);
   }
-  b.endArray();
 
-  // set_logic_zero / set_logic_one / set_logic_dc — separate Sdc map but
-  // emitted alongside case_analysis since the UI displays them together.
-  b.beginArray("logic_values");
-  for (const auto& [pin, val] : sdc->logicValues()) {
-    if (!pin) {
-      continue;
+  {
+    boost::json::array case_analysis;
+    for (const auto& [pin, val] : sdc->caseLogicValues()) {
+      if (!pin) {
+        continue;
+      }
+      boost::json::object o;
+      if (network) {
+        o["pin"] = std::string(network->pathName(pin));
+      } else {
+        o["pin"] = "";
+      }
+      o["value"] = std::string(logicValueStr(val));
+      emitPinOdbRef(o, "pin", pin, db_network);
+      case_analysis.push_back(std::move(o));
     }
-    b.beginObject();
-    if (network) {
-      b.field("pin", std::string(network->pathName(pin)));
-    } else {
-      b.field("pin", "");
-    }
-    emitPinOdbRef(b, "pin", pin, db_network);
-    b.field("value", logicValueStr(val));
-    b.endObject();
+    root["case_analysis"] = std::move(case_analysis);
   }
-  b.endArray();
 
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  {
+    boost::json::array logic_values;
+    for (const auto& [pin, val] : sdc->logicValues()) {
+      if (!pin) {
+        continue;
+      }
+      boost::json::object o;
+      if (network) {
+        o["pin"] = std::string(network->pathName(pin));
+      } else {
+        o["pin"] = "";
+      }
+      emitPinOdbRef(o, "pin", pin, db_network);
+      o["value"] = std::string(logicValueStr(val));
+      logic_values.push_back(std::move(o));
+    }
+    root["logic_values"] = std::move(logic_values);
+  }
+
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
@@ -695,11 +675,6 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
     }
   }
 
-  // Collect all delays into a sortable list so we emit in ODB port order.
-  // pd == nullptr → exception-only port (referenced by an SDC exception
-  // such as set_false_path but with no set_input_delay / set_output_delay
-  // attached); the row carries no diagram data, just the header + the
-  // collapsible "Applicable Exceptions" toggle.
   struct RawDelay
   {
     sta::PortDelay* pd;
@@ -709,10 +684,7 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
     int order;
   };
   std::vector<RawDelay> raw;
-  std::set<std::string> emitted_names;  // port names already in `raw`
-  // Per-top-level-port count of how many distinct exceptions reference
-  // it. Used to suppress the "Applicable Exceptions" toggle on the
-  // frontend for ports that have no exceptions attached.
+  std::set<std::string> emitted_names;
   std::map<std::string, int> port_exc_count;
   if (network) {
     for (sta::InputDelay* id : sdc->inputDelays()) {
@@ -740,28 +712,17 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
       emitted_names.insert(nm);
     }
 
-    // Walk every SDC exception's from / thru / to pin sets and:
-    //   • count, per top-level port, how many distinct exceptions hit it
-    //     (same exception can appear in from + to but is counted once);
-    //   • add a delay-less row for any exception-referenced port that
-    //     doesn't already have a set_input/output_delay entry, so
-    //     false-pathed (or otherwise exception-attached) ports stay
-    //     visible on the Port Delays tab.
-    std::set<std::pair<std::string, int>> seen_port_exc;  // (port_name, exc_id)
+    std::set<std::pair<std::string, int>> seen_port_exc;
     auto noteExcPin = [&](sta::ExceptionPath* exc, const sta::Pin* pin) {
       if (!pin || !network->isTopLevelPort(pin)) {
         return;
       }
       const std::string nm = std::string(network->pathName(pin));
-      // Dedupe (port, exception) pairs so an exception listing the same
-      // port in both from and to is counted once.
       const int id = exc ? static_cast<int>(exc->id()) : 0;
       if (!seen_port_exc.insert({nm, id}).second) {
         return;
       }
       ++port_exc_count[nm];
-      // First time we see this port via an exception → if it has no
-      // delay row, synthesise an exception-only one.
       if (emitted_names.count(nm)) {
         return;
       }
@@ -801,13 +762,6 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
       }
     }
 
-    // Third pass: every remaining signal port. Surfacing every port
-    // (not just ones with set_load / set_driving_cell) means the user
-    // can scan the full IO at a glance — unconstrained ports show up
-    // as such, and any external attribute (set_load, set_drive,
-    // set_input_transition, set_fanout_load) renders inline in the
-    // header. Power and ground BTerms are excluded — they're never
-    // timed and would just be noise on the Port Delays tab.
     if (block) {
       for (odb::dbBTerm* bterm : block->getBTerms()) {
         const odb::dbSigType st = bterm->getSigType();
@@ -838,8 +792,6 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
         return a.order < b.order;
       });
 
-  // Pagination: clamp offset/limit to the assembled raw list.
-  // limit < 0 → "no limit" (legacy behavior).
   const int total = static_cast<int>(raw.size());
   int offset = extract_int_or(req.json, "offset", 0);
   if (offset < 0) {
@@ -857,21 +809,7 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
     end = total;
   }
 
-  // Per-clock totals across the *full* raw list so the frontend
-  // checkbox dropdown shows the complete picture even mid-pagination.
-  // Entries without a clock (exception-only ports, or set_*_delay
-  // calls that didn't take -clock) bucket under the literal sentinel
-  // "__none__" — mirrors the key the frontend's
-  // _makeClockCheckboxFilter helper uses for its "(no clock)" row,
-  // so no translation is needed on the JS side.
   std::map<std::string, int> clocks_total;
-  // Per-direction totals across the *full* raw list, deduped by port
-  // name so a port that appears in multiple raw entries (e.g. a flop
-  // with both rise and fall set_input_delay) counts once. The frontend
-  // uses this to label the direction filter buttons with stable
-  // counts across paginated batches — without it, the labels grew as
-  // more pages loaded, which made it look like ports were appearing
-  // out of nowhere as the user scrolled.
   std::map<std::string, std::set<std::string>> dir_total_ports;
   for (const RawDelay& rd : raw) {
     sta::Clock* clk = rd.pd ? rd.pd->clock() : nullptr;
@@ -884,35 +822,31 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
     dir_total_ports[dir].insert(rd.port_name);
   }
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("time_unit", time_suffix);
-  b.field("cap_unit", cap_suffix);
-  b.field("total", total);
-  b.field("offset", offset);
-  b.beginObject("clocks_total");
-  for (const auto& [name, count] : clocks_total) {
-    b.field(name, count);
+  boost::json::object root;
+  root["time_unit"] = time_suffix;
+  root["cap_unit"] = cap_suffix;
+  root["total"] = total;
+  root["offset"] = offset;
+  {
+    boost::json::object o;
+    for (const auto& [name, count] : clocks_total) {
+      o[name] = count;
+    }
+    root["clocks_total"] = std::move(o);
   }
-  b.endObject();
-  // Direction totals — deduped port counts per direction, plus an
-  // "all" key for the matching filter button.
-  b.beginObject("directions_total");
-  int all_count = 0;
-  for (const auto& [dir, ports] : dir_total_ports) {
-    b.field(dir, static_cast<int>(ports.size()));
-    all_count += static_cast<int>(ports.size());
+  {
+    boost::json::object o;
+    int all_count = 0;
+    for (const auto& [dir, ports] : dir_total_ports) {
+      o[dir] = static_cast<int>(ports.size());
+      all_count += static_cast<int>(ports.size());
+    }
+    o["all"] = all_count;
+    root["directions_total"] = std::move(o);
   }
-  b.field("all", all_count);
-  b.endObject();
-  b.beginArray("port_delays");
 
-  // Emit one delay entry. Both rise/fall × min/max delay values are included
-  // so the frontend can show the full constraint band. When `rd.pd` is null
-  // the row is an "exception-only port" (no set_input/output_delay; the
-  // port shows up because it's referenced by an SDC exception); we emit
-  // every delay/clock/driving field as null and tag the row with
-  // `exception_only: true` so the frontend skips drawing a diagram.
+  boost::json::array port_delays;
+
   auto emitDelay = [&](const RawDelay& rd) {
     sta::PortDelay* pd = rd.pd;
     bool is_input = rd.is_input;
@@ -922,27 +856,17 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
     }
     const bool is_exception_only = (pd == nullptr);
 
-    b.beginObject();
-    b.field("port", rd.port_name);
-    emitPinOdbRef(b, "port", pin, db_network);
-    b.field("is_input", is_input);
-    b.field("direction",
-            portDir.count(rd.port_name) ? portDir.at(rd.port_name)
-                                        : (is_input ? "input" : "output"));
-    b.field("exception_only", is_exception_only);
-    // Clock-source ports (the top-level pin a `create_clock` anchors
-    // on) carry no set_input_delay / set_output_delay because they
-    // launch the clock rather than being timed against one. They'd
-    // otherwise show up as "unconstrained" — emit `is_clock_port: true`
-    // so the frontend renders a "clock" pill instead of the
-    // unconstrained label.
+    boost::json::object o;
+    o["port"] = rd.port_name;
+    emitPinOdbRef(o, "port", pin, db_network);
+    o["is_input"] = is_input;
+    o["direction"]
+        = std::string(portDir.count(rd.port_name)
+                          ? portDir.at(rd.port_name)
+                          : (is_input ? "input" : "output"));
+    o["exception_only"] = is_exception_only;
     const bool is_clock_port = sdc && pin && sdc->isClock(pin);
-    b.field("is_clock_port", is_clock_port);
-    // is_unconstrained tells the frontend "no delay, no exception
-    // reference, no set_load, no set_driving_cell, and not a
-    // clock-source port — the row is emitted purely so every signal
-    // port is visible". The frontend labels it as such instead of
-    // rendering nothing.
+    o["is_clock_port"] = is_clock_port;
     bool unconstrained = false;
     if (is_exception_only) {
       sta::Port* port_un = network ? network->port(pin) : nullptr;
@@ -953,83 +877,61 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
                            && port_exc_count.at(rd.port_name) > 0;
       unconstrained = !has_extcap && !has_drive && !has_exc && !is_clock_port;
     }
-    b.field("is_unconstrained", unconstrained);
-    // Number of distinct SDC exceptions that reference this port. Lets
-    // the frontend suppress the "Applicable Exceptions" toggle when the
-    // port has none, instead of fetching just to discover that.
-    b.field("exception_count",
-            port_exc_count.count(rd.port_name) ? port_exc_count.at(rd.port_name)
-                                               : 0);
-    // Delay-related fields (PortDelay-derived). Delay-less rows
-    // (exception-only or set_load-only) emit nulls here and skip
-    // straight to the load/drive emission below — those *are*
-    // populated for delay-less rows so set_load and set_driving_cell
-    // remain visible without requiring a paired delay constraint.
+    o["is_unconstrained"] = unconstrained;
+    o["exception_count"]
+        = port_exc_count.count(rd.port_name) ? port_exc_count.at(rd.port_name)
+                                             : 0;
+
     if (is_exception_only) {
-      b.nullField("source_latency_included");
-      b.nullField("network_latency_included");
-      b.nullField("ref_pin");
-      b.nullField("clock");
-      b.nullField("clk_period");
-      b.nullField("uncertainty_setup");
-      b.nullField("uncertainty_hold");
-      b.nullField("clk_edge");
-      b.nullField("rise_max");
-      b.nullField("rise_min");
-      b.nullField("fall_max");
-      b.nullField("fall_min");
+      o["source_latency_included"] = nullptr;
+      o["network_latency_included"] = nullptr;
+      o["ref_pin"] = nullptr;
+      o["clock"] = nullptr;
+      o["clk_period"] = nullptr;
+      o["uncertainty_setup"] = nullptr;
+      o["uncertainty_hold"] = nullptr;
+      o["clk_edge"] = nullptr;
+      o["rise_max"] = nullptr;
+      o["rise_min"] = nullptr;
+      o["fall_max"] = nullptr;
+      o["fall_min"] = nullptr;
     } else {
-      // Reference info from set_input_delay / set_output_delay:
-      //   -source_latency_included / -network_latency_included flags affect
-      //   how the delay value is interpreted relative to clock latency.
-      //   -reference_pin <pin> uses an alternate pin's clock instead of the
-      //   default reference clock — surface its name + ODB ref so the user
-      //   can click through.
-      b.field("source_latency_included", pd->sourceLatencyIncluded());
-      b.field("network_latency_included", pd->networkLatencyIncluded());
+      o["source_latency_included"] = pd->sourceLatencyIncluded();
+      o["network_latency_included"] = pd->networkLatencyIncluded();
       if (const sta::Pin* ref = pd->refPin()) {
-        b.field("ref_pin", network ? std::string(network->pathName(ref)) : "");
-        emitPinOdbRef(b, "ref_pin", ref, db_network);
+        o["ref_pin"]
+            = std::string(network ? network->pathName(ref) : "");
+        emitPinOdbRef(o, "ref_pin", ref, db_network);
       } else {
-        b.nullField("ref_pin");
+        o["ref_pin"] = nullptr;
       }
 
-      // Reference clock and edge.
       sta::Clock* clk = pd->clock();
       if (clk) {
-        b.field("clock", std::string(clk->name()));
-        b.field("clk_period", scaleTime(clk->period(), time_scale));
-        emitUncertainty(b,
+        o["clock"] = std::string(clk->name());
+        o["clk_period"] = scaleTime(clk->period(), time_scale);
+        emitUncertainty(o,
                         "uncertainty_setup",
                         "uncertainty_hold",
                         extractUncertainty(&clk->uncertainties()),
                         time_scale);
       } else {
-        b.nullField("clock");
-        b.nullField("clk_period");
-        b.nullField("uncertainty_setup");
-        b.nullField("uncertainty_hold");
+        o["clock"] = nullptr;
+        o["clk_period"] = nullptr;
+        o["uncertainty_setup"] = nullptr;
+        o["uncertainty_hold"] = nullptr;
       }
 
       const sta::ClockEdge* clk_edge = pd->clkEdge();
       if (clk_edge) {
-        b.field("clk_edge", std::string(clk_edge->transition()->name()));
+        o["clk_edge"] = std::string(clk_edge->transition()->name());
       } else {
-        b.nullField("clk_edge");
+        o["clk_edge"] = nullptr;
       }
 
-      emitRiseFallMinMax(b, pd->delays(), time_scale);
+      emitRiseFallMinMax(o, pd->delays(), time_scale);
     }
 
-    // Driving cell + drive resistance + input transition slews (input ports
-    // only). All three live on the same InputDrive object.
-    //   driving_cell  : set_driving_cell <cell>          → cell + to_port name
-    //   drive_res_*   : set_drive <res>                  → output resistance
-    //   drive_slew_*  : set_input_transition <slew>      → input slew
-    // We emit drive_res / drive_slew as a 4-cell rise/fall × min/max product
-    // so asymmetric values (e.g. set_drive -rise X -fall Y) survive into the
-    // JSON. The frontend collapses this to a single line on the Port Delays
-    // card unless the user explicitly cares about asymmetry.
     sta::Port* port = network->port(pin);
     if (port && is_input) {
       sta::InputDrive* drive = sdc->findInputDrive(port);
@@ -1045,20 +947,16 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
                          from_slews,
                          to_port);
         if (cell) {
-          b.field("driving_cell", std::string(cell->name()));
+          o["driving_cell"] = std::string(cell->name());
           if (to_port) {
-            b.field("driving_pin", std::string(to_port->name()));
+            o["driving_pin"] = std::string(to_port->name());
           } else {
-            b.nullField("driving_pin");
+            o["driving_pin"] = nullptr;
           }
         } else {
-          b.nullField("driving_cell");
-          b.nullField("driving_pin");
+          o["driving_cell"] = nullptr;
+          o["driving_pin"] = nullptr;
         }
-        // Helper to emit a 4-cell rise/fall × min/max group with a shared key
-        // prefix and per-key suffixes ("rise_max", "rise_min", "fall_max",
-        // "fall_min"). Time scale or 1.0 (for resistance ohms — no SI scaling
-        // applied here).
         auto emitRfmm = [&](const char* prefix, auto query, double scale) {
           const struct
           {
@@ -1077,9 +975,9 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
             query(s.rf, s.mm, val, exists);
             const std::string key = std::string(prefix) + s.suffix;
             if (exists) {
-              b.field(key, static_cast<double>(val) / scale);
+              o[key] = static_cast<double>(val) / scale;
             } else {
-              b.nullField(key);
+              o[key] = nullptr;
             }
           }
         };
@@ -1096,11 +994,10 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
                 const sta::MinMax* mm,
                 float& v,
                 bool& ex) { drive->driveResistance(rf, mm, v, ex); },
-            1.0);  // resistance: ohms, no scaling
+            1.0);
       } else {
-        b.nullField("driving_cell");
-        b.nullField("driving_pin");
-        // Symmetry: emit nulls for the 4-cell groups when no InputDrive.
+        o["driving_cell"] = nullptr;
+        o["driving_pin"] = nullptr;
         for (const char* k : {"drive_slew_rise_max",
                               "drive_slew_rise_min",
                               "drive_slew_fall_max",
@@ -1109,12 +1006,12 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
                               "drive_res_rise_min",
                               "drive_res_fall_max",
                               "drive_res_fall_min"}) {
-          b.nullField(k);
+          o[k] = nullptr;
         }
       }
     } else {
-      b.nullField("driving_cell");
-      b.nullField("driving_pin");
+      o["driving_cell"] = nullptr;
+      o["driving_pin"] = nullptr;
       for (const char* k : {"drive_slew_rise_max",
                             "drive_slew_rise_min",
                             "drive_slew_fall_max",
@@ -1123,16 +1020,10 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
                             "drive_res_rise_min",
                             "drive_res_fall_max",
                             "drive_res_fall_min"}) {
-        b.nullField(k);
+        o[k] = nullptr;
       }
     }
 
-    // Load capacitance, wire cap, and fanout (all port types).
-    //   load_cap : set_load <cap> [get_ports …]                — pin-level
-    //   wire_cap : set_load -wire <cap> [get_ports …]          — net-level
-    //   fanout   : set_fanout_load <load> [get_ports …]        — load count
-    // Each is rise/max biased to keep the JSON simple; users almost never
-    // set rise vs. fall asymmetrically on these.
     const sta::PortExtCap* ext_cap = port ? sdc->portExtCap(port) : nullptr;
     if (ext_cap) {
       float pinc = 0.0f, wirec = 0.0f;
@@ -1143,36 +1034,35 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
           sta::RiseFall::rise(), sta::MinMax::max(), wirec, wirec_ex);
       ext_cap->fanout(sta::MinMax::max(), fan, fan_ex);
       if (pinc_ex) {
-        b.field("load_cap", static_cast<double>(pinc / cap_scale));
+        o["load_cap"] = static_cast<double>(pinc / cap_scale);
       } else {
-        b.nullField("load_cap");
+        o["load_cap"] = nullptr;
       }
       if (wirec_ex) {
-        b.field("wire_cap", static_cast<double>(wirec / cap_scale));
+        o["wire_cap"] = static_cast<double>(wirec / cap_scale);
       } else {
-        b.nullField("wire_cap");
+        o["wire_cap"] = nullptr;
       }
       if (fan_ex) {
-        b.field("fanout_load", fan);
+        o["fanout_load"] = fan;
       } else {
-        b.nullField("fanout_load");
+        o["fanout_load"] = nullptr;
       }
     } else {
-      b.nullField("load_cap");
-      b.nullField("wire_cap");
-      b.nullField("fanout_load");
+      o["load_cap"] = nullptr;
+      o["wire_cap"] = nullptr;
+      o["fanout_load"] = nullptr;
     }
 
-    b.endObject();
+    port_delays.push_back(std::move(o));
   };
 
   for (int i = offset; i < end; ++i) {
     emitDelay(raw[i]);
   }
 
-  b.endArray();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["port_delays"] = std::move(port_delays);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 WebSocketResponse SdcHandler::handleSdcExceptions(const WebSocketRequest& req)
@@ -1187,250 +1077,203 @@ WebSocketResponse SdcHandler::handleSdcExceptions(const WebSocketRequest& req)
   const float time_scale = ctx->time_scale;
   const std::string& time_suffix = ctx->time_suffix;
 
-  // Emit a PinSet as an array of {name, odb_type?, odb_id?} objects. No
-  // truncation — wide exceptions list every pin so the user can search for
-  // specific names.
-  auto emitPins
-      = [&](JsonBuilder& b, const char* key, const sta::PinSet* pins) {
-          b.beginArray(key);
-          if (pins && network) {
-            for (const sta::Pin* pin : *pins) {
-              if (!pin) {
-                continue;
-              }
-              b.beginObject();
-              b.field("name", std::string(network->pathName(pin)));
-              emitPinOdbBare(b, pin, db_network);
-              b.endObject();
-            }
-          }
-          b.endArray();
-        };
+  auto buildPins = [&](const sta::PinSet* pins) {
+    boost::json::array arr;
+    if (pins && network) {
+      for (const sta::Pin* pin : *pins) {
+        if (!pin) {
+          continue;
+        }
+        boost::json::object o;
+        o["name"] = std::string(network->pathName(pin));
+        emitPinOdbBare(o, pin, db_network);
+        arr.push_back(std::move(o));
+      }
+    }
+    return arr;
+  };
 
-  auto emitClocks
-      = [&](JsonBuilder& b, const char* key, const sta::ClockSet* clks) {
-          b.beginArray(key);
-          if (clks) {
-            for (sta::Clock* clk : *clks) {
-              if (clk) {
-                b.value(std::string(clk->name()));
-              }
-            }
-          }
-          b.endArray();
-        };
+  auto buildClocks = [&](const sta::ClockSet* clks) {
+    boost::json::array arr;
+    if (clks) {
+      for (sta::Clock* clk : *clks) {
+        if (clk) {
+          arr.push_back(boost::json::value(clk->name()));
+        }
+      }
+    }
+    return arr;
+  };
 
-  // Emit every instance from an InstanceSet as an array of {name, odb_*}
-  // objects. Mirrors emitPins so the frontend can linkify hierarchical
-  // instances exactly like pins.
-  auto emitInsts
-      = [&](JsonBuilder& b, const char* key, const sta::InstanceSet* insts) {
-          b.beginArray(key);
-          if (insts && network) {
-            for (const sta::Instance* inst : *insts) {
-              if (!inst) {
-                continue;
-              }
-              b.beginObject();
-              b.field("name", std::string(network->pathName(inst)));
-              emitInstanceOdbBare(b, inst, db_network);
-              b.endObject();
-            }
-          }
-          b.endArray();
-        };
+  auto buildInsts = [&](const sta::InstanceSet* insts) {
+    boost::json::array arr;
+    if (insts && network) {
+      for (const sta::Instance* inst : *insts) {
+        if (!inst) {
+          continue;
+        }
+        boost::json::object o;
+        o["name"] = std::string(network->pathName(inst));
+        emitInstanceOdbBare(o, inst, db_network);
+        arr.push_back(std::move(o));
+      }
+    }
+    return arr;
+  };
 
-  // Nets in a -thru list (set_*_path -through { net1 net2 ... }). Names only;
-  // odb has dbNet but the SDC widget doesn't currently linkify nets, so we
-  // emit just the path name. (Adding ODB refs later is straightforward.)
-  auto emitNets
-      = [&](JsonBuilder& b, const char* key, const sta::NetSet* nets) {
-          b.beginArray(key);
-          if (nets && network) {
-            for (const sta::Net* net : *nets) {
-              if (net) {
-                b.value(std::string(network->pathName(net)));
-              }
-            }
-          }
-          b.endArray();
-        };
+  auto buildNets = [&](const sta::NetSet* nets) {
+    boost::json::array arr;
+    if (nets && network) {
+      for (const sta::Net* net : *nets) {
+        if (net) {
+          arr.push_back(boost::json::value(network->pathName(net)));
+        }
+      }
+    }
+    return arr;
+  };
 
-  // Emit a RiseFallBoth* edge specifier as "rise" / "fall" / "rise_fall".
-  // Null when there's no transition restriction (plain -from / -to).
-  auto emitTransition
-      = [&](JsonBuilder& b, const char* key, const sta::RiseFallBoth* rf) {
-          if (rf) {
-            b.field(key, rf->name());
-          } else {
-            b.nullField(key);
-          }
-        };
+  auto setTransition = [&](boost::json::object& obj,
+                           const char* key,
+                           const sta::RiseFallBoth* rf) {
+    if (rf) {
+      obj[key] = std::string(rf->name());
+    } else {
+      obj[key] = nullptr;
+    }
+  };
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("time_unit", time_suffix);
-  b.beginArray("exceptions");
+  boost::json::object root;
+  root["time_unit"] = time_suffix;
+  boost::json::array exceptions;
 
   for (sta::ExceptionPath* exc : sdc->exceptions()) {
     if (!exc) {
       continue;
     }
-    // Skip internal filter/loop paths — they are not user-visible SDC.
-    // Group paths (set_group_path) ARE user-visible and surface as a distinct
-    // exception subtype below.
     if (exc->isFilter() || exc->isLoop()) {
       continue;
     }
 
-    b.beginObject();
-    b.field("type", exceptionTypeStr(exc));
+    boost::json::object o;
+    o["type"] = std::string(exceptionTypeStr(exc));
 
-    // Group path name (only meaningful when type == "group_path"; empty
-    // otherwise).
     if (exc->isGroupPath()) {
-      b.field("name", std::string(exc->name()));
-      b.field("is_default", exc->isDefault());
+      o["name"] = std::string(exc->name());
+      o["is_default"] = exc->isDefault();
     } else {
-      b.nullField("name");
-      b.field("is_default", false);
+      o["name"] = nullptr;
+      o["is_default"] = false;
     }
 
-    // Setup/hold/both scope.
     const sta::MinMaxAll* mm = exc->minMax();
-    b.field("min_max", mm ? mm->to_string() : std::string("max"));
+    o["min_max"] = mm ? mm->to_string() : std::string("max");
 
-    // Multi-cycle multiplier (0 for false paths and path delays).
-    b.field("multiplier", exc->pathMultiplier());
+    o["multiplier"] = exc->pathMultiplier();
 
-    // Explicit delay value (only meaningful for path_delay type).
     if (exc->isPathDelay()) {
-      b.field("delay", scaleTime(exc->delay(), time_scale));
+      o["delay"] = scaleTime(exc->delay(), time_scale);
     } else {
-      b.nullField("delay");
+      o["delay"] = nullptr;
     }
 
-    // path_delay-only flags: -ignore_clock_latency and -break_path.
-    // Defined as virtuals on ExceptionPath returning false on non-PathDelay
-    // subclasses, so we can call them unconditionally.
-    b.field("ignore_clk_latency", exc->ignoreClkLatency());
-    b.field("break_path", exc->breakPath());
+    o["ignore_clk_latency"] = exc->ignoreClkLatency();
+    o["break_path"] = exc->breakPath();
+    o["use_end_clk"] = exc->useEndClk();
 
-    // multicycle_path -end / -start: when -end, MCP applies relative to the
-    // capture-clock cycles; otherwise relative to launch. Returns false on
-    // non-MCP subclasses so it's safe to call unconditionally.
-    b.field("use_end_clk", exc->useEndClk());
-
-    // -from endpoints (pins / clocks / instances) plus optional -rise_from /
-    // -fall_from transition selector.
     sta::ExceptionFrom* from = exc->from();
-    emitPins(b, "from_pins", from ? from->pins() : nullptr);
-    emitClocks(b, "from_clocks", from ? from->clks() : nullptr);
-    emitInsts(b, "from_insts", from ? from->instances() : nullptr);
-    emitTransition(b, "from_transition", from ? from->transition() : nullptr);
+    o["from_pins"] = buildPins(from ? from->pins() : nullptr);
+    o["from_clocks"] = buildClocks(from ? from->clks() : nullptr);
+    o["from_insts"] = buildInsts(from ? from->instances() : nullptr);
+    setTransition(o, "from_transition", from ? from->transition() : nullptr);
 
-    // -thru endpoints (ordered list of filter stages). Each stage may
-    // independently restrict by -rise_through / -fall_through, and may
-    // contain pins, clocks, instances, AND nets (-through { net1 net2 }).
-    b.beginArray("thrus");
-    if (exc->thrus()) {
-      for (sta::ExceptionThru* thru : *exc->thrus()) {
-        if (!thru) {
-          continue;
+    {
+      boost::json::array thrus;
+      if (exc->thrus()) {
+        for (sta::ExceptionThru* thru : *exc->thrus()) {
+          if (!thru) {
+            continue;
+          }
+          boost::json::object t;
+          t["pins"] = buildPins(thru->pins());
+          t["clocks"] = buildClocks(thru->clks());
+          t["insts"] = buildInsts(thru->instances());
+          t["nets"] = buildNets(thru->nets());
+          setTransition(t, "transition", thru->transition());
+          thrus.push_back(std::move(t));
         }
-        b.beginObject();
-        emitPins(b, "pins", thru->pins());
-        emitClocks(b, "clocks", thru->clks());
-        emitInsts(b, "insts", thru->instances());
-        emitNets(b, "nets", thru->nets());
-        emitTransition(b, "transition", thru->transition());
-        b.endObject();
       }
+      o["thrus"] = std::move(thrus);
     }
-    b.endArray();
 
-    // -to endpoints (pins / clocks / instances) plus optional -rise_to /
-    // -fall_to via endTransition().
     sta::ExceptionTo* to = exc->to();
-    emitPins(b, "to_pins", to ? to->pins() : nullptr);
-    emitClocks(b, "to_clocks", to ? to->clks() : nullptr);
-    emitInsts(b, "to_insts", to ? to->instances() : nullptr);
-    emitTransition(b, "to_transition", to ? to->endTransition() : nullptr);
+    o["to_pins"] = buildPins(to ? to->pins() : nullptr);
+    o["to_clocks"] = buildClocks(to ? to->clks() : nullptr);
+    o["to_insts"] = buildInsts(to ? to->instances() : nullptr);
+    setTransition(o, "to_transition", to ? to->endTransition() : nullptr);
 
-    // Unique ID for stable ordering in the UI.
-    b.field("id", static_cast<int>(exc->id()));
-    // SDC -comment carried on every exception (false_path, multi_cycle,
-    // path_delay, group_path).  Empty string when none, kept in the
-    // payload so the frontend can decide whether to render it.
-    b.field("comment", exc->comment());
+    o["id"] = static_cast<int>(exc->id());
+    o["comment"] = std::string(exc->comment());
 
-    b.endObject();
+    exceptions.push_back(std::move(o));
   }
 
-  b.endArray();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["exceptions"] = std::move(exceptions);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 // ── Network latencies (set_clock_latency without -source). Source
 //    latencies emit below as clock_insertions; is_source discriminates.
-static void emitClockLatencies(JsonBuilder& b, const SdcContext& ctx)
+static void emitClockLatencies(boost::json::object& root, const SdcContext& ctx)
 {
-  b.beginArray("clock_latencies");
-  // Iterate non-const because ClockLatency::delays() is non-const upstream.
+  boost::json::array arr;
   for (sta::ClockLatency* lat : *ctx.sdc->clockLatencies()) {
     if (!lat) {
       continue;
     }
-    b.beginObject();
+    boost::json::object o;
     const sta::Clock* clk = lat->clock();
     if (clk) {
-      b.field("clock", std::string(clk->name()));
+      o["clock"] = std::string(clk->name());
     } else {
-      b.nullField("clock");
+      o["clock"] = nullptr;
     }
     const sta::Pin* pin = lat->pin();
     if (pin && ctx.network) {
-      b.field("pin", std::string(ctx.network->pathName(pin)));
+      o["pin"] = std::string(ctx.network->pathName(pin));
     } else {
-      b.nullField("pin");
+      o["pin"] = nullptr;
     }
-    b.field("is_source", false);
-    emitRiseFallMinMax(b, lat->delays(), ctx.time_scale);
-    b.endObject();
+    o["is_source"] = false;
+    emitRiseFallMinMax(o, lat->delays(), ctx.time_scale);
+    arr.push_back(std::move(o));
   }
-  b.endArray();
+  root["clock_latencies"] = std::move(arr);
 }
 
-// ── Clock insertion delays (set_clock_latency -source) — distinct from
-//    network latency: source latency is the off-chip / pre-netlist tree
-//    delay, with rise/fall × min/max × early/late values.
-static void emitClockInsertions(JsonBuilder& b, const SdcContext& ctx)
+// ── Clock insertion delays (set_clock_latency -source) ──
+static void emitClockInsertions(boost::json::object& root,
+                                const SdcContext& ctx)
 {
-  b.beginArray("clock_insertions");
+  boost::json::array arr;
   for (sta::ClockInsertion* ins : ctx.sdc->clockInsertions()) {
     if (!ins) {
       continue;
     }
-    b.beginObject();
+    boost::json::object o;
     const sta::Clock* clk = ins->clock();
     if (clk) {
-      b.field("clock", std::string(clk->name()));
+      o["clock"] = std::string(clk->name());
     } else {
-      b.nullField("clock");
+      o["clock"] = nullptr;
     }
     const sta::Pin* pin = ins->pin();
     if (pin && ctx.network) {
-      b.field("pin", std::string(ctx.network->pathName(pin)));
+      o["pin"] = std::string(ctx.network->pathName(pin));
     } else {
-      b.nullField("pin");
+      o["pin"] = nullptr;
     }
-    // Counterpart of the `is_source: false` flag on clock_latencies — these
-    // entries are always source latency (set_clock_latency -source).
-    b.field("is_source", true);
-    // Flatten early/late into one early_*/late_* prefix per direction so the
-    // JSON is self-describing without requiring the client to know the full
-    // RiseFall × MinMax × EarlyLate product.
+    o["is_source"] = true;
     const struct
     {
       const char* key;
@@ -1476,20 +1319,21 @@ static void emitClockInsertions(JsonBuilder& b, const SdcContext& ctx)
       bool exists;
       ins->delay(s.rf, s.mm, s.el, val, exists);
       if (exists) {
-        b.field(s.key, scaleTime(val, ctx.time_scale));
+        o[s.key] = scaleTime(val, ctx.time_scale);
       } else {
-        b.nullField(s.key);
+        o[s.key] = nullptr;
       }
     }
-    b.endObject();
+    arr.push_back(std::move(o));
   }
-  b.endArray();
+  root["clock_insertions"] = std::move(arr);
 }
 
 // ── Per-clock uncertainties (set_clock_uncertainty -clock) ──────────────
-static void emitClockUncertainties(JsonBuilder& b, const SdcContext& ctx)
+static void emitClockUncertainties(boost::json::object& root,
+                                   const SdcContext& ctx)
 {
-  b.beginArray("clock_uncertainties");
+  boost::json::array arr;
   for (const sta::Clock* clk : ctx.sdc->clocks()) {
     if (!clk) {
       continue;
@@ -1498,23 +1342,22 @@ static void emitClockUncertainties(JsonBuilder& b, const SdcContext& ctx)
     if (!u.any()) {
       continue;
     }
-    b.beginObject();
-    b.field("clock", std::string(clk->name()));
-    emitUncertainty(b, "setup", "hold", u, ctx.time_scale);
-    b.endObject();
+    boost::json::object o;
+    o["clock"] = std::string(clk->name());
+    emitUncertainty(o, "setup", "hold", u, ctx.time_scale);
+    arr.push_back(std::move(o));
   }
-  b.endArray();
+  root["clock_uncertainties"] = std::move(arr);
 }
 
 // ── Top-level port loads and limits ─────────────────────────────────────
-static void emitPortLoads(JsonBuilder& b, const SdcContext& ctx)
+static void emitPortLoads(boost::json::object& root, const SdcContext& ctx)
 {
-  b.beginArray("port_loads");
+  boost::json::array arr;
   if (ctx.network) {
     const sta::Instance* top = ctx.network->topInstance();
     if (top) {
       const sta::Cell* top_cell = ctx.network->cell(top);
-      // unique_ptr so the iterator is freed even if a body throws.
       std::unique_ptr<sta::CellPortIterator> it(
           ctx.network->portIterator(top_cell));
       while (it->hasNext()) {
@@ -1523,7 +1366,6 @@ static void emitPortLoads(JsonBuilder& b, const SdcContext& ctx)
           continue;
         }
 
-        // Check if any constraint is set for this port.
         const sta::PortExtCap* ext_cap = ctx.sdc->portExtCap(port);
         float slew_max = 0.0f, slew_min = 0.0f, cap_max = 0.0f,
               fanout_max = 0.0f;
@@ -1541,15 +1383,13 @@ static void emitPortLoads(JsonBuilder& b, const SdcContext& ctx)
           continue;
         }
 
-        b.beginObject();
-        b.field("port", std::string(ctx.network->name(port)));
+        boost::json::object o;
+        o["port"] = std::string(ctx.network->name(port));
 
-        // External load capacitance (set_load).
         if (ext_cap) {
           const sta::RiseFallMinMax* pin_cap = ext_cap->pinCap();
           const sta::RiseFallMinMax* wire_cap = ext_cap->wireCap();
-          emitRiseFallMinMax(b, pin_cap, ctx.cap_scale);
-          // Emit wire cap only as a single max value for compactness.
+          emitRiseFallMinMax(o, pin_cap, ctx.cap_scale);
           float wc;
           bool wc_ex;
           if (wire_cap) {
@@ -1559,112 +1399,98 @@ static void emitPortLoads(JsonBuilder& b, const SdcContext& ctx)
             wc_ex = false;
           }
           if (wc_ex) {
-            b.field("wire_cap_max", static_cast<double>(wc / ctx.cap_scale));
+            o["wire_cap_max"] = static_cast<double>(wc / ctx.cap_scale);
           } else {
-            b.nullField("wire_cap_max");
+            o["wire_cap_max"] = nullptr;
           }
         } else {
-          b.nullField("rise_max");
-          b.nullField("rise_min");
-          b.nullField("fall_max");
-          b.nullField("fall_min");
-          b.nullField("wire_cap_max");
+          o["rise_max"] = nullptr;
+          o["rise_min"] = nullptr;
+          o["fall_max"] = nullptr;
+          o["fall_min"] = nullptr;
+          o["wire_cap_max"] = nullptr;
         }
 
-        // Slew limits.
         if (slew_max_ex) {
-          b.field("slew_max", scaleTime(slew_max, ctx.time_scale));
+          o["slew_max"] = scaleTime(slew_max, ctx.time_scale);
         } else {
-          b.nullField("slew_max");
+          o["slew_max"] = nullptr;
         }
         if (slew_min_ex) {
-          b.field("slew_min", scaleTime(slew_min, ctx.time_scale));
+          o["slew_min"] = scaleTime(slew_min, ctx.time_scale);
         } else {
-          b.nullField("slew_min");
+          o["slew_min"] = nullptr;
         }
 
-        // Cap limit.
         if (cap_max_ex) {
-          b.field("cap_limit", static_cast<double>(cap_max / ctx.cap_scale));
+          o["cap_limit"] = static_cast<double>(cap_max / ctx.cap_scale);
         } else {
-          b.nullField("cap_limit");
+          o["cap_limit"] = nullptr;
         }
 
-        // Fanout limit.
         if (fanout_max_ex) {
-          b.field("fanout_limit", static_cast<int>(fanout_max));
+          o["fanout_limit"] = static_cast<int>(fanout_max);
         } else {
-          b.nullField("fanout_limit");
+          o["fanout_limit"] = nullptr;
         }
 
-        b.endObject();
+        arr.push_back(std::move(o));
       }
     }
   }
-  b.endArray();
+  root["port_loads"] = std::move(arr);
 }
 
 // ── Disabled timing (set_disable_timing) ────────────────────────────────
-// Flattened into one array with a `scope` discriminator so the frontend
-// can render a single table. Covers every flavor that the Sdc API exposes
-// publicly:
-//   - scope="pin"         → set_disable_timing <instance pin>
-//   - scope="port"        → set_disable_timing <top-level port>
-//   - scope="lib_port"    → set_disable_timing <liberty_cell/port>
-//   - scope="cell_port"   → set_disable_timing cell -from/-to (per cell,
-//   lists from/to ports)
-//   - scope="inst_port"   → set_disable_timing inst -from/-to (per instance,
-//   lists from/to ports)
-static void emitDisabledTiming(JsonBuilder& b, const SdcContext& ctx)
+static void emitDisabledTiming(boost::json::object& root,
+                               const SdcContext& ctx)
 {
-  b.beginArray("disabled_timing");
-  auto emitPortList = [&](const char* key, const sta::LibertyPortSet* ports) {
-    b.beginArray(key);
+  boost::json::array arr;
+  auto buildPortList = [&](const sta::LibertyPortSet* ports) {
+    boost::json::array a;
     if (ports) {
       for (const sta::LibertyPort* lp : *ports) {
         if (lp) {
-          b.value(std::string(lp->name()));
+          a.push_back(boost::json::value(lp->name()));
         }
       }
     }
-    b.endArray();
+    return a;
   };
-  // Paired -from/-to disables (set_disable_timing -from X -to Y) live in a
-  // separate LibertyPortPairSet, NOT in the single-port from/to lists.
-  // Emit those as an array of {from, to} objects so the frontend can show
-  // each pair as a row of its own.
-  auto emitFromToPairs = [&](const sta::LibertyPortPairSet* pairs) {
-    b.beginArray("from_to");
+  auto buildFromToPairs = [&](const sta::LibertyPortPairSet* pairs) {
+    boost::json::array a;
     if (pairs) {
       for (const sta::LibertyPortPair& p : *pairs) {
-        b.beginObject();
-        b.field("from", p.first ? std::string(p.first->name()) : std::string());
-        b.field("to", p.second ? std::string(p.second->name()) : std::string());
-        b.endObject();
+        boost::json::object pp;
+        pp["from"]
+            = std::string(p.first ? p.first->name() : "");
+        pp["to"] = std::string(p.second ? p.second->name() : "");
+        a.push_back(std::move(pp));
       }
     }
-    b.endArray();
+    return a;
   };
-  auto emitDisabledPorts = [&](const sta::DisabledPorts* dp) {
-    b.field("all", dp ? dp->all() : false);
-    emitPortList("from", dp ? dp->from() : nullptr);
-    emitPortList("to", dp ? dp->to() : nullptr);
-    emitFromToPairs(dp ? dp->fromTo() : nullptr);
-  };
+  auto setDisabledPorts
+      = [&](boost::json::object& obj, const sta::DisabledPorts* dp) {
+          obj["all"] = dp ? dp->all() : false;
+          obj["from"] = buildPortList(dp ? dp->from() : nullptr);
+          obj["to"] = buildPortList(dp ? dp->to() : nullptr);
+          obj["from_to"] = buildFromToPairs(dp ? dp->fromTo() : nullptr);
+        };
 
   if (const sta::PinSet* pins = ctx.sdc->disabledPins()) {
     for (const sta::Pin* pin : *pins) {
       if (!pin) {
         continue;
       }
-      b.beginObject();
-      b.field("scope", std::string("pin"));
+      boost::json::object o;
+      o["scope"] = std::string("pin");
       if (ctx.network) {
-        b.field("name", std::string(ctx.network->pathName(pin)));
+        o["name"] = std::string(ctx.network->pathName(pin));
       } else {
-        b.field("name", std::string(""));
+        o["name"] = std::string("");
       }
-      b.endObject();
+      arr.push_back(std::move(o));
     }
   }
   if (const sta::PortSet* ports = ctx.sdc->disabledPorts()) {
@@ -1672,14 +1498,14 @@ static void emitDisabledTiming(JsonBuilder& b, const SdcContext& ctx)
       if (!port) {
         continue;
       }
-      b.beginObject();
-      b.field("scope", std::string("port"));
+      boost::json::object o;
+      o["scope"] = std::string("port");
       if (ctx.network) {
-        b.field("name", std::string(ctx.network->name(port)));
+        o["name"] = std::string(ctx.network->name(port));
       } else {
-        b.field("name", std::string(""));
+        o["name"] = std::string("");
       }
-      b.endObject();
+      arr.push_back(std::move(o));
     }
   }
   if (const sta::LibertyPortSet* lports = ctx.sdc->disabledLibPorts()) {
@@ -1687,41 +1513,35 @@ static void emitDisabledTiming(JsonBuilder& b, const SdcContext& ctx)
       if (!lp) {
         continue;
       }
-      b.beginObject();
-      b.field("scope", std::string("lib_port"));
-      b.field("name", std::string(lp->name()));
-      b.endObject();
+      boost::json::object o;
+      o["scope"] = std::string("lib_port");
+      o["name"] = std::string(lp->name());
+      arr.push_back(std::move(o));
     }
   }
-  // Helper: emit DisabledCellPorts::timingArcSets() if it carries any
-  // arc-set granularity. Each arc-set's to_string() reads roughly like
-  // "from_port → to_port (timing_role)" — handy for users tracking down
-  // exactly which arc was disabled vs. the whole port pair.
-  // Only DisabledCellPorts carries timingArcSets — DisabledInstancePorts
-  // is per-instance and uses the inherited from/to/all only.
-  auto emitTimingArcSets = [&](const sta::DisabledCellPorts* dcp) {
+  auto buildTimingArcSets = [&](const sta::DisabledCellPorts* dcp) {
     const sta::TimingArcSetSet* sets = dcp ? dcp->timingArcSets() : nullptr;
-    b.beginArray("timing_arc_sets");
+    boost::json::array a;
     if (sets) {
-      for (sta::TimingArcSet* arc : *sets) {
-        if (arc) {
-          b.value(arc->to_string());
+      for (sta::TimingArcSet* arcset : *sets) {
+        if (arcset) {
+          a.push_back(boost::json::value(arcset->to_string()));
         }
       }
     }
-    b.endArray();
+    return a;
   };
   if (const sta::DisabledCellPortsMap* cm = ctx.sdc->disabledCellPorts()) {
     for (const auto& [cell, dcp] : *cm) {
       if (!cell || !dcp) {
         continue;
       }
-      b.beginObject();
-      b.field("scope", std::string("cell_port"));
-      b.field("name", std::string(cell->name()));
-      emitDisabledPorts(dcp);
-      emitTimingArcSets(dcp);
-      b.endObject();
+      boost::json::object o;
+      o["scope"] = std::string("cell_port");
+      o["name"] = std::string(cell->name());
+      setDisabledPorts(o, dcp);
+      o["timing_arc_sets"] = buildTimingArcSets(dcp);
+      arr.push_back(std::move(o));
     }
   }
   if (const sta::DisabledInstancePortsMap* im
@@ -1730,34 +1550,25 @@ static void emitDisabledTiming(JsonBuilder& b, const SdcContext& ctx)
       if (!inst || !dip) {
         continue;
       }
-      b.beginObject();
-      b.field("scope", std::string("inst_port"));
+      boost::json::object o;
+      o["scope"] = std::string("inst_port");
       if (ctx.network) {
-        b.field("name", std::string(ctx.network->pathName(inst)));
+        o["name"] = std::string(ctx.network->pathName(inst));
       } else {
-        b.field("name", std::string(""));
+        o["name"] = std::string("");
       }
-      emitDisabledPorts(dip);
-      // DisabledInstancePorts has no timing_arc_sets accessor; emit empty
-      // so the JSON shape stays uniform across all disabled-timing rows.
-      b.beginArray("timing_arc_sets");
-      b.endArray();
-      b.endObject();
+      setDisabledPorts(o, dip);
+      o["timing_arc_sets"] = boost::json::array();
+      arr.push_back(std::move(o));
     }
   }
-  b.endArray();
+  root["disabled_timing"] = std::move(arr);
 }
 
-// ── Design-wide cell limits (set_max_transition / cap / fanout on the
-//    top design) ───────────────────────────────────────────────────────
-// Sdc only exposes per-Cell* query getters (no bulk map iterator), so
-// we probe just the top cell. Most flows set these design-wide values
-// exactly once via `set_max_* X [current_design]`, which lands here.
-// Per-cell-name limits applied via `set_max_* X [get_cells <pat>]` would
-// need a public Sdc map getter to enumerate — left as upstream follow-on.
-static void emitCellLimits(JsonBuilder& b, const SdcContext& ctx)
+// ── Design-wide cell limits ───────────────────────────────────────────
+static void emitCellLimits(boost::json::object& root, const SdcContext& ctx)
 {
-  b.beginArray("cell_limits");
+  boost::json::array arr;
   if (ctx.network) {
     sta::Cell* top_cell = ctx.network->cell(ctx.network->topInstance());
     if (top_cell) {
@@ -1770,43 +1581,41 @@ static void emitCellLimits(JsonBuilder& b, const SdcContext& ctx)
       ctx.sdc->fanoutLimit(
           top_cell, sta::MinMax::max(), fanout_max, fanout_max_ex);
       if (slew_max_ex || slew_min_ex || cap_max_ex || fanout_max_ex) {
-        b.beginObject();
-        b.field("scope", std::string("design"));
-        b.field("name", std::string(ctx.network->name(top_cell)));
+        boost::json::object o;
+        o["scope"] = std::string("design");
+        o["name"] = std::string(ctx.network->name(top_cell));
         if (slew_max_ex) {
-          b.field("slew_max", scaleTime(slew_max, ctx.time_scale));
+          o["slew_max"] = scaleTime(slew_max, ctx.time_scale);
         } else {
-          b.nullField("slew_max");
+          o["slew_max"] = nullptr;
         }
         if (slew_min_ex) {
-          b.field("slew_min", scaleTime(slew_min, ctx.time_scale));
+          o["slew_min"] = scaleTime(slew_min, ctx.time_scale);
         } else {
-          b.nullField("slew_min");
+          o["slew_min"] = nullptr;
         }
         if (cap_max_ex) {
-          b.field("cap_limit", static_cast<double>(cap_max / ctx.cap_scale));
+          o["cap_limit"] = static_cast<double>(cap_max / ctx.cap_scale);
         } else {
-          b.nullField("cap_limit");
+          o["cap_limit"] = nullptr;
         }
         if (fanout_max_ex) {
-          b.field("fanout_limit", static_cast<int>(fanout_max));
+          o["fanout_limit"] = static_cast<int>(fanout_max);
         } else {
-          b.nullField("fanout_limit");
+          o["fanout_limit"] = nullptr;
         }
-        b.endObject();
+        arr.push_back(std::move(o));
       }
     }
   }
-  b.endArray();
+  root["cell_limits"] = std::move(arr);
 }
 
-// ── Clock-level slew limits (set_max_transition -clock_path/data_path) ──
-// Only enumerate when haveClkSlewLimits() reports true; without that
-// gate we'd query every clock × rise/fall × clk/data × min/max
-// combination just to find out nothing is set.
-static void emitClockSlewLimits(JsonBuilder& b, const SdcContext& ctx)
+// ── Clock-level slew limits ───────────────────────────────────────────
+static void emitClockSlewLimits(boost::json::object& root,
+                                const SdcContext& ctx)
 {
-  b.beginArray("clock_slew_limits");
+  boost::json::array arr;
   if (ctx.sdc->haveClkSlewLimits()) {
     const sta::PathClkOrData clk_only = sta::PathClkOrData::clk;
     const sta::PathClkOrData data_only = sta::PathClkOrData::data;
@@ -1814,7 +1623,6 @@ static void emitClockSlewLimits(JsonBuilder& b, const SdcContext& ctx)
       if (!clk) {
         continue;
       }
-      // Probe all 8 slots; emit a row per clock when at least one is set.
       const struct
       {
         const char* key;
@@ -1854,26 +1662,26 @@ static void emitClockSlewLimits(JsonBuilder& b, const SdcContext& ctx)
       if (!anyExists) {
         continue;
       }
-      b.beginObject();
-      b.field("clock", std::string(clk->name()));
+      boost::json::object o;
+      o["clock"] = std::string(clk->name());
       for (int i = 0; i < 8; ++i) {
         if (ex[i]) {
-          b.field(slots[i].key, scaleTime(vals[i], ctx.time_scale));
+          o[slots[i].key] = scaleTime(vals[i], ctx.time_scale);
         } else {
-          b.nullField(slots[i].key);
+          o[slots[i].key] = nullptr;
         }
       }
-      b.endObject();
+      arr.push_back(std::move(o));
     }
   }
-  b.endArray();
+  root["clock_slew_limits"] = std::move(arr);
 }
 
-// ── Pin-anchored clock uncertainty (set_clock_uncertainty -to <pin>).
-//    Same gate as pin_cap_limits below — graph-built only.
-static void emitPinClockUncertainties(JsonBuilder& b, const SdcContext& ctx)
+// ── Pin-anchored clock uncertainty ───────────────────────────────────
+static void emitPinClockUncertainties(boost::json::object& root,
+                                      const SdcContext& ctx)
 {
-  b.beginArray("pin_clock_uncertainties");
+  boost::json::array arr;
   if (ctx.sta->graph()) {
     sta::Search* search = ctx.sta->search();
     if (search) {
@@ -1891,24 +1699,21 @@ static void emitPinClockUncertainties(JsonBuilder& b, const SdcContext& ctx)
         if (!u.any()) {
           continue;
         }
-        b.beginObject();
-        b.field("pin", std::string(ctx.network->pathName(pin)));
-        emitPinOdbRef(b, "pin", pin, ctx.db_network);
-        emitUncertainty(b, "setup", "hold", u, ctx.time_scale);
-        b.endObject();
+        boost::json::object o;
+        o["pin"] = std::string(ctx.network->pathName(pin));
+        emitPinOdbRef(o, "pin", pin, ctx.db_network);
+        emitUncertainty(o, "setup", "hold", u, ctx.time_scale);
+        arr.push_back(std::move(o));
       }
     }
   }
-  b.endArray();
+  root["pin_clock_uncertainties"] = std::move(arr);
 }
 
-// ── Pin-scope cap limits (set_max_capacitance [get_pins …]) ────────
-// Probe every endpoint vertex via the public per-pin getter (no bulk
-// getter exists upstream). Gated on the graph being built so opening
-// the Limits tab doesn't trigger an O(V) walk by itself.
-static void emitPinCapLimits(JsonBuilder& b, const SdcContext& ctx)
+// ── Pin-scope cap limits ──────────────────────────────────────────
+static void emitPinCapLimits(boost::json::object& root, const SdcContext& ctx)
 {
-  b.beginArray("pin_cap_limits");
+  boost::json::array arr;
   if (ctx.sta->graph()) {
     sta::Search* search = ctx.sta->search();
     if (search) {
@@ -1923,9 +1728,6 @@ static void emitPinCapLimits(JsonBuilder& b, const SdcContext& ctx)
         }
         float cap_max = 0, cap_min = 0;
         bool cap_max_ex = false, cap_min_ex = false;
-        // Sdc::capacitanceLimit(Pin*, ...) takes a non-const Pin* even
-        // though it's a read-only query — the cast strips const for the API
-        // boundary only.
         sta::Pin* mut_pin = const_cast<sta::Pin*>(pin);
         ctx.sdc->capacitanceLimit(
             mut_pin, sta::MinMax::max(), cap_max, cap_max_ex);
@@ -1934,24 +1736,24 @@ static void emitPinCapLimits(JsonBuilder& b, const SdcContext& ctx)
         if (!cap_max_ex && !cap_min_ex) {
           continue;
         }
-        b.beginObject();
-        b.field("pin", std::string(ctx.network->pathName(pin)));
-        emitPinOdbRef(b, "pin", pin, ctx.db_network);
+        boost::json::object o;
+        o["pin"] = std::string(ctx.network->pathName(pin));
+        emitPinOdbRef(o, "pin", pin, ctx.db_network);
         if (cap_max_ex) {
-          b.field("cap_max", static_cast<double>(cap_max / ctx.cap_scale));
+          o["cap_max"] = static_cast<double>(cap_max / ctx.cap_scale);
         } else {
-          b.nullField("cap_max");
+          o["cap_max"] = nullptr;
         }
         if (cap_min_ex) {
-          b.field("cap_min", static_cast<double>(cap_min / ctx.cap_scale));
+          o["cap_min"] = static_cast<double>(cap_min / ctx.cap_scale);
         } else {
-          b.nullField("cap_min");
+          o["cap_min"] = nullptr;
         }
-        b.endObject();
+        arr.push_back(std::move(o));
       }
     }
   }
-  b.endArray();
+  root["pin_cap_limits"] = std::move(arr);
 }
 
 WebSocketResponse SdcHandler::handleSdcLimits(const WebSocketRequest& req)
@@ -1961,23 +1763,21 @@ WebSocketResponse SdcHandler::handleSdcLimits(const WebSocketRequest& req)
     return emptyLimits(req.id);
   }
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("time_unit", ctx->time_suffix);
-  b.field("cap_unit", ctx->cap_suffix);
+  boost::json::object root;
+  root["time_unit"] = ctx->time_suffix;
+  root["cap_unit"] = ctx->cap_suffix;
 
-  emitClockLatencies(b, *ctx);
-  emitClockInsertions(b, *ctx);
-  emitClockUncertainties(b, *ctx);
-  emitPortLoads(b, *ctx);
-  emitDisabledTiming(b, *ctx);
-  emitCellLimits(b, *ctx);
-  emitClockSlewLimits(b, *ctx);
-  emitPinClockUncertainties(b, *ctx);
-  emitPinCapLimits(b, *ctx);
+  emitClockLatencies(root, *ctx);
+  emitClockInsertions(root, *ctx);
+  emitClockUncertainties(root, *ctx);
+  emitPortLoads(root, *ctx);
+  emitDisabledTiming(root, *ctx);
+  emitCellLimits(root, *ctx);
+  emitClockSlewLimits(root, *ctx);
+  emitPinClockUncertainties(root, *ctx);
+  emitPinCapLimits(root, *ctx);
 
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 WebSocketResponse SdcHandler::handleSdcClockGroups(const WebSocketRequest& req)
@@ -1988,50 +1788,44 @@ WebSocketResponse SdcHandler::handleSdcClockGroups(const WebSocketRequest& req)
   }
   sta::Sdc* sdc = ctx->sdc;
 
-  JsonBuilder b;
-  b.beginObject();
-  b.beginArray("groups");
+  boost::json::object root;
+  boost::json::array groups;
 
   for (const auto& [name, cg] : sdc->clockGroupsNameMap()) {
     if (!cg) {
       continue;
     }
-    b.beginObject();
-    b.field("name", name);
+    boost::json::object o;
+    o["name"] = name;
 
     const char* type_str = cg->asynchronous()          ? "asynchronous"
                            : cg->logicallyExclusive()  ? "logically_exclusive"
                            : cg->physicallyExclusive() ? "physically_exclusive"
                                                        : "unknown";
-    b.field("type", type_str);
-    b.field("allow_paths", cg->allowPaths());
-    // SDC -comment carried on the set_clock_groups command.
-    b.field("comment", cg->comment());
+    o["type"] = std::string(type_str);
+    o["allow_paths"] = cg->allowPaths();
+    o["comment"] = std::string(cg->comment());
 
-    // Each entry in groups() is a ClockGroup (= ClockSet*) — a set of clocks
-    // that are synchronous to each other.  Clocks in different ClockGroups
-    // entries are exclusive/asynchronous with each other.
-    b.beginArray("clk_sets");
+    boost::json::array clk_sets;
     for (const sta::ClockGroup* clk_set : *cg->groups()) {
       if (!clk_set) {
         continue;
       }
-      b.beginArray();
+      boost::json::array set_arr;
       for (const sta::Clock* clk : *clk_set) {
         if (clk) {
-          b.value(std::string(clk->name()));
+          set_arr.push_back(boost::json::value(clk->name()));
         }
       }
-      b.endArray();
+      clk_sets.push_back(std::move(set_arr));
     }
-    b.endArray();
+    o["clk_sets"] = std::move(clk_sets);
 
-    b.endObject();
+    groups.push_back(std::move(o));
   }
 
-  b.endArray();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["groups"] = std::move(groups);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
@@ -2052,10 +1846,6 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
   const float time_scale = ctx->time_scale;
   const std::string& time_suffix = ctx->time_suffix;
 
-  // Pre-build a pin → exceptions reverse index. Without this each requested
-  // pin would walk every exception (O(N×M)); building the map once is O(M).
-  // Path-group/filter/loop exceptions are excluded to match the original
-  // per-pin filter logic.
   std::map<const sta::Pin*, std::vector<sta::ExceptionPath*>> pin_exceptions;
   for (sta::ExceptionPath* exc : sdc->exceptions()) {
     if (!exc || exc->isFilter() || exc->isLoop() || exc->isGroupPath()) {
@@ -2086,13 +1876,8 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
     }
   }
 
-  // Emit all SDC constraint data for one resolved pin into the open JSON
-  // object.
-  auto emitPinData = [&](JsonBuilder& b, const sta::Pin* pin) {
-    // ── Direction + clock-pin flag ───────────────────────────────────────────
-    // The Endpoints tab now renders every pin on the instance (not just the
-    // captured endpoint), so the frontend needs to pick a lane shape per pin
-    // based on its direction and whether it's a CK input.
+  // Emit all SDC constraint data for one resolved pin into the open object.
+  auto emitPinData = [&](boost::json::object& obj, const sta::Pin* pin) {
     sta::LibertyPort* lp = network->libertyPort(pin);
     sta::LibertyCell* lc = lp ? lp->libertyCell() : nullptr;
     {
@@ -2115,18 +1900,10 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
       } else if (dir == sta::PortDirection::well()) {
         dir_str = "well";
       }
-      b.field("direction", std::string(dir_str));
+      obj["direction"] = std::string(dir_str);
     }
-    // Clock pin = liberty port that drives a sequential's clock (CK / CLK).
-    b.field("is_clock_pin", lp ? lp->isRegClk() : false);
+    obj["is_clock_pin"] = lp ? lp->isRegClk() : false;
 
-    // ── Library setup/hold from the flip-flop's liberty timing arcs ──────────
-    // Only meaningful for internal flip-flop pins, not top-level I/O ports.
-    // The arc's `fromEdge()` tells us which clock transition closes the
-    // capture window — rise for positive flops & active-low latches,
-    // fall for active-high latches. We propagate it as `capture_edge`
-    // so the frontend can anchor latch diagrams on the correct edge
-    // without having to guess the latch polarity.
     float lib_setup = 0.0f, lib_hold = 0.0f;
     bool has_lib_setup = false, has_lib_hold = false;
     const sta::Transition* capture_edge = nullptr;
@@ -2153,15 +1930,9 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
               lib_setup = val;
               has_lib_setup = true;
             }
-            // Capture edge is the clock-pin transition that triggers
-            // the setup check — pulled from the first setup arc's
-            // fromEdge. Hold arcs reference the same edge in OpenSTA.
             if (!capture_edge && arc->fromEdge()) {
               capture_edge = arc->fromEdge();
             }
-            // Enable port = the clock/enable input that the setup arc
-            // is checked against. Used below to resolve per-pin latch
-            // borrow limits via Sdc::latchBorrowLimit.
             if (!enable_port && arc->from()) {
               enable_port = arc->from();
             }
@@ -2175,18 +1946,14 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
       }
     }
     if (capture_edge == sta::Transition::rise()) {
-      b.field("capture_edge", std::string("rise"));
+      obj["capture_edge"] = std::string("rise");
     } else if (capture_edge == sta::Transition::fall()) {
-      b.field("capture_edge", std::string("fall"));
+      obj["capture_edge"] = std::string("fall");
     } else {
-      b.nullField("capture_edge");
+      obj["capture_edge"] = nullptr;
     }
 
-    // ── Library clk-to-Q for output pins of sequential cells ────────────────
-    // Pulled from the liberty regClkToQ timing arcs whose 'to' port is this
-    // pin. We track rise/fall × max/min separately so the frontend can draw
-    // the clk-to-Q band with both early/late edges.
-    double clkq[2][2] = {{0, 0}, {0, 0}};  // [rise=0/fall=1][max=0/min=1]
+    double clkq[2][2] = {{0, 0}, {0, 0}};
     bool has_clkq[2][2] = {{false, false}, {false, false}};
     if (lc && lp && scene && !network->isTopLevelPort(pin)) {
       for (sta::TimingArcSet* tas : lc->timingArcSetsTo(lp)) {
@@ -2222,28 +1989,23 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
       }
     }
     if (has_clkq[0][0] || has_clkq[0][1] || has_clkq[1][0] || has_clkq[1][1]) {
-      b.beginObject("clk_to_q");
-      auto emitClkq = [&](const char* key, int rfi, int mmi) {
+      boost::json::object clkq_obj;
+      auto setClkq = [&](const char* key, int rfi, int mmi) {
         if (has_clkq[rfi][mmi]) {
-          b.field(key, clkq[rfi][mmi]);
+          clkq_obj[key] = clkq[rfi][mmi];
         } else {
-          b.nullField(key);
+          clkq_obj[key] = nullptr;
         }
       };
-      emitClkq("rise_max", 0, 0);
-      emitClkq("rise_min", 0, 1);
-      emitClkq("fall_max", 1, 0);
-      emitClkq("fall_min", 1, 1);
-      b.endObject();
+      setClkq("rise_max", 0, 0);
+      setClkq("rise_min", 0, 1);
+      setClkq("fall_max", 1, 0);
+      setClkq("fall_min", 1, 1);
+      obj["clk_to_q"] = std::move(clkq_obj);
     } else {
-      b.nullField("clk_to_q");
+      obj["clk_to_q"] = nullptr;
     }
 
-    // ── Clock domains: name, period, waveform, uncertainty, library times ──
-    // Resolve the enable pin once (shared across clock domains) so we
-    // can query Sdc::latchBorrowLimit per (data_pin, enable_pin, clk)
-    // and surface the explicit set_max_time_borrow value to the
-    // frontend's latch lane renderer.
     const bool is_latch_data = lp && lp->isLatchData();
     const sta::Pin* enable_pin_resolved = nullptr;
     if (is_latch_data && enable_port) {
@@ -2252,154 +2014,144 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
         enable_pin_resolved = network->findPin(inst, enable_port);
       }
     }
-    b.beginArray("clocks");
-    if (mode) {
-      sta::ClockSet domains = sta->clockDomains(pin, mode);
-      for (const sta::Clock* clk : domains) {
-        if (!clk) {
-          continue;
-        }
-        b.beginObject();
-        b.field("name", std::string(clk->name()));
-        b.field("period", scaleTime(clk->period(), time_scale));
-        const sta::FloatSeq& wf = clk->waveform();
-        b.beginArray("waveform");
-        if (!wf.empty()) {
-          for (float t : wf) {
-            b.value(scaleTime(t, time_scale));
+    {
+      boost::json::array clocks_arr;
+      if (mode) {
+        sta::ClockSet domains = sta->clockDomains(pin, mode);
+        for (const sta::Clock* clk : domains) {
+          if (!clk) {
+            continue;
           }
-        } else {
-          b.value(0.0);
-          b.value(scaleTime(clk->period(), time_scale) / 2.0);
-        }
-        b.endArray();
-        emitUncertainty(b,
-                        "uncertainty_setup",
-                        "uncertainty_hold",
-                        extractUncertainty(&clk->uncertainties()),
-                        time_scale);
-        if (has_lib_setup) {
-          b.field("library_setup", scaleTime(lib_setup, time_scale));
-        } else {
-          b.nullField("library_setup");
-        }
-        if (has_lib_hold) {
-          b.field("library_hold", scaleTime(lib_hold, time_scale));
-        } else {
-          b.nullField("library_hold");
-        }
-        // Explicit set_max_time_borrow (per-pin/per-instance/per-clock)
-        // for latch data inputs. Latches without an explicit limit fall
-        // back to the implicit transparent-period borrow on the frontend
-        // — we leave the field null in that case so the renderer can
-        // distinguish "user-specified limit" from "library default".
-        if (is_latch_data) {
-          float limit = 0.0f;
-          bool has_limit = false;
-          sdc->latchBorrowLimit(pin,
-                                enable_pin_resolved,
-                                const_cast<sta::Clock*>(clk),
-                                limit,
-                                has_limit);
-          if (has_limit) {
-            b.field("time_borrow_limit", scaleTime(limit, time_scale));
+          boost::json::object co;
+          co["name"] = std::string(clk->name());
+          co["period"] = scaleTime(clk->period(), time_scale);
+          const sta::FloatSeq& wf = clk->waveform();
+          boost::json::array wf_arr;
+          if (!wf.empty()) {
+            for (float t : wf) {
+              wf_arr.push_back(scaleTime(t, time_scale));
+            }
           } else {
-            b.nullField("time_borrow_limit");
+            wf_arr.push_back(0.0);
+            wf_arr.push_back(scaleTime(clk->period(), time_scale) / 2.0);
           }
-        } else {
-          b.nullField("time_borrow_limit");
-        }
-        b.endObject();
-      }
-    }
-    b.endArray();
-
-    // ── Exceptions that reference this pin ─────────────────────────────────
-    // Lookup is O(1) thanks to the pre-built reverse index.
-    b.beginArray("exceptions");
-    auto eit = pin_exceptions.find(pin);
-    if (eit != pin_exceptions.end()) {
-      for (sta::ExceptionPath* exc : eit->second) {
-        b.beginObject();
-        b.field("type", exceptionTypeStr(exc));
-        const sta::MinMaxAll* mm = exc->minMax();
-        b.field("min_max", mm ? mm->to_string() : std::string("max"));
-        b.field("multiplier", exc->pathMultiplier());
-        if (exc->isPathDelay()) {
-          b.field("delay", scaleTime(exc->delay(), time_scale));
-        } else {
-          b.nullField("delay");
-        }
-        b.endObject();
-      }
-    }
-    b.endArray();
-
-    // ── Port delays if this is a top-level port pin ─────────────────────────
-    b.beginArray("port_delays");
-    if (network->isTopLevelPort(pin)) {
-      auto emitPortDelay = [&](sta::PortDelay* pd, bool is_input) {
-        if (!pd) {
-          return;
-        }
-        b.beginObject();
-        b.field("is_input", is_input);
-        sta::Clock* clk = pd->clock();
-        if (clk) {
-          b.field("clock", std::string(clk->name()));
-          b.field("clk_period", scaleTime(clk->period(), time_scale));
-          emitUncertainty(b,
+          co["waveform"] = std::move(wf_arr);
+          emitUncertainty(co,
                           "uncertainty_setup",
                           "uncertainty_hold",
                           extractUncertainty(&clk->uncertainties()),
                           time_scale);
-        } else {
-          b.nullField("clock");
-          b.nullField("clk_period");
-          b.nullField("uncertainty_setup");
-          b.nullField("uncertainty_hold");
-        }
-        const sta::ClockEdge* clk_edge = pd->clkEdge();
-        if (clk_edge) {
-          b.field("clk_edge", std::string(clk_edge->transition()->name()));
-        } else {
-          b.nullField("clk_edge");
-        }
-        emitRiseFallMinMax(b, pd->delays(), time_scale);
-        b.endObject();
-      };
-      for (sta::InputDelay* id : sdc->inputDelays()) {
-        if (id && id->pin() == pin) {
-          emitPortDelay(id, true);
+          if (has_lib_setup) {
+            co["library_setup"] = scaleTime(lib_setup, time_scale);
+          } else {
+            co["library_setup"] = nullptr;
+          }
+          if (has_lib_hold) {
+            co["library_hold"] = scaleTime(lib_hold, time_scale);
+          } else {
+            co["library_hold"] = nullptr;
+          }
+          if (is_latch_data) {
+            float limit = 0.0f;
+            bool has_limit = false;
+            sdc->latchBorrowLimit(pin,
+                                  enable_pin_resolved,
+                                  const_cast<sta::Clock*>(clk),
+                                  limit,
+                                  has_limit);
+            if (has_limit) {
+              co["time_borrow_limit"] = scaleTime(limit, time_scale);
+            } else {
+              co["time_borrow_limit"] = nullptr;
+            }
+          } else {
+            co["time_borrow_limit"] = nullptr;
+          }
+          clocks_arr.push_back(std::move(co));
         }
       }
-      for (sta::OutputDelay* od : sdc->outputDelays()) {
-        if (od && od->pin() == pin) {
-          emitPortDelay(od, false);
-        }
-      }
+      obj["clocks"] = std::move(clocks_arr);
     }
-    b.endArray();
+
+    {
+      boost::json::array exc_arr;
+      auto eit = pin_exceptions.find(pin);
+      if (eit != pin_exceptions.end()) {
+        for (sta::ExceptionPath* exc : eit->second) {
+          boost::json::object eo;
+          eo["type"] = std::string(exceptionTypeStr(exc));
+          const sta::MinMaxAll* mm = exc->minMax();
+          eo["min_max"] = mm ? mm->to_string() : std::string("max");
+          eo["multiplier"] = exc->pathMultiplier();
+          if (exc->isPathDelay()) {
+            eo["delay"] = scaleTime(exc->delay(), time_scale);
+          } else {
+            eo["delay"] = nullptr;
+          }
+          exc_arr.push_back(std::move(eo));
+        }
+      }
+      obj["exceptions"] = std::move(exc_arr);
+    }
+
+    {
+      boost::json::array pd_arr;
+      if (network->isTopLevelPort(pin)) {
+        auto emitPortDelay = [&](sta::PortDelay* pd, bool is_input) {
+          if (!pd) {
+            return;
+          }
+          boost::json::object po;
+          po["is_input"] = is_input;
+          sta::Clock* clk = pd->clock();
+          if (clk) {
+            po["clock"] = std::string(clk->name());
+            po["clk_period"] = scaleTime(clk->period(), time_scale);
+            emitUncertainty(po,
+                            "uncertainty_setup",
+                            "uncertainty_hold",
+                            extractUncertainty(&clk->uncertainties()),
+                            time_scale);
+          } else {
+            po["clock"] = nullptr;
+            po["clk_period"] = nullptr;
+            po["uncertainty_setup"] = nullptr;
+            po["uncertainty_hold"] = nullptr;
+          }
+          const sta::ClockEdge* clk_edge = pd->clkEdge();
+          if (clk_edge) {
+            po["clk_edge"] = std::string(clk_edge->transition()->name());
+          } else {
+            po["clk_edge"] = nullptr;
+          }
+          emitRiseFallMinMax(po, pd->delays(), time_scale);
+          pd_arr.push_back(std::move(po));
+        };
+        for (sta::InputDelay* id : sdc->inputDelays()) {
+          if (id && id->pin() == pin) {
+            emitPortDelay(id, true);
+          }
+        }
+        for (sta::OutputDelay* od : sdc->outputDelays()) {
+          if (od && od->pin() == pin) {
+            emitPortDelay(od, false);
+          }
+        }
+      }
+      obj["port_delays"] = std::move(pd_arr);
+    }
   };
 
-  // ── Resolve pin(s): exact match or glob via SdcNetwork::findPinsMatching
-  // (hierarchical, prefix-pruned) plus a separate port search since
-  // SdcNetwork's pin search excludes top-level ports (mirrors `get_pins`
-  // vs `get_ports` SDC semantics).
   const std::string pat = extract_string(req.json, "pin");
   std::vector<const sta::Pin*> matched;
   if (sta::patternWildcards(pat)) {
     sta::PatternMatch pattern(pat);
-    // Hierarchical pin search (get_pins).
     sta::Network* sdc_net = sta->sdcNetwork();
     if (sdc_net) {
       sta::PinSeq pins
           = sdc_net->findPinsMatching(sdc_net->topInstance(), &pattern);
       matched.assign(pins.begin(), pins.end());
     }
-    // Top-level port search (get_ports) → resolve each port to its pin on
-    // the top instance.  Avoid double-adding anything by keeping a tiny
-    // de-dup set keyed on pin pointer identity.
     if (network) {
       const sta::Instance* top = network->topInstance();
       const sta::Cell* top_cell = top ? network->cell(top) : nullptr;
@@ -2424,10 +2176,6 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
     }
   }
 
-  // Pagination: glob resolution above is one-shot, but the per-pin
-  // emission below (CheckTimingModel queries, exception walks, port-delay
-  // walks) is the expensive part on globs that match thousands of pins.
-  // Slice the matched list so the frontend can stream results in batches.
   const int total = static_cast<int>(matched.size());
   int offset = extract_int_or(req.json, "offset", 0);
   if (offset < 0) {
@@ -2445,39 +2193,27 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
     end = total;
   }
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("time_unit", time_suffix);
-  b.field("found", !matched.empty());
-  b.field("multi", total > 1);
-  b.field("total", total);
-  b.field("offset", offset);
-  b.field("truncated", false);
-  b.beginArray("pins");
+  boost::json::object root;
+  root["time_unit"] = time_suffix;
+  root["found"] = !matched.empty();
+  root["multi"] = total > 1;
+  root["total"] = total;
+  root["offset"] = offset;
+  root["truncated"] = false;
+  boost::json::array pins_arr;
   for (int i = offset; i < end; ++i) {
     const sta::Pin* p = matched[i];
-    b.beginObject();
-    b.field("name", std::string(network->pathName(p)));
-    emitPinOdbRef(b, "name", p, db_network);
-    b.field("is_port", network->isTopLevelPort(p));
-    emitPinData(b, p);
-    b.endObject();
+    boost::json::object o;
+    o["name"] = std::string(network->pathName(p));
+    emitPinOdbRef(o, "name", p, db_network);
+    o["is_port"] = network->isTopLevelPort(p);
+    emitPinData(o, p);
+    pins_arr.push_back(std::move(o));
   }
-  b.endArray();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["pins"] = std::move(pins_arr);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
-// Per-clock endpoint pin counts only — the Clocks-tab card chip fetches
-// this when the user asks for it (gated behind a "list" link). Cheaper
-// than handleSdcEndpointList: skips per-pin pathName allocation, kind
-// classification, and the endpoints array itself. Counts every pin a
-// clock domain reaches at a timing endpoint vertex (no instance dedup —
-// the Clocks-tab chip surfaces raw endpoint count, not unique
-// instances).
-//
-// Top-level ports are excluded for the same reason as handleSdcEndpointList:
-// they live on the Port Delays tab.
 WebSocketResponse SdcHandler::handleSdcEndpointCounts(
     const WebSocketRequest& req)
 {
@@ -2520,27 +2256,18 @@ WebSocketResponse SdcHandler::handleSdcEndpointCounts(
     }
   }
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("time_unit", ctx->time_suffix);
-  b.beginObject("clocks_total");
-  for (const auto& [name, count] : clocks_total) {
-    b.field(name, count);
+  boost::json::object root;
+  root["time_unit"] = ctx->time_suffix;
+  {
+    boost::json::object o;
+    for (const auto& [name, count] : clocks_total) {
+      o[name] = count;
+    }
+    root["clocks_total"] = std::move(o);
   }
-  b.endObject();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
-// Paginated summary of timing endpoints (Search::endpoints()) with optional
-// glob pattern + kind filter ("flipflop"|"latch"|"macro"|"stdcell"|"all").
-// The first call is O(V) (graph build) — gated behind the explicit
-// "List endpoints" button on the frontend.
-//
-// Top-level ports are deliberately excluded: they're real endpoints in
-// STA's model, but the Port Delays tab already renders them with full
-// timing diagrams + driving cell + load info, and showing them again
-// here produced visually-identical duplicate cards.
 WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
 {
   static constexpr const char* kEmptyList
@@ -2557,9 +2284,6 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
   sta::Network* network = ctx->network;
   sta::dbNetwork* db_network = ctx->db_network;
   sta::Mode* mode = sta->cmdMode();
-  // Building the timing graph is the heavy step on first call; it's gated
-  // behind the "List endpoints" button on the frontend so the cost is
-  // user-initiated.
   sta->ensureGraph();
   sta::Search* search = sta->search();
   if (!search) {
@@ -2568,23 +2292,6 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
   const std::string& time_suffix = ctx->time_suffix;
   const float time_scale = ctx->time_scale;
 
-  // Classify a vertex's pin into one of:
-  //   "flipflop" — sequential cell whose sequentials are *all* registers
-  //                (Sequential::isRegister() — STA's own classification)
-  //   "latch"    — sequential cell whose sequentials are *all* latches
-  //                (Sequential::isLatch() — also STA's own classification)
-  //   "macro"    — explicit macro / memory (LibertyCell::isMacro / isMemory)
-  //   "stdcell"  — anything else, including:
-  //                  - Liberty `statetable`-bodied cells (sync flops, async
-  //                    FIFOs, anything where the standard ff/latch shapes
-  //                    don't capture the behaviour) — STA doesn't classify
-  //                    these as either flop or latch, so we don't either
-  //                  - mixed cells with both register and latch sequentials
-  //                  - combinational endpoints reached by set_max_delay -to
-  //                    or set_output_delay through a buffer chain.
-  // Top-level ports (network->isTopLevelPort) are filtered out before this
-  // function runs — see the endpoint-walk loop below — because they live
-  // on the Port Delays tab.
   auto classify = [&](const sta::Pin* pin) -> const char* {
     sta::Instance* inst = network->instance(pin);
     if (!inst) {
@@ -2594,20 +2301,10 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
     if (!lc) {
       return "stdcell";
     }
-    // Integrated clock-gating cells — checked BEFORE hasSequentials()
-    // because Nangate45's CLKGATE_X* cells are statetable-bodied and
-    // would otherwise fall through to stdcell. `isClockGate()` is the
-    // public OpenSTA flag set when Liberty declared
-    // `clock_gating_integrated_cell : <flavor>`.
     if (lc->isClockGate()) {
       return "clock_gate";
     }
     if (lc->hasSequentials()) {
-      // Conservative: only mark as flipflop / latch when EVERY sequential
-      // entry agrees on the kind. A mixed cell (register + latch in the
-      // same liberty body) is a vendor-specific construct we don't want
-      // to misrepresent — bucket it as stdcell along with statetable
-      // bodies.
       bool any_register = false;
       bool any_latch = false;
       for (const sta::Sequential& seq : lc->sequentials()) {
@@ -2623,7 +2320,6 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
       if (any_latch && !any_register) {
         return "latch";
       }
-      // Mixed or empty — fall through to the stdcell bucket below.
     }
     if (lc->isMacro() || lc->isMemory()) {
       return "macro";
@@ -2631,15 +2327,9 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
     return "stdcell";
   };
 
-  // Single pass: walk every endpoint, classify, then keep only those
-  // matching the kind + glob filters. We tally per-kind totals before
-  // applying the kind filter so the frontend toolbar can show the full
-  // picture even when narrowed.
   const std::string pattern = extract_string(req.json, "pattern");
   std::unique_ptr<sta::PatternMatch> pat;
   if (!pattern.empty()) {
-    // Glob-style match (default ctor uses unix-glob semantics, which is
-    // what SDC-style get_pins / get_ports expect).
     pat = std::make_unique<sta::PatternMatch>(pattern);
   }
   const std::string kind_filter = extract_string(req.json, "kind");
@@ -2649,11 +2339,6 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
     }
     return kind_filter == k;
   };
-  // Accept either "all"/empty (no filter), a single clock name, or a
-  // comma-separated whitelist (the multi-select dropdown sends this
-  // form when a subset of clocks is selected). Whitespace around each
-  // entry is tolerated so the JS side can format the list however it
-  // likes.
   std::set<std::string> clock_whitelist;
   {
     const std::string cf = extract_string(req.json, "clock");
@@ -2665,7 +2350,6 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
           j = cf.size();
         }
         std::string tok = cf.substr(i, j - i);
-        // trim
         std::string::size_type a = tok.find_first_not_of(" \t");
         std::string::size_type b = tok.find_last_not_of(" \t");
         if (a != std::string::npos && b != std::string::npos) {
@@ -2692,25 +2376,17 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
     const sta::Pin* pin;
     const char* kind;
     std::string name;
-    std::vector<std::string> clocks;  // clockDomains() result, cached for emit
+    std::vector<std::string> clocks;
   };
   std::vector<Hit> hits;
-  // The Endpoints tab groups pins by their owning instance (one card
-  // per instance, regardless of how many endpoint pins it exposes), so
-  // the kind-filter button counts surface *instances*, not pins. A
-  // 64-bit-wide RAM with 64 endpoint pins counts as one MACRO. Without
-  // this dedup the Macro count was inflated and the user was sent
-  // chasing a count that didn't match the cards on screen.
   std::set<const sta::Instance*> seen_flop;
   std::set<const sta::Instance*> seen_latch;
   std::set<const sta::Instance*> seen_macro;
   std::set<const sta::Instance*> seen_stdcell;
   std::set<const sta::Instance*> seen_clock_gate;
-  // Clocks tally also dedupes by instance so the same RAM doesn't
-  // contribute 64 to its capture clock's count.
   std::map<std::string, std::set<const sta::Instance*>> clocks_total_insts;
   sta::VertexSet& endpoints = search->endpoints();
-  hits.reserve(endpoints.size() / 4);  // rough hint
+  hits.reserve(endpoints.size() / 4);
   for (sta::Vertex* v : endpoints) {
     if (!v) {
       continue;
@@ -2719,15 +2395,11 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
     if (!pin) {
       continue;
     }
-    // Skip top-level ports — they live on the Port Delays tab.
     if (network->isTopLevelPort(pin)) {
       continue;
     }
     const char* kind = classify(pin);
     sta::Instance* inst = network->instance(pin);
-    // Cache the clockDomains() result so we don't recompute it per
-    // emit. Done here (not later) because the clock filter and the
-    // clocks_total tally both need it before we slice the page.
     std::vector<std::string> clk_names;
     if (mode) {
       sta::ClockSet domains = sta->clockDomains(pin, mode);
@@ -2741,11 +2413,6 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
     const bool name_match = !pat || pat->match(name.c_str());
     const bool clock_match = clockMatches(clk_names);
 
-    // Per-kind tally answers "how many endpoints of this kind would
-    // surface if I selected the kind chip, given my current pattern
-    // and clock filters?" — apply those two but NOT the kind filter
-    // itself. Without this the chip counts stayed at design-wide
-    // totals when the user typed a search and never updated.
     if (name_match && clock_match) {
       if (std::string_view(kind) == "flipflop") {
         seen_flop.insert(inst);
@@ -2759,9 +2426,6 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
         seen_stdcell.insert(inst);
       }
     }
-    // Per-clock tally: same idea — apply pattern + kind filter but
-    // not the clock filter itself, so each clock chip's count
-    // reflects "what I'd get if I selected this clock".
     if (name_match && kindMatches(kind)) {
       for (const auto& cn : clk_names) {
         clocks_total_insts[cn].insert(inst);
@@ -2779,19 +2443,11 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
     hits.push_back({pin, kind, std::move(name), std::move(clk_names)});
   }
 
-  // Stable order = path-name lexicographic. Cheap relative to the walk
-  // above and gives the UI a deterministic page layout.
   std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
     return a.name < b.name;
   });
 
   const int total = static_cast<int>(hits.size());
-  // Instance-deduped count of the (filtered) hits. The frontend
-  // renders one card per instance, so it uses this value (not `total`)
-  // for the "Loaded X of Y" footer — without it, a macro-filter that
-  // matches 76 instances but 6700 endpoint pins reads as
-  // "Loaded N of 6700" which the user has no way to reconcile with
-  // the 76 cards on screen.
   std::set<sta::Instance*> hit_insts_unique;
   for (const Hit& h : hits) {
     sta::Instance* inst = network->instance(h.pin);
@@ -2817,57 +2473,48 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
     end = total;
   }
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("time_unit", time_suffix);
-  b.field("total", total);
-  b.field("total_instances", total_instances);
-  b.field("offset", offset);
-  // Counts are unique-instance counts (matches the one-card-per-
-  // instance grouping the frontend renders). See the seen_* sets
-  // above for the dedup pass.
-  b.beginObject("kinds_total");
-  b.field("flipflop", static_cast<int>(seen_flop.size()));
-  b.field("latch", static_cast<int>(seen_latch.size()));
-  b.field("macro", static_cast<int>(seen_macro.size()));
-  b.field("stdcell", static_cast<int>(seen_stdcell.size()));
-  b.field("clock_gate", static_cast<int>(seen_clock_gate.size()));
-  b.endObject();
-  // Per-clock totals — keyed by clock name, sorted alphabetically so
-  // the frontend dropdown lists clocks in a stable order across calls.
-  // Like kinds_total, the count is unique-instance, not unique-pin.
-  b.beginObject("clocks_total");
-  for (const auto& [name, insts] : clocks_total_insts) {
-    b.field(name, static_cast<int>(insts.size()));
+  boost::json::object root;
+  root["time_unit"] = time_suffix;
+  root["total"] = total;
+  root["total_instances"] = total_instances;
+  root["offset"] = offset;
+  {
+    boost::json::object o;
+    o["flipflop"] = static_cast<int>(seen_flop.size());
+    o["latch"] = static_cast<int>(seen_latch.size());
+    o["macro"] = static_cast<int>(seen_macro.size());
+    o["stdcell"] = static_cast<int>(seen_stdcell.size());
+    o["clock_gate"] = static_cast<int>(seen_clock_gate.size());
+    root["kinds_total"] = std::move(o);
   }
-  b.endObject();
-  b.beginArray("endpoints");
+  {
+    boost::json::object o;
+    for (const auto& [name, insts] : clocks_total_insts) {
+      o[name] = static_cast<int>(insts.size());
+    }
+    root["clocks_total"] = std::move(o);
+  }
+  boost::json::array endpoints_arr;
   for (int i = offset; i < end; ++i) {
     const Hit& h = hits[i];
-    b.beginObject();
-    b.field("name", h.name);
-    b.field("kind", std::string(h.kind));
-    // ODB ref so the row can dispatch to the inspector via the existing
-    // inspect(odb_type, odb_id) shortcut.
-    emitPinOdbBare(b, h.pin, db_network);
-    // Enclosing instance + liberty cell name (omitted for top ports).
+    boost::json::object o;
+    o["name"] = h.name;
+    o["kind"] = std::string(h.kind);
+    emitPinOdbBare(o, h.pin, db_network);
     sta::Instance* inst = network->instance(h.pin);
     sta::LibertyCell* lc_for_emit = nullptr;
     if (inst && !network->isTopLevelPort(h.pin)) {
-      b.field("instance", std::string(network->pathName(inst)));
+      o["instance"] = std::string(network->pathName(inst));
       lc_for_emit = network->libertyCell(inst);
       if (lc_for_emit) {
-        b.field("cell", std::string(lc_for_emit->name()));
+        o["cell"] = std::string(lc_for_emit->name());
       } else {
-        b.nullField("cell");
+        o["cell"] = nullptr;
       }
     } else {
-      b.nullField("instance");
-      b.nullField("cell");
+      o["instance"] = nullptr;
+      o["cell"] = nullptr;
     }
-    // Clock-gate-specific fields (only emitted on kind=clock_gate). The
-    // frontend uses these to render the ICG-flavoured waveform diagram
-    // and to label which pin is CK / EN / scan-EN / GCK.
     if (lc_for_emit && lc_for_emit->isClockGate()) {
       const char* flavor = "other";
       if (lc_for_emit->isClockGateLatchPosedge()) {
@@ -2875,55 +2522,31 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
       } else if (lc_for_emit->isClockGateLatchNegedge()) {
         flavor = "latch_negedge";
       }
-      b.field("clock_gate_flavor", std::string(flavor));
-      // Walk the cell's liberty ports tagging each by role. CLKGATE
-      // cells in real-world libraries label the clock pin with
-      // `clock_gate_clock_pin : true;`, the enable with
-      // `clock_gate_enable_pin : true;`, scan-enable optional, output
-      // with `clock_gate_out_pin : true;`. We expose pin paths so the
-      // frontend can wire the waveform rows to the correct pins.
+      o["clock_gate_flavor"] = std::string(flavor);
       auto namedPin = [&](const char* role,
                           bool (sta::LibertyPort::*pred)() const) {
         for (sta::LibertyCellPortIterator it(lc_for_emit); it.hasNext();) {
           sta::LibertyPort* lp = it.next();
           if (lp && (lp->*pred)()) {
-            // Look up the corresponding instance pin.
             const sta::Pin* p = network->findPin(inst, lp->name());
             if (p) {
-              b.field(std::string(role) + "_pin",
-                      std::string(network->pathName(p)));
+              o[std::string(role) + "_pin"]
+                  = std::string(network->pathName(p));
               const char* tp = nullptr;
               int id = 0;
               if (resolvePinOdb(p, db_network, tp, id)) {
-                b.field(std::string(role) + "_pin_odb_type", std::string(tp));
-                b.field(std::string(role) + "_pin_odb_id", id);
+                o[std::string(role) + "_pin_odb_type"] = std::string(tp);
+                o[std::string(role) + "_pin_odb_id"] = id;
               }
               return;
             }
           }
         }
-        b.nullField(std::string(role) + "_pin");
+        o[std::string(role) + "_pin"] = nullptr;
       };
       namedPin("clock_gate_ck", &sta::LibertyPort::isClockGateClock);
       namedPin("clock_gate_en", &sta::LibertyPort::isClockGateEnable);
       namedPin("clock_gate_out", &sta::LibertyPort::isClockGateOut);
-      // Cell-level setup/hold values from the Liberty timing arcs.
-      // Liberty stores a clock-gate's setup/hold as ordinary
-      // `setup_*` / `hold_*` arcs targeting the enable pin (with the
-      // cell tagged via `clock_gating_integrated_cell`); OpenSTA's
-      // `gatedClockSetup` / `gatedClockHold` are PATH-END roles
-      // synthesized during search and never appear on a cell's
-      // `TimingArcSet`. So we look up the enable port and walk the
-      // arcs ending there, filtering by the standard setup/hold
-      // generic role, and evaluate the CheckTimingModel at the
-      // library's default operating conditions with zero slew /
-      // zero load — for scalar Liberty constraints (the common
-      // shape on ICG cells) this returns the constant directly. Per-
-      // pin SDC overrides via `set_clock_gating_check` are NOT
-      // enumerable today (`Sdc::pin_clk_gating_check_map_` is private
-      // and there's no public getter), so the value reported here is
-      // the cell's library default — the SDC override layer can
-      // replace it once the upstream getter lands.
       sta::LibertyPort* enable_port = nullptr;
       for (sta::LibertyCellPortIterator it(lc_for_emit); it.hasNext();) {
         sta::LibertyPort* lp_iter = it.next();
@@ -2954,10 +2577,6 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
             if (!model) {
               continue;
             }
-            // Zero slews / zero load at the library's typical PVT —
-            // for scalar tables the constraint is constant; for
-            // table-lookup it lands at the bottom-left grid corner
-            // which is a reasonable representative value.
             const float v
                 = static_cast<float>(model->checkDelay(pvt,
                                                        0.0f,
@@ -2973,27 +2592,25 @@ WebSocketResponse SdcHandler::handleSdcEndpointList(const WebSocketRequest& req)
       const double setup_v = extractCheck(sta::TimingRole::setup());
       const double hold_v = extractCheck(sta::TimingRole::hold());
       if (std::isnan(setup_v)) {
-        b.nullField("clock_gate_setup");
+        o["clock_gate_setup"] = nullptr;
       } else {
-        b.field("clock_gate_setup", setup_v);
+        o["clock_gate_setup"] = setup_v;
       }
       if (std::isnan(hold_v)) {
-        b.nullField("clock_gate_hold");
+        o["clock_gate_hold"] = nullptr;
       } else {
-        b.field("clock_gate_hold", hold_v);
+        o["clock_gate_hold"] = hold_v;
       }
     }
-    // Clock domain names (cached during the walk above).
-    b.beginArray("clocks");
+    boost::json::array clk_arr;
     for (const auto& cn : h.clocks) {
-      b.value(cn);
+      clk_arr.push_back(boost::json::value(cn));
     }
-    b.endArray();
-    b.endObject();
+    o["clocks"] = std::move(clk_arr);
+    endpoints_arr.push_back(std::move(o));
   }
-  b.endArray();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["endpoints"] = std::move(endpoints_arr);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 WebSocketResponse SdcHandler::handleSdcListModes(const WebSocketRequest& req)
@@ -3008,19 +2625,17 @@ WebSocketResponse SdcHandler::handleSdcListModes(const WebSocketRequest& req)
     current = m->name();
   }
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("current", current);
-  b.beginArray("modes");
+  boost::json::object root;
+  root["current"] = current;
+  boost::json::array modes;
   for (sta::Mode* m : sta->modes()) {
     if (!m) {
       continue;
     }
-    b.value(std::string(m->name()));
+    modes.push_back(boost::json::value(m->name()));
   }
-  b.endArray();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["modes"] = std::move(modes);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 WebSocketResponse SdcHandler::handleSdcSetMode(const WebSocketRequest& req)
@@ -3039,59 +2654,45 @@ WebSocketResponse SdcHandler::handleSdcSetMode(const WebSocketRequest& req)
 
   sta::Mode* mode = sta->findMode(target);
   if (!mode) {
-    JsonBuilder b;
-    b.beginObject();
-    b.field("ok", false);
-    b.field("error", std::string("mode not found: ") + target);
+    boost::json::object root;
+    root["ok"] = false;
+    root["error"] = std::string("mode not found: ") + target;
     std::string cur;
     if (sta::Mode* cm = sta->cmdMode()) {
       cur = cm->name();
     }
-    b.field("current", cur);
-    b.endObject();
-    return jsonResponse(req.id, b.str());
+    root["current"] = cur;
+    return jsonResponse(req.id, boost::json::serialize(root));
   }
 
-  // Already active — no-op success.
   if (sta::Mode* cur = sta->cmdMode(); cur == mode) {
-    JsonBuilder b;
-    b.beginObject();
-    b.field("ok", true);
-    b.field("current", std::string(mode->name()));
-    b.endObject();
-    return jsonResponse(req.id, b.str());
+    boost::json::object root;
+    root["ok"] = true;
+    root["current"] = std::string(mode->name());
+    return jsonResponse(req.id, boost::json::serialize(root));
   }
 
-  // Switch by picking any scene registered to the target mode and making it
-  // the command scene. Each mode owns its scenes; the first one is fine.
   const sta::SceneSeq& scenes = mode->scenes();
   if (scenes.empty()) {
-    JsonBuilder b;
-    b.beginObject();
-    b.field("ok", false);
-    b.field("error", std::string("no scene for mode: ") + target);
+    boost::json::object root;
+    root["ok"] = false;
+    root["error"] = std::string("no scene for mode: ") + target;
     std::string cur;
     if (sta::Mode* cm = sta->cmdMode()) {
       cur = cm->name();
     }
-    b.field("current", cur);
-    b.endObject();
-    return jsonResponse(req.id, b.str());
+    root["current"] = cur;
+    return jsonResponse(req.id, boost::json::serialize(root));
   }
 
   sta->setCmdScene(scenes[0]);
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("ok", true);
-  b.field("current", std::string(mode->name()));
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  boost::json::object root;
+  root["ok"] = true;
+  root["current"] = std::string(mode->name());
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
-// Equivalent to Tcl `update_generated_clks` — fills period/waveform on
-// generated clocks. Side-effect: builds the timing graph (heavier than the
-// read-only handlers).
 WebSocketResponse SdcHandler::handleSdcResolveGenClocks(
     const WebSocketRequest& req)
 {
@@ -3103,8 +2704,6 @@ WebSocketResponse SdcHandler::handleSdcResolveGenClocks(
   sta::dbSta* sta = ctx->sta;
   sta::Sdc* sdc = ctx->sdc;
 
-  // Count how many generated clocks were unresolved BEFORE the call so
-  // the response can report progress.
   int before = 0;
   for (sta::Clock* clk : sdc->clocks()) {
     if (clk && clk->isGenerated() && !clk->waveformValid()) {
@@ -3126,17 +2725,14 @@ WebSocketResponse SdcHandler::handleSdcResolveGenClocks(
     }
   }
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("ok", error.empty());
+  boost::json::object root;
+  root["ok"] = error.empty();
   if (!error.empty()) {
-    b.field("error", error);
+    root["error"] = error;
   }
-  // How many generated clocks now have a resolved waveform.
-  b.field("resolved", before - after);
-  b.field("remaining", after);
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["resolved"] = before - after;
+  root["remaining"] = after;
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 // Registration entry point — called from web.cpp at session

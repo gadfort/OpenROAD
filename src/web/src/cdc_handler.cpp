@@ -12,9 +12,10 @@
 #include <utility>
 #include <vector>
 
+#include <boost/json.hpp>
+
 #include "db_sta/dbNetwork.hh"
 #include "db_sta/dbSta.hh"
-#include "json_builder.h"
 #include "request_dispatcher.h"
 #include "request_handler.h"
 #include "sta/Clock.hh"
@@ -90,19 +91,35 @@ static bool resolvePinOdb(const sta::Pin* pin,
   return false;
 }
 
-static void emitPinOdbBare(JsonBuilder& b,
+static void emitPinOdbBare(boost::json::object& obj,
                            const sta::Pin* pin,
                            sta::dbNetwork* db_network)
 {
   const char* type = nullptr;
   int id = 0;
   if (resolvePinOdb(pin, db_network, type, id)) {
-    b.field("odb_type", std::string(type));
-    b.field("odb_id", id);
+    obj["odb_type"] = std::string(type);
+    obj["odb_id"] = id;
   }
 }
 
-static void emitInstanceOdbBare(JsonBuilder& b,
+// Prefix variant: emits "<prefix>_odb_type" / "<prefix>_odb_id" so a
+// pin can carry inline ODB refs alongside other fields on the same
+// object (e.g. d_pin / q_pin / out_pin on a stage card).
+static void emitPinOdbPrefixed(boost::json::object& obj,
+                               const std::string& prefix,
+                               const sta::Pin* pin,
+                               sta::dbNetwork* db_network)
+{
+  const char* type = nullptr;
+  int id = 0;
+  if (resolvePinOdb(pin, db_network, type, id)) {
+    obj[prefix + "_odb_type"] = std::string(type);
+    obj[prefix + "_odb_id"] = id;
+  }
+}
+
+static void emitInstanceOdbBare(boost::json::object& obj,
                                 const sta::Instance* inst,
                                 sta::dbNetwork* db_network)
 {
@@ -111,13 +128,13 @@ static void emitInstanceOdbBare(JsonBuilder& b,
   }
   odb::dbInst* di = nullptr;
   odb::dbModInst* dmi = nullptr;
-  db_network->staToDb(const_cast<sta::Instance*>(inst), di, dmi);
+  db_network->staToDb(inst, di, dmi);
   if (di) {
-    b.field("odb_type", std::string("inst"));
-    b.field("odb_id", static_cast<int>(di->getId()));
+    obj["odb_type"] = std::string("inst");
+    obj["odb_id"] = static_cast<int>(di->getId());
   } else if (dmi) {
-    b.field("odb_type", std::string("modinst"));
-    b.field("odb_id", static_cast<int>(dmi->getId()));
+    obj["odb_type"] = std::string("modinst");
+    obj["odb_id"] = static_cast<int>(dmi->getId());
   }
 }
 
@@ -1365,38 +1382,36 @@ WebSocketResponse CdcHandler::handleCdcOverview(const WebSocketRequest& req)
   sta::Mode* current = ctx->sta->cmdMode();
   const std::string current_name = current ? current->name() : "";
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("time_unit", ctx->time_suffix);
-  b.field("current_mode", current_name);
-  b.beginObject("modes");
+  boost::json::object root;
+  root["time_unit"] = ctx->time_suffix;
+  root["current_mode"] = current_name;
+  boost::json::object modes_obj;
   for (const auto& [name, pm] : by_mode) {
-    b.beginObject(name);
-    b.field("endpoint_count", pm.endpoint_count);
-    b.beginArray("clocks");
+    boost::json::object mode_obj;
+    mode_obj["endpoint_count"] = pm.endpoint_count;
+    boost::json::array clocks_arr;
     for (const std::string& cn : pm.clocks) {
-      b.value(cn);
+      clocks_arr.push_back(boost::json::value(cn));
     }
-    b.endArray();
-    b.beginObject("matrix");
+    mode_obj["clocks"] = std::move(clocks_arr);
+    boost::json::object matrix_obj;
     for (const auto& [launch, row] : pm.matrix) {
-      b.beginObject(launch);
+      boost::json::object launch_obj;
       for (const auto& [capture, cell] : row) {
-        b.beginObject(capture);
-        b.field("paths", cell.paths);
-        b.field("synced", cell.synced);
-        b.field("excluded", cell.excluded);
-        b.field("unsynced", cell.unsynced);
-        b.endObject();
+        boost::json::object cell_obj;
+        cell_obj["paths"] = cell.paths;
+        cell_obj["synced"] = cell.synced;
+        cell_obj["excluded"] = cell.excluded;
+        cell_obj["unsynced"] = cell.unsynced;
+        launch_obj[capture] = std::move(cell_obj);
       }
-      b.endObject();
+      matrix_obj[launch] = std::move(launch_obj);
     }
-    b.endObject();
-    b.endObject();
+    mode_obj["matrix"] = std::move(matrix_obj);
+    modes_obj[name] = std::move(mode_obj);
   }
-  b.endObject();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["modes"] = std::move(modes_obj);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 WebSocketResponse CdcHandler::handleCdcPaths(const WebSocketRequest& req)
@@ -1536,51 +1551,48 @@ WebSocketResponse CdcHandler::handleCdcPaths(const WebSocketRequest& req)
     end = total;
   }
 
-  JsonBuilder b;
-  b.beginObject();
-  b.field("time_unit", ctx->time_suffix);
-  b.field("total", total);
-  b.field("offset", offset);
-  b.beginObject("category_total");
-  b.field("synced", cat_synced);
-  b.field("excluded", cat_excluded);
-  b.field("unsynced", cat_unsynced);
-  b.endObject();
-  b.beginArray("paths");
+  boost::json::object root;
+  root["time_unit"] = ctx->time_suffix;
+  root["total"] = total;
+  root["offset"] = offset;
+  boost::json::object cat_obj;
+  cat_obj["synced"] = cat_synced;
+  cat_obj["excluded"] = cat_excluded;
+  cat_obj["unsynced"] = cat_unsynced;
+  root["category_total"] = std::move(cat_obj);
+  boost::json::array paths_arr;
   for (int i = offset; i < end; ++i) {
     const CdcPair& p = *hits[i];
-    b.beginObject();
-    b.field("capture_pin", std::string(ctx->network->pathName(p.endpoint_pin)));
-    emitPinOdbBare(b, p.endpoint_pin, ctx->db_network);
-    b.field("capture_inst",
-            std::string(ctx->network->pathName(p.capture_inst)));
+    boost::json::object o;
+    o["capture_pin"] = std::string(ctx->network->pathName(p.endpoint_pin));
+    emitPinOdbBare(o, p.endpoint_pin, ctx->db_network);
+    o["capture_inst"] = std::string(ctx->network->pathName(p.capture_inst));
     {
       // Master cell name for the capture flop — useful for the user when
       // deciding what to add to the master whitelist.
       sta::LibertyCell* lc = ctx->network->libertyCell(p.capture_inst);
       if (lc) {
-        b.field("capture_cell", std::string(lc->name()));
+        o["capture_cell"] = std::string(lc->name());
       } else {
-        b.nullField("capture_cell");
+        o["capture_cell"] = nullptr;
       }
     }
-    b.field("launch_clock", p.launch_name);
-    b.field("capture_clock", p.capture_name);
-    b.field("category", p.category);
-    b.field("sync_chain_kind", p.sync.kind);
-    b.field("sync_chain_depth", p.sync.depth);
+    o["launch_clock"] = p.launch_name;
+    o["capture_clock"] = p.capture_name;
+    o["category"] = p.category;
+    o["sync_chain_kind"] = p.sync.kind;
+    o["sync_chain_depth"] = p.sync.depth;
     if (!p.sync.whitelist_match.empty()) {
-      b.field("whitelist_match", p.sync.whitelist_match);
-      b.field("whitelist_pattern", p.sync.whitelist_pattern);
+      o["whitelist_match"] = p.sync.whitelist_match;
+      o["whitelist_pattern"] = p.sync.whitelist_pattern;
     } else {
-      b.nullField("whitelist_match");
-      b.nullField("whitelist_pattern");
+      o["whitelist_match"] = nullptr;
+      o["whitelist_pattern"] = nullptr;
     }
-    b.endObject();
+    paths_arr.push_back(std::move(o));
   }
-  b.endArray();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["paths"] = std::move(paths_arr);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
@@ -1757,254 +1769,252 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
                                                        launch_clk,
                                                        /*max_depth=*/12);
 
-  JsonBuilder b;
-  // Helper closures — declared after b so they can capture it by
-  // reference. Capture ctx + the per-request clock strings without a
-  // bunch of trailing parameters.
-  auto emitOdbPinFields = [&](const std::string& prefix, const sta::Pin* pin) {
-    const char* tp = nullptr;
-    int id = 0;
-    if (resolvePinOdb(pin, ctx->db_network, tp, id)) {
-      b.field(prefix + "_odb_type", std::string(tp));
-      b.field(prefix + "_odb_id", id);
-    }
+  // Helper lambdas — write into a target object so each stage builds
+  // its own boost::json::object.
+  auto emitOdbPinFields = [&](boost::json::object& target,
+                              const std::string& prefix,
+                              const sta::Pin* pin) {
+    emitPinOdbPrefixed(target, prefix, pin, ctx->db_network);
   };
-  auto emitOutNet = [&](const sta::Pin* out_pin) {
+  auto emitOutNet = [&](boost::json::object& target, const sta::Pin* out_pin) {
     if (!out_pin) {
-      b.nullField("out_net");
+      target["out_net"] = nullptr;
       return;
     }
     odb::dbNet* dnet = ctx->db_network->findFlatDbNet(out_pin);
     if (!dnet) {
-      b.nullField("out_net");
+      target["out_net"] = nullptr;
       return;
     }
-    b.beginObject("out_net");
-    b.field("name", std::string(dnet->getName()));
-    b.field("odb_type", std::string("net"));
-    b.field("odb_id", static_cast<int>(dnet->getId()));
-    b.endObject();
+    boost::json::object net_obj;
+    net_obj["name"] = std::string(dnet->getName());
+    net_obj["odb_type"] = std::string("net");
+    net_obj["odb_id"] = static_cast<int>(dnet->getId());
+    target["out_net"] = std::move(net_obj);
   };
   // Emit the array of pass-through cells (buf/inv) the back-walk
   // collapsed between this stage and the next. Frontend renders these
   // behind a "+ N hidden" expander so users can reveal the buffer
   // chain when they want to. Each entry carries enough info for an
   // inline mini-card with click-through to the inspector.
-  auto emitPassthroughs =
-      [&](const std::vector<LaunchStage::PassThrough>& pts) {
-        b.beginArray("passthroughs_after");
-        for (const auto& pt : pts) {
-          b.beginObject();
-          if (pt.inst) {
-            b.field("instance", std::string(ctx->network->pathName(pt.inst)));
-            sta::LibertyCell* lc = ctx->network->libertyCell(pt.inst);
-            if (lc) {
-              b.field("cell", std::string(lc->name()));
-            } else {
-              b.nullField("cell");
+  auto emitPassthroughs
+      = [&](boost::json::object& target,
+            const std::vector<LaunchStage::PassThrough>& pts) {
+          boost::json::array arr;
+          for (const auto& pt : pts) {
+            boost::json::object pt_obj;
+            if (pt.inst) {
+              pt_obj["instance"]
+                  = std::string(ctx->network->pathName(pt.inst));
+              sta::LibertyCell* lc = ctx->network->libertyCell(pt.inst);
+              if (lc) {
+                pt_obj["cell"] = std::string(lc->name());
+              } else {
+                pt_obj["cell"] = nullptr;
+              }
+              emitInstanceOdbBare(pt_obj, pt.inst, ctx->db_network);
             }
-            emitInstanceOdbBare(b, pt.inst, ctx->db_network);
-          }
-          if (pt.in_pin) {
-            b.field("in_pin", std::string(ctx->network->pathName(pt.in_pin)));
-            emitOdbPinFields("in_pin", pt.in_pin);
-          }
-          if (pt.out_pin) {
-            b.field("out_pin", std::string(ctx->network->pathName(pt.out_pin)));
-            emitOdbPinFields("out_pin", pt.out_pin);
-            odb::dbNet* dnet = ctx->db_network->findFlatDbNet(pt.out_pin);
-            if (dnet) {
-              b.beginObject("out_net");
-              b.field("name", std::string(dnet->getName()));
-              b.field("odb_type", std::string("net"));
-              b.field("odb_id", static_cast<int>(dnet->getId()));
-              b.endObject();
-            } else {
-              b.nullField("out_net");
+            if (pt.in_pin) {
+              pt_obj["in_pin"]
+                  = std::string(ctx->network->pathName(pt.in_pin));
+              emitOdbPinFields(pt_obj, "in_pin", pt.in_pin);
             }
+            if (pt.out_pin) {
+              pt_obj["out_pin"]
+                  = std::string(ctx->network->pathName(pt.out_pin));
+              emitOdbPinFields(pt_obj, "out_pin", pt.out_pin);
+              odb::dbNet* dnet = ctx->db_network->findFlatDbNet(pt.out_pin);
+              if (dnet) {
+                boost::json::object net_obj;
+                net_obj["name"] = std::string(dnet->getName());
+                net_obj["odb_type"] = std::string("net");
+                net_obj["odb_id"] = static_cast<int>(dnet->getId());
+                pt_obj["out_net"] = std::move(net_obj);
+              } else {
+                pt_obj["out_net"] = nullptr;
+              }
+            }
+            arr.push_back(std::move(pt_obj));
           }
-          b.endObject();
-        }
-        b.endArray();
-      };
+          target["passthroughs_after"] = std::move(arr);
+        };
 
-  b.beginObject();
-  b.beginArray("stages");
+  boost::json::object root;
+  boost::json::array stages_arr;
 
   // 1) Launch-side back-chain — temporal order, launch register first.
   for (size_t i = 0; i < back_chain.size(); ++i) {
     const LaunchStage& ls = back_chain[i];
-    b.beginObject();
+    boost::json::object stage;
     if (ls.kind == LaunchStage::Kind::Port) {
       // Top-level INPUT port that drives the launch-side chain. No
       // instance — the port itself stands in for the launch flop.
       const std::string port_path
           = ls.out_pin ? ctx->network->pathName(ls.out_pin) : "";
-      b.field("instance", port_path);  // best identifier for the row
-      b.nullField("cell");
+      stage["instance"] = port_path;  // best identifier for the row
+      stage["cell"] = nullptr;
       // No instance ODB ref — pin's own ODB ref carries the click.
       if (ls.out_pin) {
-        b.field("out_pin", port_path);
-        emitOdbPinFields("out_pin", ls.out_pin);
+        stage["out_pin"] = port_path;
+        emitOdbPinFields(stage, "out_pin", ls.out_pin);
         // Also emit as the legacy `q_pin` field for the existing
         // linkify wiring on the stage card.
-        b.field("q_pin", port_path);
-        emitOdbPinFields("q_pin", ls.out_pin);
+        stage["q_pin"] = port_path;
+        emitOdbPinFields(stage, "q_pin", ls.out_pin);
       }
-      b.nullField("d_pin");
-      b.field("kind", std::string("port"));
-      b.field("is_launch", true);
-      b.field("is_capture", false);
-      b.field("is_sync_stage", false);
+      stage["d_pin"] = nullptr;
+      stage["kind"] = std::string("port");
+      stage["is_launch"] = true;
+      stage["is_capture"] = false;
+      stage["is_sync_stage"] = false;
     } else if (ls.kind == LaunchStage::Kind::Register) {
       const sta::Pin* d_pin
           = ls.inst ? findRegisterDataInput(ls.inst, ctx->network) : nullptr;
       const sta::Pin* ck_pin
           = ls.inst ? findRegisterClockInput(ls.inst, ctx->network) : nullptr;
-      b.field("instance", std::string(ctx->network->pathName(ls.inst)));
+      stage["instance"] = std::string(ctx->network->pathName(ls.inst));
       sta::LibertyCell* lc = ctx->network->libertyCell(ls.inst);
       if (lc) {
-        b.field("cell", std::string(lc->name()));
+        stage["cell"] = std::string(lc->name());
       } else {
-        b.nullField("cell");
+        stage["cell"] = nullptr;
       }
-      emitInstanceOdbBare(b, ls.inst, ctx->db_network);
+      emitInstanceOdbBare(stage, ls.inst, ctx->db_network);
       if (d_pin) {
-        b.field("d_pin", std::string(ctx->network->pathName(d_pin)));
-        emitOdbPinFields("d_pin", d_pin);
+        stage["d_pin"] = std::string(ctx->network->pathName(d_pin));
+        emitOdbPinFields(stage, "d_pin", d_pin);
       } else {
-        b.nullField("d_pin");
+        stage["d_pin"] = nullptr;
       }
       if (ls.out_pin) {
-        b.field("q_pin", std::string(ctx->network->pathName(ls.out_pin)));
-        emitOdbPinFields("q_pin", ls.out_pin);
+        stage["q_pin"] = std::string(ctx->network->pathName(ls.out_pin));
+        emitOdbPinFields(stage, "q_pin", ls.out_pin);
       } else {
-        b.nullField("q_pin");
+        stage["q_pin"] = nullptr;
       }
       // CK pin + every clock that reaches it. Multi-clock CK
       // (clock-mux'd flops) is the case where ONE register
       // legitimately appears as the launch source for multiple
       // clocks — the CK row in the rendered card surfaces this.
       if (ck_pin) {
-        b.field("ck_pin", std::string(ctx->network->pathName(ck_pin)));
-        emitOdbPinFields("ck_pin", ck_pin);
-        b.beginArray("ck_pin_clocks");
+        stage["ck_pin"] = std::string(ctx->network->pathName(ck_pin));
+        emitOdbPinFields(stage, "ck_pin", ck_pin);
+        boost::json::array ck_clocks_arr;
         if (mode) {
           sta::ClockSet cks = ctx->sta->clockDomains(ck_pin, mode);
           for (const sta::Clock* c : cks) {
-            if (c) b.value(std::string(c->name()));
+            if (c) ck_clocks_arr.push_back(boost::json::value(c->name()));
           }
         }
-        b.endArray();
+        stage["ck_pin_clocks"] = std::move(ck_clocks_arr);
       } else {
-        b.nullField("ck_pin");
-        b.beginArray("ck_pin_clocks");
-        b.endArray();
+        stage["ck_pin"] = nullptr;
+        stage["ck_pin_clocks"] = boost::json::array();
       }
-      b.field("kind", std::string("register"));
-      b.field("is_launch", true);
-      b.field("is_capture", false);
-      b.field("is_sync_stage", false);
+      stage["kind"] = std::string("register");
+      stage["is_launch"] = true;
+      stage["is_capture"] = false;
+      stage["is_sync_stage"] = false;
     } else {  // Comb
-      b.field("instance", std::string(ctx->network->pathName(ls.inst)));
+      stage["instance"] = std::string(ctx->network->pathName(ls.inst));
       sta::LibertyCell* lc = ctx->network->libertyCell(ls.inst);
       if (lc) {
-        b.field("cell", std::string(lc->name()));
+        stage["cell"] = std::string(lc->name());
       } else {
-        b.nullField("cell");
+        stage["cell"] = nullptr;
       }
-      emitInstanceOdbBare(b, ls.inst, ctx->db_network);
+      emitInstanceOdbBare(stage, ls.inst, ctx->db_network);
       if (ls.in_pin.pin) {
-        b.field("in_pin", std::string(ctx->network->pathName(ls.in_pin.pin)));
-        emitOdbPinFields("in_pin", ls.in_pin.pin);
+        stage["in_pin"]
+            = std::string(ctx->network->pathName(ls.in_pin.pin));
+        emitOdbPinFields(stage, "in_pin", ls.in_pin.pin);
         // Per-input clock domains so the rendered pin row carries the
         // actual clock badge for THIS input — matters on domain-mix
         // gates where each input arrives on a different domain.
-        b.beginArray("in_pin_clocks");
+        boost::json::array in_clocks_arr;
         for (const std::string& c : ls.in_pin.clocks) {
-          b.value(c);
+          in_clocks_arr.push_back(boost::json::value(c));
         }
-        b.endArray();
+        stage["in_pin_clocks"] = std::move(in_clocks_arr);
       } else {
-        b.nullField("in_pin");
+        stage["in_pin"] = nullptr;
       }
       if (ls.out_pin) {
-        b.field("out_pin", std::string(ctx->network->pathName(ls.out_pin)));
-        emitOdbPinFields("out_pin", ls.out_pin);
+        stage["out_pin"] = std::string(ctx->network->pathName(ls.out_pin));
+        emitOdbPinFields(stage, "out_pin", ls.out_pin);
       } else {
-        b.nullField("out_pin");
+        stage["out_pin"] = nullptr;
       }
       // Other inputs of multi-input gates so the user sees the full
       // fan-in. The walk only follows in_pin; aux pins are clickable
       // but don't drive further chain expansion. Each aux carries its
       // own clock-domain list so domain-mix gates render correctly.
-      b.beginArray("aux_in_pins");
+      boost::json::array aux_arr;
       for (const auto& aux : ls.aux_in_pins) {
-        b.beginObject();
-        b.field("name", std::string(ctx->network->pathName(aux.pin)));
+        boost::json::object aux_obj;
+        aux_obj["name"] = std::string(ctx->network->pathName(aux.pin));
         const char* tp = nullptr;
         int id = 0;
         if (resolvePinOdb(aux.pin, ctx->db_network, tp, id)) {
-          b.field("odb_type", std::string(tp));
-          b.field("odb_id", id);
+          aux_obj["odb_type"] = std::string(tp);
+          aux_obj["odb_id"] = id;
         }
-        b.beginArray("clocks");
+        boost::json::array aux_clocks_arr;
         for (const std::string& c : aux.clocks) {
-          b.value(c);
+          aux_clocks_arr.push_back(boost::json::value(c));
         }
-        b.endArray();
-        b.endObject();
+        aux_obj["clocks"] = std::move(aux_clocks_arr);
+        aux_arr.push_back(std::move(aux_obj));
       }
-      b.endArray();
-      b.field("kind", std::string("comb"));
-      b.field("is_launch", false);
-      b.field("is_capture", false);
-      b.field("is_sync_stage", false);
+      stage["aux_in_pins"] = std::move(aux_arr);
+      stage["kind"] = std::string("comb");
+      stage["is_launch"] = false;
+      stage["is_capture"] = false;
+      stage["is_sync_stage"] = false;
       // Genuine cross-domain mix: this gate's inputs span more than
       // one clock domain (and the launch clock is among them). The
       // crossover physically happens HERE, upstream of the capture
       // flop, which only re-samples the already-mixed signal.
-      b.field("is_domain_mix", ls.is_domain_mix);
+      stage["is_domain_mix"] = ls.is_domain_mix;
       // Set when strict-clock-match cut the walk at this gate
       // because no input carried the requested clock. The
       // frontend renders this with a distinct "trace stopped"
       // banner so the user can audit which inputs are present.
-      b.field("stuck_clock_not_in_inputs",
-              ls.stuck_clock_not_in_inputs);
+      stage["stuck_clock_not_in_inputs"] = ls.stuck_clock_not_in_inputs;
     }
     // No launch_clock on back-chain stages (they're entirely IN the
     // launch domain — there's no clock-flip happening here).
-    b.nullField("launch_clock");
+    stage["launch_clock"] = nullptr;
     if (capture_clk) {
-      b.field("capture_clock", std::string(capture_clk->name()));
+      stage["capture_clock"] = std::string(capture_clk->name());
     } else {
-      b.nullField("capture_clock");
+      stage["capture_clock"] = nullptr;
     }
     // `clock` is the domain colour the frontend tints with. Launch-side
     // stages all live in the launch domain.
     if (!launch_clock_str.empty()) {
-      b.field("clock", launch_clock_str);
+      stage["clock"] = launch_clock_str;
     } else {
-      b.nullField("clock");
+      stage["clock"] = nullptr;
     }
-    emitOutNet(ls.out_pin);
-    emitPassthroughs(ls.passthroughs_after);
-    b.endObject();
+    emitOutNet(stage, ls.out_pin);
+    emitPassthroughs(stage, ls.passthroughs_after);
+    stages_arr.push_back(std::move(stage));
   }
 
   // 2) Forward chain — capture flop (the crossover) followed by any
   //    sync stages walked forward through buf/inv/FF→FF.
   for (size_t i = 0; i < chain.size(); ++i) {
     const sta::Instance* inst = chain[i];
-    b.beginObject();
-    b.field("instance", std::string(ctx->network->pathName(inst)));
+    boost::json::object stage;
+    stage["instance"] = std::string(ctx->network->pathName(inst));
     sta::LibertyCell* lc = ctx->network->libertyCell(inst);
     if (lc) {
-      b.field("cell", std::string(lc->name()));
+      stage["cell"] = std::string(lc->name());
     } else {
-      b.nullField("cell");
+      stage["cell"] = nullptr;
     }
-    emitInstanceOdbBare(b, inst, ctx->db_network);
+    emitInstanceOdbBare(stage, inst, ctx->db_network);
 
     // D and Q pin paths + ODB refs so the frontend can render each
     // pin as its own clickable row.
@@ -2014,36 +2024,35 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
     const sta::Pin* ck_pin
         = findRegisterClockInput(inst, ctx->network);
     if (d_pin) {
-      b.field("d_pin", std::string(ctx->network->pathName(d_pin)));
-      emitOdbPinFields("d_pin", d_pin);
+      stage["d_pin"] = std::string(ctx->network->pathName(d_pin));
+      emitOdbPinFields(stage, "d_pin", d_pin);
     } else {
-      b.nullField("d_pin");
+      stage["d_pin"] = nullptr;
     }
     if (q_pin) {
-      b.field("q_pin", std::string(ctx->network->pathName(q_pin)));
-      emitOdbPinFields("q_pin", q_pin);
+      stage["q_pin"] = std::string(ctx->network->pathName(q_pin));
+      emitOdbPinFields(stage, "q_pin", q_pin);
     } else {
-      b.nullField("q_pin");
+      stage["q_pin"] = nullptr;
     }
     // CK pin + every clock that reaches it. Same multi-clock CK
     // surfacing as the launch-side block: capture flops can also
     // be clock-mux'd, in which case the CK row makes the
     // "this flop is in N domains" fact explicit.
     if (ck_pin) {
-      b.field("ck_pin", std::string(ctx->network->pathName(ck_pin)));
-      emitOdbPinFields("ck_pin", ck_pin);
-      b.beginArray("ck_pin_clocks");
+      stage["ck_pin"] = std::string(ctx->network->pathName(ck_pin));
+      emitOdbPinFields(stage, "ck_pin", ck_pin);
+      boost::json::array ck_clocks_arr;
       if (mode) {
         sta::ClockSet cks = ctx->sta->clockDomains(ck_pin, mode);
         for (const sta::Clock* c : cks) {
-          if (c) b.value(std::string(c->name()));
+          if (c) ck_clocks_arr.push_back(boost::json::value(c->name()));
         }
       }
-      b.endArray();
+      stage["ck_pin_clocks"] = std::move(ck_clocks_arr);
     } else {
-      b.nullField("ck_pin");
-      b.beginArray("ck_pin_clocks");
-      b.endArray();
+      stage["ck_pin"] = nullptr;
+      stage["ck_pin_clocks"] = boost::json::array();
     }
 
     // The capture flop is the only stage with a launch ≠ capture
@@ -2051,81 +2060,81 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
     // Subsequent sync stages all clock on the capture domain on
     // both their D and Q pins.
     if (i == 0 && !launch_clock_str.empty()) {
-      b.field("launch_clock", launch_clock_str);
+      stage["launch_clock"] = launch_clock_str;
     } else {
-      b.nullField("launch_clock");
+      stage["launch_clock"] = nullptr;
     }
     if (capture_clk) {
-      b.field("capture_clock", std::string(capture_clk->name()));
+      stage["capture_clock"] = std::string(capture_clk->name());
       // Legacy field name some early clients (the first Phase-3
       // stage card) still read.  Same value as capture_clock.
-      b.field("clock", std::string(capture_clk->name()));
+      stage["clock"] = std::string(capture_clk->name());
     } else {
-      b.nullField("capture_clock");
-      b.nullField("clock");
+      stage["capture_clock"] = nullptr;
+      stage["clock"] = nullptr;
     }
-    b.field("kind", std::string("register"));
-    b.field("is_launch", false);
-    b.field("is_capture", i == 0);
-    b.field("is_sync_stage", i > 0);
-    emitOutNet(q_pin);
+    stage["kind"] = std::string("register");
+    stage["is_launch"] = false;
+    stage["is_capture"] = (i == 0);
+    stage["is_sync_stage"] = (i > 0);
+    emitOutNet(stage, q_pin);
     // Forward-chain pass-throughs collected by walkToNextSyncFlop
     // when walking from this stage to the next. Same `+ N hidden`
     // expander UX as the back-walk side. Schema mirrors the
     // back-chain's emitPassthroughs — keep the two synchronized so
     // the frontend has one code path.
-    b.beginArray("passthroughs_after");
+    boost::json::array pts_arr;
     if (i < chain_passthroughs.size()) {
       for (const auto& pt : chain_passthroughs[i]) {
-        b.beginObject();
+        boost::json::object pt_obj;
         if (pt.inst) {
-          b.field("instance", std::string(ctx->network->pathName(pt.inst)));
-          sta::LibertyCell* lc = ctx->network->libertyCell(pt.inst);
-          if (lc) {
-            b.field("cell", std::string(lc->name()));
+          pt_obj["instance"]
+              = std::string(ctx->network->pathName(pt.inst));
+          sta::LibertyCell* lc2 = ctx->network->libertyCell(pt.inst);
+          if (lc2) {
+            pt_obj["cell"] = std::string(lc2->name());
           } else {
-            b.nullField("cell");
+            pt_obj["cell"] = nullptr;
           }
-          emitInstanceOdbBare(b, pt.inst, ctx->db_network);
+          emitInstanceOdbBare(pt_obj, pt.inst, ctx->db_network);
         }
         if (pt.in_pin) {
-          b.field("in_pin", std::string(ctx->network->pathName(pt.in_pin)));
-          emitOdbPinFields("in_pin", pt.in_pin);
+          pt_obj["in_pin"] = std::string(ctx->network->pathName(pt.in_pin));
+          emitOdbPinFields(pt_obj, "in_pin", pt.in_pin);
         }
         if (pt.out_pin) {
-          b.field("out_pin", std::string(ctx->network->pathName(pt.out_pin)));
-          emitOdbPinFields("out_pin", pt.out_pin);
+          pt_obj["out_pin"] = std::string(ctx->network->pathName(pt.out_pin));
+          emitOdbPinFields(pt_obj, "out_pin", pt.out_pin);
           odb::dbNet* dnet = ctx->db_network->findFlatDbNet(pt.out_pin);
           if (dnet) {
-            b.beginObject("out_net");
-            b.field("name", std::string(dnet->getName()));
-            b.field("odb_type", std::string("net"));
-            b.field("odb_id", static_cast<int>(dnet->getId()));
-            b.endObject();
+            boost::json::object net_obj;
+            net_obj["name"] = std::string(dnet->getName());
+            net_obj["odb_type"] = std::string("net");
+            net_obj["odb_id"] = static_cast<int>(dnet->getId());
+            pt_obj["out_net"] = std::move(net_obj);
           } else {
-            b.nullField("out_net");
+            pt_obj["out_net"] = nullptr;
           }
         }
-        b.endObject();
+        pts_arr.push_back(std::move(pt_obj));
       }
     }
-    b.endArray();
-    b.endObject();
+    stage["passthroughs_after"] = std::move(pts_arr);
+    stages_arr.push_back(std::move(stage));
   }
-  b.endArray();
-  b.beginObject("sync_chain");
-  b.field("kind", sc.kind);
-  b.field("depth", sc.depth);
+  root["stages"] = std::move(stages_arr);
+  boost::json::object sync_obj;
+  sync_obj["kind"] = sc.kind;
+  sync_obj["depth"] = sc.depth;
   if (!sc.whitelist_match.empty()) {
-    b.field("whitelist_match", sc.whitelist_match);
-    b.field("whitelist_pattern", sc.whitelist_pattern);
+    sync_obj["whitelist_match"] = sc.whitelist_match;
+    sync_obj["whitelist_pattern"] = sc.whitelist_pattern;
   } else {
-    b.nullField("whitelist_match");
-    b.nullField("whitelist_pattern");
+    sync_obj["whitelist_match"] = nullptr;
+    sync_obj["whitelist_pattern"] = nullptr;
   }
-  b.endObject();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["sync_chain"] = std::move(sync_obj);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 // Helper: parse a comma-separated string of glob patterns into a list,
@@ -2192,20 +2201,18 @@ WebSocketResponse CdcHandler::handleCdcGetWhitelist(const WebSocketRequest& req)
     insts = instance_patterns_;
     masters = master_patterns_;
   }
-  JsonBuilder b;
-  b.beginObject();
-  b.beginArray("instance_patterns");
+  boost::json::object root;
+  boost::json::array inst_arr;
   for (const std::string& p : insts) {
-    b.value(p);
+    inst_arr.push_back(boost::json::value(p));
   }
-  b.endArray();
-  b.beginArray("master_patterns");
+  root["instance_patterns"] = std::move(inst_arr);
+  boost::json::array master_arr;
   for (const std::string& p : masters) {
-    b.value(p);
+    master_arr.push_back(boost::json::value(p));
   }
-  b.endArray();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["master_patterns"] = std::move(master_arr);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 // ── Per-pin fan-in expansion ────────────────────────────────────────────────
@@ -2355,218 +2362,210 @@ WebSocketResponse CdcHandler::handleCdcPinFanIn(const WebSocketRequest& req)
   // about the capture flop and threads launch_clock_str through;
   // here, all stages live entirely in `clock_name` and there's no
   // capture flop to anchor against).
-  JsonBuilder b;
-  auto emitOdbPinFields
-      = [&](const std::string& prefix, const sta::Pin* pin) {
-          const char* tp = nullptr;
-          int id = 0;
-          if (resolvePinOdb(pin, ctx->db_network, tp, id)) {
-            b.field(prefix + "_odb_type", std::string(tp));
-            b.field(prefix + "_odb_id", id);
-          }
-        };
-  auto emitOutNet = [&](const sta::Pin* out_pin) {
+  auto emitOdbPinFields = [&](boost::json::object& target,
+                              const std::string& prefix,
+                              const sta::Pin* pin) {
+    emitPinOdbPrefixed(target, prefix, pin, ctx->db_network);
+  };
+  auto emitOutNet = [&](boost::json::object& target, const sta::Pin* out_pin) {
     if (!out_pin) {
-      b.nullField("out_net");
+      target["out_net"] = nullptr;
       return;
     }
     odb::dbNet* dnet = ctx->db_network->findFlatDbNet(out_pin);
     if (!dnet) {
-      b.nullField("out_net");
+      target["out_net"] = nullptr;
       return;
     }
-    b.beginObject("out_net");
-    b.field("name", std::string(dnet->getName()));
-    b.field("odb_type", std::string("net"));
-    b.field("odb_id", static_cast<int>(dnet->getId()));
-    b.endObject();
+    boost::json::object net_obj;
+    net_obj["name"] = std::string(dnet->getName());
+    net_obj["odb_type"] = std::string("net");
+    net_obj["odb_id"] = static_cast<int>(dnet->getId());
+    target["out_net"] = std::move(net_obj);
   };
   auto emitPassthroughs
-      = [&](const std::vector<LaunchStage::PassThrough>& pts) {
-          b.beginArray("passthroughs_after");
+      = [&](boost::json::object& target,
+            const std::vector<LaunchStage::PassThrough>& pts) {
+          boost::json::array arr;
           for (const auto& pt : pts) {
-            b.beginObject();
+            boost::json::object pt_obj;
             if (pt.inst) {
-              b.field("instance",
-                      std::string(ctx->network->pathName(pt.inst)));
+              pt_obj["instance"]
+                  = std::string(ctx->network->pathName(pt.inst));
               sta::LibertyCell* lc = ctx->network->libertyCell(pt.inst);
               if (lc) {
-                b.field("cell", std::string(lc->name()));
+                pt_obj["cell"] = std::string(lc->name());
               } else {
-                b.nullField("cell");
+                pt_obj["cell"] = nullptr;
               }
-              emitInstanceOdbBare(b, pt.inst, ctx->db_network);
+              emitInstanceOdbBare(pt_obj, pt.inst, ctx->db_network);
             }
             if (pt.in_pin) {
-              b.field("in_pin",
-                      std::string(ctx->network->pathName(pt.in_pin)));
-              emitOdbPinFields("in_pin", pt.in_pin);
+              pt_obj["in_pin"]
+                  = std::string(ctx->network->pathName(pt.in_pin));
+              emitOdbPinFields(pt_obj, "in_pin", pt.in_pin);
             }
             if (pt.out_pin) {
-              b.field("out_pin",
-                      std::string(ctx->network->pathName(pt.out_pin)));
-              emitOdbPinFields("out_pin", pt.out_pin);
+              pt_obj["out_pin"]
+                  = std::string(ctx->network->pathName(pt.out_pin));
+              emitOdbPinFields(pt_obj, "out_pin", pt.out_pin);
               odb::dbNet* dnet = ctx->db_network->findFlatDbNet(pt.out_pin);
               if (dnet) {
-                b.beginObject("out_net");
-                b.field("name", std::string(dnet->getName()));
-                b.field("odb_type", std::string("net"));
-                b.field("odb_id", static_cast<int>(dnet->getId()));
-                b.endObject();
+                boost::json::object net_obj;
+                net_obj["name"] = std::string(dnet->getName());
+                net_obj["odb_type"] = std::string("net");
+                net_obj["odb_id"] = static_cast<int>(dnet->getId());
+                pt_obj["out_net"] = std::move(net_obj);
               } else {
-                b.nullField("out_net");
+                pt_obj["out_net"] = nullptr;
               }
             }
-            b.endObject();
+            arr.push_back(std::move(pt_obj));
           }
-          b.endArray();
+          target["passthroughs_after"] = std::move(arr);
         };
 
-  b.beginObject();
-  b.beginArray("stages");
+  boost::json::object root;
+  boost::json::array stages_arr;
   for (const LaunchStage& ls : back_chain) {
-    b.beginObject();
+    boost::json::object stage;
     if (ls.kind == LaunchStage::Kind::Port) {
       const std::string port_path
           = ls.out_pin ? ctx->network->pathName(ls.out_pin) : "";
-      b.field("instance", port_path);
-      b.nullField("cell");
+      stage["instance"] = port_path;
+      stage["cell"] = nullptr;
       if (ls.out_pin) {
-        b.field("out_pin", port_path);
-        emitOdbPinFields("out_pin", ls.out_pin);
-        b.field("q_pin", port_path);
-        emitOdbPinFields("q_pin", ls.out_pin);
+        stage["out_pin"] = port_path;
+        emitOdbPinFields(stage, "out_pin", ls.out_pin);
+        stage["q_pin"] = port_path;
+        emitOdbPinFields(stage, "q_pin", ls.out_pin);
       }
-      b.nullField("d_pin");
-      b.field("kind", std::string("port"));
-      b.field("is_launch", true);
-      b.field("is_capture", false);
-      b.field("is_sync_stage", false);
+      stage["d_pin"] = nullptr;
+      stage["kind"] = std::string("port");
+      stage["is_launch"] = true;
+      stage["is_capture"] = false;
+      stage["is_sync_stage"] = false;
     } else if (ls.kind == LaunchStage::Kind::Register) {
       const sta::Pin* d_pin
           = ls.inst ? findRegisterDataInput(ls.inst, ctx->network) : nullptr;
       const sta::Pin* ck_pin
           = ls.inst ? findRegisterClockInput(ls.inst, ctx->network) : nullptr;
-      b.field("instance", std::string(ctx->network->pathName(ls.inst)));
+      stage["instance"] = std::string(ctx->network->pathName(ls.inst));
       sta::LibertyCell* lc = ctx->network->libertyCell(ls.inst);
       if (lc) {
-        b.field("cell", std::string(lc->name()));
+        stage["cell"] = std::string(lc->name());
       } else {
-        b.nullField("cell");
+        stage["cell"] = nullptr;
       }
-      emitInstanceOdbBare(b, ls.inst, ctx->db_network);
+      emitInstanceOdbBare(stage, ls.inst, ctx->db_network);
       if (d_pin) {
-        b.field("d_pin", std::string(ctx->network->pathName(d_pin)));
-        emitOdbPinFields("d_pin", d_pin);
+        stage["d_pin"] = std::string(ctx->network->pathName(d_pin));
+        emitOdbPinFields(stage, "d_pin", d_pin);
       } else {
-        b.nullField("d_pin");
+        stage["d_pin"] = nullptr;
       }
       if (ls.out_pin) {
-        b.field("q_pin", std::string(ctx->network->pathName(ls.out_pin)));
-        emitOdbPinFields("q_pin", ls.out_pin);
+        stage["q_pin"] = std::string(ctx->network->pathName(ls.out_pin));
+        emitOdbPinFields(stage, "q_pin", ls.out_pin);
       } else {
-        b.nullField("q_pin");
+        stage["q_pin"] = nullptr;
       }
       // CK pin + every clock that reaches it. Multi-clock CK
       // (clock-mux'd flops) is the case where ONE register
       // legitimately appears as the launch source for multiple
       // clocks — the CK row in the rendered card surfaces this.
       if (ck_pin) {
-        b.field("ck_pin", std::string(ctx->network->pathName(ck_pin)));
-        emitOdbPinFields("ck_pin", ck_pin);
-        b.beginArray("ck_pin_clocks");
+        stage["ck_pin"] = std::string(ctx->network->pathName(ck_pin));
+        emitOdbPinFields(stage, "ck_pin", ck_pin);
+        boost::json::array ck_clocks_arr;
         if (mode) {
           sta::ClockSet cks = ctx->sta->clockDomains(ck_pin, mode);
           for (const sta::Clock* c : cks) {
-            if (c) b.value(std::string(c->name()));
+            if (c) ck_clocks_arr.push_back(boost::json::value(c->name()));
           }
         }
-        b.endArray();
+        stage["ck_pin_clocks"] = std::move(ck_clocks_arr);
       } else {
-        b.nullField("ck_pin");
-        b.beginArray("ck_pin_clocks");
-        b.endArray();
+        stage["ck_pin"] = nullptr;
+        stage["ck_pin_clocks"] = boost::json::array();
       }
-      b.field("kind", std::string("register"));
-      b.field("is_launch", true);
-      b.field("is_capture", false);
-      b.field("is_sync_stage", false);
+      stage["kind"] = std::string("register");
+      stage["is_launch"] = true;
+      stage["is_capture"] = false;
+      stage["is_sync_stage"] = false;
     } else {  // Comb
-      b.field("instance", std::string(ctx->network->pathName(ls.inst)));
+      stage["instance"] = std::string(ctx->network->pathName(ls.inst));
       sta::LibertyCell* lc = ctx->network->libertyCell(ls.inst);
       if (lc) {
-        b.field("cell", std::string(lc->name()));
+        stage["cell"] = std::string(lc->name());
       } else {
-        b.nullField("cell");
+        stage["cell"] = nullptr;
       }
-      emitInstanceOdbBare(b, ls.inst, ctx->db_network);
+      emitInstanceOdbBare(stage, ls.inst, ctx->db_network);
       if (ls.in_pin.pin) {
-        b.field("in_pin",
-                std::string(ctx->network->pathName(ls.in_pin.pin)));
-        emitOdbPinFields("in_pin", ls.in_pin.pin);
-        b.beginArray("in_pin_clocks");
+        stage["in_pin"]
+            = std::string(ctx->network->pathName(ls.in_pin.pin));
+        emitOdbPinFields(stage, "in_pin", ls.in_pin.pin);
+        boost::json::array in_clocks_arr;
         for (const std::string& c : ls.in_pin.clocks) {
-          b.value(c);
+          in_clocks_arr.push_back(boost::json::value(c));
         }
-        b.endArray();
+        stage["in_pin_clocks"] = std::move(in_clocks_arr);
       } else {
-        b.nullField("in_pin");
+        stage["in_pin"] = nullptr;
       }
       if (ls.out_pin) {
-        b.field("out_pin",
-                std::string(ctx->network->pathName(ls.out_pin)));
-        emitOdbPinFields("out_pin", ls.out_pin);
+        stage["out_pin"] = std::string(ctx->network->pathName(ls.out_pin));
+        emitOdbPinFields(stage, "out_pin", ls.out_pin);
       } else {
-        b.nullField("out_pin");
+        stage["out_pin"] = nullptr;
       }
-      b.beginArray("aux_in_pins");
+      boost::json::array aux_arr;
       for (const auto& aux : ls.aux_in_pins) {
-        b.beginObject();
-        b.field("name", std::string(ctx->network->pathName(aux.pin)));
+        boost::json::object aux_obj;
+        aux_obj["name"] = std::string(ctx->network->pathName(aux.pin));
         const char* tp = nullptr;
         int id = 0;
         if (resolvePinOdb(aux.pin, ctx->db_network, tp, id)) {
-          b.field("odb_type", std::string(tp));
-          b.field("odb_id", id);
+          aux_obj["odb_type"] = std::string(tp);
+          aux_obj["odb_id"] = id;
         }
-        b.beginArray("clocks");
+        boost::json::array aux_clocks_arr;
         for (const std::string& c : aux.clocks) {
-          b.value(c);
+          aux_clocks_arr.push_back(boost::json::value(c));
         }
-        b.endArray();
-        b.endObject();
+        aux_obj["clocks"] = std::move(aux_clocks_arr);
+        aux_arr.push_back(std::move(aux_obj));
       }
-      b.endArray();
-      b.field("kind", std::string("comb"));
-      b.field("is_launch", false);
-      b.field("is_capture", false);
-      b.field("is_sync_stage", false);
-      b.field("is_domain_mix", ls.is_domain_mix);
+      stage["aux_in_pins"] = std::move(aux_arr);
+      stage["kind"] = std::string("comb");
+      stage["is_launch"] = false;
+      stage["is_capture"] = false;
+      stage["is_sync_stage"] = false;
+      stage["is_domain_mix"] = ls.is_domain_mix;
       // Set when strict-clock-match cut the walk at this gate
       // because no input carried the requested clock. The
       // frontend renders this with a distinct "trace stopped"
       // banner so the user can audit which inputs are present.
-      b.field("stuck_clock_not_in_inputs",
-              ls.stuck_clock_not_in_inputs);
+      stage["stuck_clock_not_in_inputs"] = ls.stuck_clock_not_in_inputs;
     }
     // Tag every emitted stage with the requested clock so the
     // frontend's clock-tint pulls from the right colour. No
     // launch_clock / capture_clock here: this is a pure ancestry
     // walk — there's no clock-flip on this side.
-    b.nullField("launch_clock");
-    b.nullField("capture_clock");
+    stage["launch_clock"] = nullptr;
+    stage["capture_clock"] = nullptr;
     if (!clock_name.empty()) {
-      b.field("clock", clock_name);
+      stage["clock"] = clock_name;
     } else {
-      b.nullField("clock");
+      stage["clock"] = nullptr;
     }
-    emitOutNet(ls.out_pin);
-    emitPassthroughs(ls.passthroughs_after);
-    b.endObject();
+    emitOutNet(stage, ls.out_pin);
+    emitPassthroughs(stage, ls.passthroughs_after);
+    stages_arr.push_back(std::move(stage));
   }
-  b.endArray();
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  root["stages"] = std::move(stages_arr);
+  return jsonResponse(req.id, boost::json::serialize(root));
 }
 
 // =====================================================================
@@ -3111,10 +3110,16 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
   // deep recursive call). A struct with member methods recurses
   // directly through the symbol table, so there's no closure
   // pointer to corrupt and no virtual dispatch in the path.
-  JsonBuilder b;
+  // Walker is a plain struct rather than a self-capturing
+  // `std::function` lambda. The std::function form was hitting a
+  // recursive-dispatch crash under deep trees built from real
+  // hierarchical designs after the dbNetwork modnet fixes (gdb
+  // showed the invoker pointer being clobbered to 0x80 before a
+  // deep recursive call). A struct with member methods recurses
+  // directly through the symbol table, so there's no closure
+  // pointer to corrupt and no virtual dispatch in the path.
   struct ClockMixEmitter
   {
-    JsonBuilder& b;
     sta::Network* network;
     sta::dbNetwork* db_network;
 
@@ -3143,166 +3148,162 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
       return "unresolved";
     }
 
-    void emitOdbPinFields(const std::string& prefix, const sta::Pin* pin)
+    void emitOdbPinFields(boost::json::object& target,
+                          const std::string& prefix,
+                          const sta::Pin* pin)
     {
-      const char* tp = nullptr;
-      int id = 0;
-      if (resolvePinOdb(pin, db_network, tp, id)) {
-        b.field(prefix + "_odb_type", std::string(tp));
-        b.field(prefix + "_odb_id", id);
-      }
+      emitPinOdbPrefixed(target, prefix, pin, db_network);
     }
 
-    void emitOutNet(const sta::Pin* out_pin)
+    void emitOutNet(boost::json::object& target, const sta::Pin* out_pin)
     {
       if (!out_pin) {
-        b.nullField("out_net");
+        target["out_net"] = nullptr;
         return;
       }
       odb::dbNet* dnet = db_network->findFlatDbNet(out_pin);
       if (!dnet) {
-        b.nullField("out_net");
+        target["out_net"] = nullptr;
         return;
       }
-      b.beginObject("out_net");
-      b.field("name", std::string(dnet->getName()));
-      b.field("odb_type", std::string("net"));
-      b.field("odb_id", static_cast<int>(dnet->getId()));
-      b.endObject();
+      boost::json::object net_obj;
+      net_obj["name"] = std::string(dnet->getName());
+      net_obj["odb_type"] = std::string("net");
+      net_obj["odb_id"] = static_cast<int>(dnet->getId());
+      target["out_net"] = std::move(net_obj);
     }
 
-    void emitPassthroughs(const std::vector<LaunchStage::PassThrough>& pts)
+    void emitPassthroughs(boost::json::object& target,
+                          const std::vector<LaunchStage::PassThrough>& pts)
     {
-      b.beginArray("passthroughs_after");
+      boost::json::array arr;
       for (const auto& pt : pts) {
-        b.beginObject();
+        boost::json::object pt_obj;
         if (pt.inst) {
-          b.field("instance", std::string(network->pathName(pt.inst)));
+          pt_obj["instance"] = std::string(network->pathName(pt.inst));
           sta::LibertyCell* lc = network->libertyCell(pt.inst);
           if (lc) {
-            b.field("cell", std::string(lc->name()));
+            pt_obj["cell"] = std::string(lc->name());
           } else {
-            b.nullField("cell");
+            pt_obj["cell"] = nullptr;
           }
-          emitInstanceOdbBare(b, pt.inst, db_network);
+          emitInstanceOdbBare(pt_obj, pt.inst, db_network);
         }
         if (pt.in_pin) {
-          b.field("in_pin", std::string(network->pathName(pt.in_pin)));
-          emitOdbPinFields("in_pin", pt.in_pin);
+          pt_obj["in_pin"] = std::string(network->pathName(pt.in_pin));
+          emitOdbPinFields(pt_obj, "in_pin", pt.in_pin);
         }
         if (pt.out_pin) {
-          b.field("out_pin", std::string(network->pathName(pt.out_pin)));
-          emitOdbPinFields("out_pin", pt.out_pin);
+          pt_obj["out_pin"] = std::string(network->pathName(pt.out_pin));
+          emitOdbPinFields(pt_obj, "out_pin", pt.out_pin);
         }
-        b.endObject();
+        arr.push_back(std::move(pt_obj));
       }
-      b.endArray();
+      target["passthroughs_after"] = std::move(arr);
     }
 
-    void emit(const ClockMixNode& n, const char* key)
+    // Build and return the JSON object representing one node. Recurses
+    // directly through this method (no std::function indirection) — see
+    // the struct comment above for why.
+    boost::json::object emit(const ClockMixNode& n)
     {
-      if (key) {
-        b.beginObject(key);
-      } else {
-        b.beginObject();
-      }
-      b.field("kind", std::string(kindString(n.kind)));
+      boost::json::object obj;
+      obj["kind"] = std::string(kindString(n.kind));
       if (n.inst) {
-        b.field("instance", std::string(network->pathName(n.inst)));
+        obj["instance"] = std::string(network->pathName(n.inst));
         sta::LibertyCell* lc = network->libertyCell(n.inst);
         if (lc) {
-          b.field("cell", std::string(lc->name()));
+          obj["cell"] = std::string(lc->name());
         } else {
-          b.nullField("cell");
+          obj["cell"] = nullptr;
         }
-        emitInstanceOdbBare(b, n.inst, db_network);
+        emitInstanceOdbBare(obj, n.inst, db_network);
       } else {
-        b.nullField("instance");
-        b.nullField("cell");
+        obj["instance"] = nullptr;
+        obj["cell"] = nullptr;
       }
       if (n.out_pin) {
-        b.field("out_pin", std::string(network->pathName(n.out_pin)));
-        emitOdbPinFields("out_pin", n.out_pin);
+        obj["out_pin"] = std::string(network->pathName(n.out_pin));
+        emitOdbPinFields(obj, "out_pin", n.out_pin);
       } else {
-        b.nullField("out_pin");
+        obj["out_pin"] = nullptr;
       }
       if (n.via_pin) {
-        b.field("via_pin", std::string(network->pathName(n.via_pin)));
-        emitOdbPinFields("via_pin", n.via_pin);
+        obj["via_pin"] = std::string(network->pathName(n.via_pin));
+        emitOdbPinFields(obj, "via_pin", n.via_pin);
       } else {
-        b.nullField("via_pin");
+        obj["via_pin"] = nullptr;
       }
-      b.beginArray("clocks");
+      boost::json::array clocks_arr;
       for (const std::string& c : n.clocks) {
-        b.value(c);
+        clocks_arr.push_back(boost::json::value(c));
       }
-      b.endArray();
-      b.field("on_clock_path", n.on_clock_path);
-      b.field("degenerate", n.degenerate);
+      obj["clocks"] = std::move(clocks_arr);
+      obj["on_clock_path"] = n.on_clock_path;
+      obj["degenerate"] = n.degenerate;
       if (!n.actual_clocks.empty() || !n.unaccounted_clocks.empty()) {
-        b.beginArray("actual_clocks");
+        boost::json::array actual_arr;
         for (const std::string& c : n.actual_clocks) {
-          b.value(c);
+          actual_arr.push_back(boost::json::value(c));
         }
-        b.endArray();
-        b.beginArray("unaccounted_clocks");
+        obj["actual_clocks"] = std::move(actual_arr);
+        boost::json::array unaccounted_arr;
         for (const std::string& c : n.unaccounted_clocks) {
-          b.value(c);
+          unaccounted_arr.push_back(boost::json::value(c));
         }
-        b.endArray();
+        obj["unaccounted_clocks"] = std::move(unaccounted_arr);
       }
-      b.beginArray("branches");
+      boost::json::array branches_arr;
       for (const auto& br : n.branches) {
-        b.beginObject();
+        boost::json::object br_obj;
         if (br.pin) {
-          b.field("pin", std::string(network->pathName(br.pin)));
+          br_obj["pin"] = std::string(network->pathName(br.pin));
           const char* tp = nullptr;
           int id = 0;
           if (resolvePinOdb(br.pin, db_network, tp, id)) {
-            b.field("pin_odb_type", std::string(tp));
-            b.field("pin_odb_id", id);
+            br_obj["pin_odb_type"] = std::string(tp);
+            br_obj["pin_odb_id"] = id;
           }
         } else {
-          b.nullField("pin");
+          br_obj["pin"] = nullptr;
         }
-        b.beginArray("clocks");
+        boost::json::array br_clocks_arr;
         for (const std::string& c : br.clocks) {
-          b.value(c);
+          br_clocks_arr.push_back(boost::json::value(c));
         }
-        b.endArray();
+        br_obj["clocks"] = std::move(br_clocks_arr);
         if (br.subtree) {
-          emit(*br.subtree, "subtree");
+          br_obj["subtree"] = emit(*br.subtree);
         } else {
-          b.nullField("subtree");
+          br_obj["subtree"] = nullptr;
         }
-        b.endObject();
+        branches_arr.push_back(std::move(br_obj));
       }
-      b.endArray();
+      obj["branches"] = std::move(branches_arr);
       if (n.child) {
-        emit(*n.child, "child");
+        obj["child"] = emit(*n.child);
       } else {
-        b.nullField("child");
+        obj["child"] = nullptr;
       }
-      emitOutNet(n.out_pin);
-      emitPassthroughs(n.passthroughs_after);
-      b.endObject();
+      emitOutNet(obj, n.out_pin);
+      emitPassthroughs(obj, n.passthroughs_after);
+      return obj;
     }
   };
-  ClockMixEmitter emitter{b, ctx->network, ctx->db_network};
+  ClockMixEmitter emitter{ctx->network, ctx->db_network};
 
-  b.beginObject();
-  b.beginArray("requested_clocks");
+  boost::json::object root_obj;
+  boost::json::array req_clocks_arr;
   for (const std::string& c : requested_clocks) {
-    b.value(c);
+    req_clocks_arr.push_back(boost::json::value(c));
   }
-  b.endArray();
+  root_obj["requested_clocks"] = std::move(req_clocks_arr);
   if (root) {
-    emitter.emit(*root, "tree");
+    root_obj["tree"] = emitter.emit(*root);
   } else {
-    b.nullField("tree");
+    root_obj["tree"] = nullptr;
   }
-  b.endObject();
-  return jsonResponse(req.id, b.str());
+  return jsonResponse(req.id, boost::json::serialize(root_obj));
 }
 
 void CdcHandler::registerRequests(RequestDispatcher& d)
