@@ -853,6 +853,16 @@ TEST_F(CdcWithStaTest, MixEndpointsRowSchema)
       = {"none", "ff_chain", "liberty_sync", "composite", "whitelisted"};
   EXPECT_TRUE(kAllowed.count(sync_kind))
       << "unexpected sync_status.kind: " << sync_kind;
+  // Register entries carry the capture-clock list so the frontend's
+  // "Reveal in CDC matrix" link knows which (launch, capture) cells
+  // to flash. Non-register entries (top-level ports, macros) leave
+  // it absent.
+  if (eo.at("kind").as_string() == "flipflop"
+      || eo.at("kind").as_string() == "latch") {
+    ASSERT_TRUE(eo.contains("capture_clocks"))
+        << "register entry missing capture_clocks";
+    EXPECT_FALSE(eo.at("capture_clocks").as_array().empty());
+  }
 }
 
 // The fixture has no flops with multi-clock CK, so the clock-path

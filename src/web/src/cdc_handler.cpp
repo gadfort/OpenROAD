@@ -3832,6 +3832,15 @@ WebSocketResponse CdcHandler::handleCdcMixEndpoints(
     const char* kind = "stdcell";
     std::string name;
     std::vector<std::string> clocks;
+    // Capture clocks (clockDomains of the flop's CK pin) for
+    // data-path-mix entries that land on a register endpoint. Used
+    // by the "Reveal in CDC matrix" hand-off so the frontend can
+    // flash the relevant (launch ∈ clocks, capture ∈ capture_clocks)
+    // cells. Empty for non-register endpoints (output ports / macros)
+    // and for clock-path-mix entries (where the matrix-reveal target
+    // would be the entire row of cells launching from the flop's CK
+    // mix — too broad to be useful as a single jump).
+    std::vector<std::string> capture_clocks;
     SyncClass sync;  // only populated for data-path bucket
   };
   struct Group
@@ -3927,10 +3936,17 @@ WebSocketResponse CdcHandler::handleCdcMixEndpoints(
       e.kind = kind;
       e.name = network->pathName(pin);
       e.clocks.assign(dclocks.begin(), dclocks.end());
-      // Sync-status only for register endpoints — ports / stdcells /
-      // macros don't carry the synchronizer-chain semantic.
+      // Sync-status + capture-clock list — only meaningful for
+      // register endpoints. Ports / stdcells / macros have no CK pin
+      // so neither the synchronizer-chain semantic nor the (launch,
+      // capture) matrix coordinates apply.
       if (inst && (std::string_view(kind) == "flipflop"
                    || std::string_view(kind) == "latch")) {
+        const sta::Pin* ck_pin = findRegisterClockInput(inst, network);
+        if (ck_pin) {
+          auto cap_set = pinClockSet(ck_pin);
+          e.capture_clocks.assign(cap_set.begin(), cap_set.end());
+        }
         // Use the FIRST capture clock as the chain-walk anchor; the
         // sync-chain detector cares about the capture domain identity,
         // not its specific clock.
@@ -3990,16 +4006,18 @@ WebSocketResponse CdcHandler::handleCdcMixEndpoints(
       const std::string full = network->pathName(grp.origin.inst);
       g["origin_inst"] = full;
       g["origin_inst_full"] = full;
-      emitInstanceOdbBare(g, grp.origin.inst, db_network);
       // emitInstanceOdbBare uses "odb_type"/"odb_id"; rewrite under
-      // origin_-prefixed keys for clarity.
-      if (auto it = g.find("odb_type"); it != g.end()) {
-        g["origin_inst_odb_type"] = it->value();
-        g.erase(it);
+      // origin_-prefixed keys for clarity. Build into a temp to avoid
+      // the boost::json iterator-invalidation footgun (`find()` +
+      // assign + `erase()` can invalidate the iterator when the
+      // assignment rehashes the object).
+      boost::json::object odb_tmp;
+      emitInstanceOdbBare(odb_tmp, grp.origin.inst, db_network);
+      if (auto* v = odb_tmp.if_contains("odb_type")) {
+        g["origin_inst_odb_type"] = std::move(*v);
       }
-      if (auto it = g.find("odb_id"); it != g.end()) {
-        g["origin_inst_odb_id"] = it->value();
-        g.erase(it);
+      if (auto* v = odb_tmp.if_contains("odb_id")) {
+        g["origin_inst_odb_id"] = std::move(*v);
       }
     } else {
       g["origin_inst"] = nullptr;
@@ -4036,22 +4054,51 @@ WebSocketResponse CdcHandler::handleCdcMixEndpoints(
       ca.push_back(boost::json::value(c));
     }
     eo["clocks"] = std::move(ca);
+    if (!e.capture_clocks.empty()) {
+      boost::json::array cap;
+      for (const auto& c : e.capture_clocks) {
+        cap.push_back(boost::json::value(c));
+      }
+      eo["capture_clocks"] = std::move(cap);
+    }
+    // Trace target: always the pin where the mix-origin walk would
+    // restart from this entry (D pin for data-path entries, CK pin
+    // for clock-path entries). The frontend's `↑ trace` button on
+    // each row uses these refs to invoke `cdc_clock_mix_trace`.
+    {
+      boost::json::object trace_tmp;
+      emitPinOdbBare(trace_tmp, e.pin, db_network);
+      if (auto* v = trace_tmp.if_contains("odb_type")) {
+        eo["trace_pin_odb_type"] = std::move(*v);
+      }
+      if (auto* v = trace_tmp.if_contains("odb_id")) {
+        eo["trace_pin_odb_id"] = std::move(*v);
+      }
+    }
     // Linkify target: instance for clock-path-mix rows (the flop is
     // the user-facing entity), pin otherwise. The frontend reads
     // pin_odb_type/pin_odb_id and dispatches via _linkifyPin which
     // already handles "inst" / "iterm" / "bterm" / "modinst".
-    if (e.link_inst) {
-      emitInstanceOdbBare(eo, e.link_inst, db_network);
-    } else {
-      emitPinOdbBare(eo, e.pin, db_network);
-    }
-    if (auto it = eo.find("odb_type"); it != eo.end()) {
-      eo["pin_odb_type"] = it->value();
-      eo.erase(it);
-    }
-    if (auto it = eo.find("odb_id"); it != eo.end()) {
-      eo["pin_odb_id"] = it->value();
-      eo.erase(it);
+    //
+    // Build into a temp object, then transfer to the prefixed keys.
+    // Don't use `eo.find()` + `eo.erase()` after `eo["new_key"] = ...`:
+    // the assignment can rehash the object and invalidate the iterator
+    // we already captured. That manifested as a double-free on
+    // destruction once the object size pushed past the rehash
+    // threshold (e.g. after capture_clocks lifted us over it).
+    {
+      boost::json::object odb_tmp;
+      if (e.link_inst) {
+        emitInstanceOdbBare(odb_tmp, e.link_inst, db_network);
+      } else {
+        emitPinOdbBare(odb_tmp, e.pin, db_network);
+      }
+      if (auto* v = odb_tmp.if_contains("odb_type")) {
+        eo["pin_odb_type"] = std::move(*v);
+      }
+      if (auto* v = odb_tmp.if_contains("odb_id")) {
+        eo["pin_odb_id"] = std::move(*v);
+      }
     }
     sta::Instance* inst = e.link_inst
         ? const_cast<sta::Instance*>(e.link_inst)

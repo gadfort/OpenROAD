@@ -8281,6 +8281,71 @@ export class SdcWidget {
             }
             row.appendChild(clocksEl);
 
+            // Trace-mix button — opens the existing convergence-tree
+            // tracer, anchored to this row (placement:'after' so the
+            // trace appears below the row as an in-place expansion).
+            // Available on every row regardless of bucket; the trace
+            // walk works the same on D pins (data-path) and CK pins
+            // (clock-path) thanks to `trace_pin_odb_*` always pointing
+            // at the right pin.
+            if (e.trace_pin_odb_type != null && e.trace_pin_odb_id != null
+                && Array.isArray(e.clocks) && e.clocks.length > 1) {
+                const traceBtn = document.createElement('a');
+                traceBtn.textContent = '↑ trace';
+                traceBtn.style.cssText
+                    = 'flex:0 0 auto;font-size:11px;cursor:pointer;'
+                    + 'color:var(--accent-tab);text-decoration:underline;';
+                traceBtn.title
+                    = 'Walk upstream and show where the multi-clock '
+                    + 'mix converges (toggleable).';
+                const tracePinRef = {
+                    odb_type: e.trace_pin_odb_type,
+                    odb_id: e.trace_pin_odb_id,
+                };
+                const traceClocks = e.clocks.slice();
+                const tracePinKind = includeSync ? 'data' : 'clock';
+                traceBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    this._toggleCdcClockMix(
+                        tracePinRef, traceClocks, traceBtn,
+                        tracePinKind, e.name,
+                        {anchor: row, placement: 'after'});
+                });
+                row.appendChild(traceBtn);
+            }
+
+            // Reveal-in-matrix link — only meaningful for register
+            // endpoints (where capture_clocks landed on the entry).
+            // Top-level output ports / macros / stdcells skip the
+            // affordance because they have no (launch, capture) cell
+            // in the matrix to jump to.
+            if (Array.isArray(e.capture_clocks)
+                && e.capture_clocks.length > 0
+                && Array.isArray(e.clocks)
+                && e.clocks.length > 0) {
+                const reveal = document.createElement('a');
+                reveal.textContent = '↘ matrix';
+                reveal.style.cssText
+                    = 'flex:0 0 auto;font-size:11px;cursor:pointer;'
+                    + 'color:var(--accent-tab);text-decoration:underline;';
+                const pairs = [];
+                for (const launch of e.clocks) {
+                    for (const capture of e.capture_clocks) {
+                        pairs.push([launch, capture]);
+                    }
+                }
+                reveal.title
+                    = `Highlight matrix cell${pairs.length === 1 ? '' : 's'}: `
+                    + pairs.map(([l, c]) => `${l} → ${c}`).join(', ');
+                reveal.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    this._revealCdcMatrixCells(pairs);
+                });
+                row.appendChild(reveal);
+            }
+
             if (includeSync && e.sync_status) {
                 const syncEl = document.createElement('span');
                 const k = e.sync_status.kind || 'none';
@@ -8299,6 +8364,58 @@ export class SdcWidget {
             }
 
             parent.appendChild(row);
+        }
+    }
+
+    // Scroll the CDC matrix into view and flash-highlight the cells
+    // at the given (launch, capture) pairs. Used by the mix-endpoint
+    // listing's `↘ matrix` link to jump from "this endpoint mixes
+    // {clk_a, clk_b} on its D, captured by clk_b" to the matrix
+    // cells (clk_a, clk_b) and (clk_b, clk_b).
+    //
+    // Cells are tagged with `data-cdc-launch` / `data-cdc-capture`
+    // by _renderCdcMatrix, so the lookup is a single querySelector
+    // per pair. Missing cells (sparse storage when paths == 0) are
+    // ignored silently — the matrix only renders cells that have
+    // crossings, and a (launch, capture) pair the user wants to
+    // reveal might not exist if STA didn't see a path.
+    _revealCdcMatrixCells(pairs) {
+        if (!pairs || !pairs.length || !this._cdcBody) {
+            return;
+        }
+        // Scroll the matrix into view first so the flash is actually
+        // visible. _cdcBody is the panel's scroll container; scroll
+        // its first cell match into view (smooth scrolling so the
+        // motion is a clear visual cue, not an instant jump).
+        const cells = [];
+        for (const [launch, capture] of pairs) {
+            const sel = `[data-cdc-launch="${CSS.escape(launch)}"]`
+                + `[data-cdc-capture="${CSS.escape(capture)}"]`;
+            const el = this._cdcBody.querySelector(sel);
+            if (el) {
+                cells.push(el);
+            }
+        }
+        if (cells.length === 0) {
+            return;
+        }
+        cells[0].scrollIntoView(
+            {behavior: 'smooth', block: 'center', inline: 'center'});
+
+        // Two-stage flash: ring overlay (outline) on every matched
+        // cell so the user can spot multiple matches at a glance.
+        // Outline doesn't affect layout (unlike border), so the
+        // matrix doesn't shift while the highlight is on.
+        const RING_MS = 1400;
+        for (const cell of cells) {
+            const prevOutline = cell.style.outline;
+            const prevOutlineOffset = cell.style.outlineOffset;
+            cell.style.outline = '2px solid var(--accent-tab)';
+            cell.style.outlineOffset = '-2px';
+            setTimeout(() => {
+                cell.style.outline = prevOutline;
+                cell.style.outlineOffset = prevOutlineOffset;
+            }, RING_MS);
         }
     }
 
@@ -9737,7 +9854,20 @@ export class SdcWidget {
     // ports / registers / depth-limit terminals. The frontend
     // renders the tree as nested branch columns converging at each
     // mixer card, with the originating pin at the bottom.
-    async _toggleCdcClockMix(pinRef, clocks, btn, pinKind, pinName) {
+    // Toggle the clock-mix tracer on a pin.
+    //
+    // `opts.anchor` (default: btn.closest('[data-cdc-stage-card]'))
+    //   The DOM element the trace strip attaches relative to. The
+    //   path-detail-card use case finds the surrounding stage card
+    //   via the data-attribute selector; the mix-endpoint listing
+    //   passes its row element directly.
+    // `opts.placement` (default: 'before')
+    //   'before' inserts the strip ABOVE the anchor (path-detail
+    //   convention — the trace tree feeds DOWN into the card).
+    //   'after' inserts it BELOW (listing convention — the trace
+    //   appears as an in-place expansion of the row).
+    async _toggleCdcClockMix(pinRef, clocks, btn, pinKind, pinName, opts) {
+        opts = opts || {};
         const clockList = Array.isArray(clocks)
             ? clocks.filter(c => c).slice() : [];
         if (!pinRef || !clockList.length || !btn) return;
@@ -9748,9 +9878,11 @@ export class SdcWidget {
         const sorted = clockList.slice().sort();
         const key = `mix|${pinRef.odb_type}|${pinRef.odb_id}|`
             + sorted.join(',');
-        const card = btn.closest('[data-cdc-stage-card]');
+        const card = opts.anchor
+            || btn.closest('[data-cdc-stage-card]');
         if (!card || !card.parentElement) return;
         const parent = card.parentElement;
+        const placement = opts.placement === 'after' ? 'after' : 'before';
         const existing = Array.from(
             parent.querySelectorAll('[data-cdc-fan-in-key]'))
             .find(el => el.dataset.cdcFanInKey === key);
@@ -9843,7 +9975,12 @@ export class SdcWidget {
             wrapper.appendChild(arrow);
         }
 
-        let strip = card.previousElementSibling;
+        // Strip placement: BEFORE the anchor (path-detail convention,
+        // trace tree above the card) or AFTER (listing convention,
+        // trace appears as an in-place row expansion).
+        let strip = placement === 'after'
+            ? card.nextElementSibling
+            : card.previousElementSibling;
         if (!strip
             || !strip.dataset
             || strip.dataset.cdcFanInStrip !== '1') {
@@ -9851,9 +9988,15 @@ export class SdcWidget {
             strip.dataset.cdcFanInStrip = '1';
             strip.style.cssText
                 = 'display:flex;flex-direction:row;gap:8px;'
-                + 'align-items:flex-end;'
-                + 'overflow-x:auto;margin-bottom:4px;';
-            parent.insertBefore(strip, card);
+                + (placement === 'after'
+                    ? 'align-items:flex-start;margin-top:4px;'
+                    : 'align-items:flex-end;margin-bottom:4px;')
+                + 'overflow-x:auto;';
+            if (placement === 'after') {
+                parent.insertBefore(strip, card.nextSibling);
+            } else {
+                parent.insertBefore(strip, card);
+            }
         }
         strip.appendChild(wrapper);
     }
