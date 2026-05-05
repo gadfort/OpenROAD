@@ -2075,23 +2075,77 @@ WebSocketResponse SdcHandler::handleSdcEndpoint(const WebSocketRequest& req)
 
     {
       boost::json::array exc_arr;
+      // Resolved MCP fields. Best-effort: pick the FIRST applicable
+      // setup MCP and the FIRST applicable hold MCP per pin. Counts
+      // track how many MCPs match each direction so the frontend can
+      // surface a "+N more constraints apply" hint when multiple
+      // exceptions reach the same pin.
+      //
+      // SDC `min_max` semantics:
+      //   "max" → setup-side (default for set_multicycle_path)
+      //   "min" → hold-side
+      //   "all" → applies to BOTH (rare; matches both buckets)
+      // We do NOT attempt to resolve scope-precedence here (from-pin
+      // > from-clock > global) — STA's resolution is path-specific
+      // and the visualization only needs a representative cycle
+      // count. If a more-specific MCP exists, it lands first in
+      // pin_exceptions because that's the order STA emits them.
+      // The "+N more" indicator is the user-facing escape hatch
+      // when the chosen MCP disagrees with their intent.
+      int mcp_setup_cycles = -1;     // -1 = unset (no MCP applies)
+      int mcp_hold_cycles  = -1;
+      int mcp_setup_count  = 0;
+      int mcp_hold_count   = 0;
       auto eit = pin_exceptions.find(pin);
       if (eit != pin_exceptions.end()) {
         for (sta::ExceptionPath* exc : eit->second) {
           boost::json::object eo;
           eo["type"] = std::string(exceptionTypeStr(exc));
           const sta::MinMaxAll* mm = exc->minMax();
-          eo["min_max"] = mm ? mm->to_string() : std::string("max");
-          eo["multiplier"] = exc->pathMultiplier();
+          const std::string mm_str
+              = mm ? mm->to_string() : std::string("max");
+          eo["min_max"] = mm_str;
+          const int mult = exc->pathMultiplier();
+          eo["multiplier"] = mult;
           if (exc->isPathDelay()) {
             eo["delay"] = scaleTime(exc->delay(), time_scale);
           } else {
             eo["delay"] = nullptr;
           }
+          if (exc->isMultiCycle()) {
+            const bool applies_setup
+                = (mm_str == "max" || mm_str == "all");
+            const bool applies_hold
+                = (mm_str == "min" || mm_str == "all");
+            if (applies_setup) {
+              ++mcp_setup_count;
+              if (mcp_setup_cycles < 0) {
+                mcp_setup_cycles = mult;
+              }
+            }
+            if (applies_hold) {
+              ++mcp_hold_count;
+              if (mcp_hold_cycles < 0) {
+                mcp_hold_cycles = mult;
+              }
+            }
+          }
           exc_arr.push_back(std::move(eo));
         }
       }
       obj["exceptions"] = std::move(exc_arr);
+      // Sparse emission: only set when an MCP actually applies.
+      // Absent fields = no MCP = default (setup=1 cycle, hold=0
+      // cycles in SDC semantics). Lets the frontend render a
+      // "no MCP" lane without an explicit boolean.
+      if (mcp_setup_cycles >= 0) {
+        obj["mcp_setup_cycles"] = mcp_setup_cycles;
+        obj["mcp_setup_count"] = mcp_setup_count;
+      }
+      if (mcp_hold_cycles >= 0) {
+        obj["mcp_hold_cycles"] = mcp_hold_cycles;
+        obj["mcp_hold_count"] = mcp_hold_count;
+      }
     }
 
     {

@@ -6164,7 +6164,13 @@ export class SdcWidget {
             ((this._epListArea && this._epListArea.clientWidth) || 600) - 40);
         const WAVE_W = totalW - LABEL_W;
         const { LEG_Y, CLK_HIGH, CLK_LOW, CLK_MID, LANE_GAP } = DIAGRAM_CONST;
-        const LANE_TOP_BASE = 50;
+        // Compute MCP presence early so we can bump LANE_TOP_BASE down
+        // and reserve a row for the cycle-counter ruler. Without MCP
+        // the ruler isn't drawn and the lanes start at the original
+        // y=50 position — non-MCP diagrams stay byte-identical.
+        const hasAnyMcp = lanes.some(L => L.kind !== 'output'
+            && ((L.mcpSetup || 1) > 1 || (L.mcpHold || 0) > 0));
+        const LANE_TOP_BASE = hasAnyMcp ? 64 : 50;
         const LANE_H = 22;
         const lanesEnd = LANE_TOP_BASE + lanes.length * (LANE_H + LANE_GAP);
         const AXIS_Y = lanesEnd + 8;
@@ -6206,6 +6212,29 @@ export class SdcWidget {
             (m, L) => Math.max(m, Math.abs(L.th) + L.hu), 0);
         const maxClkqMax = outputLanes.reduce(
             (m, L) => Math.max(m, L.clkqMax || 0), 0);
+        // Per-lane effective capture-edge offset: tEff = (setupCycles - 1) * T.
+        // Default lanes (no MCP) have mcpSetup=1 → tEff=0 → today's behaviour.
+        // The shared axis must extend far enough to fit the WIDEST lane's
+        // effective capture + setup window + hold band; lanes with shorter
+        // MCPs render their windows in the natural place and the empty
+        // space to the right is just visual confirmation that THIS pin is
+        // not on the relaxed schedule.
+        const laneTEff = (L) => {
+            const cycles = (L && L.mcpSetup) || 1;
+            return (cycles - 1) * T;
+        };
+        const maxTEff = inputLanes.reduce(
+            (m, L) => Math.max(m, laneTEff(L)), 0);
+        // Instance-level effective capture edge for OUTPUT lanes.
+        // Output pins (Q / QN) on a flop with MCP'd inputs share the
+        // same physical CK edge as the inputs — with MCP applied to
+        // the flop, the SDC-relevant capture event is at tEff for ALL
+        // pins of the instance. Using the max input tEff keeps the
+        // output lane visually aligned with the input lanes' shifted
+        // bands; without this the Q lane would mark its launch at
+        // t=0 while D's bands sit out at (N-1)·T, which reads as a
+        // visual mismatch on the same flop.
+        const instOutTEff = maxTEff;
         // Time-borrow extension on latch input lanes: explicit limit wins;
         // otherwise the implicit default is the transparent-period width.
         // We resolve it once per lane here so axis sizing and band drawing
@@ -6220,8 +6249,22 @@ export class SdcWidget {
             (m, L) => Math.max(m, laneEffectiveBorrow(L)), 0);
         const POST = Math.max(maxThHu * 2.5, maxClkqMax * 1.15,
                               maxBorrow * 1.1, T * 0.25);
-        const tStart = -T;
-        const tEnd = POST;
+        // Left-side reach: the SDC hold-check edge of the most-relaxed
+        // hold-MCP lane can land at -T (default) or further back when
+        // M > N-1 (rare). Extend tStart to fit the most-negative hold
+        // edge so the marker stays visible.
+        const minHoldEdge = inputLanes.reduce((m, L) => {
+            const nL = (L.mcpSetup || 1);
+            const mL = (L.mcpHold  || 0);
+            return Math.min(m, (nL - 2 - mL) * T);
+        }, -T);
+        const tStart = Math.min(-T, minHoldEdge - T * 0.05);
+        // Right-side reach: setup edge + library hold band of the
+        // widest-MCP lane. Hold MCP no longer extends rightward (it
+        // shifts the SDC hold-check edge LEFT instead of stretching
+        // the library band), so we drop the holdExt contribution.
+        const tEnd = Math.max(POST, maxTEff + maxThHu
+                              + Math.max(T * 0.1, 1));
         const tRange = tEnd - tStart;
         const tx = (t) => LABEL_W + ((t - tStart) / tRange) * WAVE_W;
         void maxTsuSu;  // (left margin reference; tx covers it)
@@ -6247,14 +6290,108 @@ export class SdcWidget {
               `The dashed guide marks the capture edge at t = 0.`);
         this._drawClockPath(svg, allEdges, tx, CLK_HIGH, CLK_LOW, prevY,
                             tStart, tEnd, 'var(--canvas-axis)', '1.5');
-        const refLine = this._svgLine(svg, tx(0), CLK_HIGH, tx(0), AXIS_Y,
+        // The dashed full-height capture-reference line tracks where
+        // the SDC setup check actually lands. For non-MCP diagrams
+        // that's t=0 (one period after launch). For MCP'd diagrams
+        // it shifts out to maxTEff = (N-1)·T after launch, so the
+        // user's eye is drawn to the effective check edge instead of
+        // a skipped CK edge that no longer represents an SDC event.
+        const tCaptureRef = maxTEff > 0 ? maxTEff : 0;
+        const refLine = this._svgLine(svg, tx(tCaptureRef), CLK_HIGH,
+                                      tx(tCaptureRef), AXIS_Y,
                                       'var(--border-subtle)', '1');
         refLine.setAttribute('stroke-dasharray', '3,3');
         refLine.dataset.ref = 'capture';
         this._svgTitle(refLine, isLatch
             ? 'enable closing edge (t = 0) — D is captured here'
-            : 'capture edge (t = 0) — the launching/capturing clock edge ' +
-              'this lane is timed against');
+            : (maxTEff > 0
+                ? `effective capture edge (t = ${maxTEff.toPrecision(3)}`
+                  + ` ${timeUnit}) — set_multicycle_path -setup shifts the`
+                  + ' SDC check here, away from the natural single-cycle'
+                  + ' capture at t=0'
+                : 'capture edge (t = 0) — the launching/capturing clock'
+                  + ' edge this lane is timed against'));
+        // Symmetric launch-edge guide at t=-T. Earlier the diagram drew
+        // only the capture reference line, leaving the launch edge
+        // (where data leaves the upstream flop) implicit — that
+        // asymmetry was hard to read on multicycle paths where the
+        // user wants to mentally connect "launch here, settle through
+        // these N cycles, capture there". The two dashed guides give
+        // the same visual weight to both endpoints. Skipped on
+        // latches — for them t=-T isn't a meaningful event; the open
+        // edge already has its own dashed guide a few hundred ps away.
+        if (!isLatch && tStart <= -T && -T < tEnd) {
+            const launchLine = this._svgLine(svg, tx(-T), CLK_HIGH,
+                                             tx(-T), AXIS_Y,
+                                             'var(--border-subtle)', '1');
+            launchLine.setAttribute('stroke-dasharray', '3,3');
+            launchLine.dataset.ref = 'launch';
+            this._svgTitle(launchLine,
+                `launch edge (t = -${T.toPrecision(3)} ${timeUnit}) — `
+                + 'the upstream clock edge that fires the data this '
+                + 'lane samples');
+        }
+
+        // ── Cycle-counter ruler ─────────────────────────────────────────
+        // When any lane has an MCP, render a single ruler row in the
+        // gap between the CLK waveform and the data lanes, showing
+        // cycle numbers from launch (cycle 0) through the widest-MCP
+        // setup edge (cycle N). Bold ticks + labels mark the launch
+        // ("L") and setup ("S") positions. Per-lane hold edges stay
+        // marked by the orange dashed line on each lane (different
+        // pins on the same flop CAN have different MCPs, so a single
+        // shared hold marker on the ruler would be ambiguous).
+        if (hasAnyMcp) {
+            const RULER_Y = 50;     // 12px below CLK_LOW=38, 14px above LANE_TOP_BASE=64
+            const maxN = inputLanes.reduce(
+                (m, L) => Math.max(m, L.mcpSetup || 1), 1);
+            // Faint baseline spans launch → setup so the ticks read
+            // as a connected ruler rather than free-floating notches.
+            this._svgLine(svg, tx(-T), RULER_Y, tx((maxN - 1) * T),
+                          RULER_Y, 'var(--fg-muted)', 0.5)
+                .setAttribute('stroke-opacity', '0.6');
+            for (let k = 0; k <= maxN; k++) {
+                const t = -T + k * T;          // cycle k landing time
+                const x = tx(t);
+                if (x < LABEL_W || x > totalW) {
+                    continue;
+                }
+                const isLaunch = (k === 0);
+                const isSetup = (k === maxN);
+                const isSpecial = isLaunch || isSetup;
+                const tickH = isSpecial ? 5 : 3;
+                const color = isSpecial
+                    ? 'var(--accent-tab)' : 'var(--fg-muted)';
+                const tick = this._svgLine(
+                    svg, x, RULER_Y - tickH, x, RULER_Y + tickH,
+                    color, isSpecial ? 1.5 : 0.8);
+                if (isSpecial) {
+                    tick.dataset.ref = isLaunch ? 'cycle-launch'
+                                                 : 'cycle-setup';
+                }
+                this._svgTitle(tick,
+                    `cycle ${k}${
+                        isLaunch ? ' (launch)'
+                        : isSetup ? ' (setup check edge)'
+                        : ''} — t = ${t.toPrecision(3)} ${timeUnit}`);
+                // Cycle number below the tick. Special ticks get the
+                // accent-color label; intermediate ticks stay muted.
+                const num = this._svgText(svg, x, RULER_Y + 13,
+                    String(k),
+                    isSpecial ? 'var(--accent-tab)' : 'var(--fg-muted)',
+                    8, 'middle');
+                if (isSpecial) {
+                    num.setAttribute('font-weight', '600');
+                }
+                // L / S letter above the tick for the bold endpoints.
+                if (isLaunch || isSetup) {
+                    const letter = this._svgText(svg, x, RULER_Y - 7,
+                        isLaunch ? 'L' : 'S',
+                        'var(--accent-tab)', 9, 'middle');
+                    letter.setAttribute('font-weight', '700');
+                }
+            }
+        }
         // Latch open edge: dashed guide marking when the latch became
         // transparent. Drawn alongside the existing close-edge guide so
         // the user sees the full open→close span at a glance.
@@ -6344,16 +6481,17 @@ export class SdcWidget {
 
             if (L.kind === 'output') {
                 // ── Output lane: clk-to-Q delay region ────────────────
-                // Capture edge at t=0 is the launching edge. Until qMax
-                // the output is in its clk→Q delay region — Q is not
-                // yet definitely valid. Drawn as a single band from t=0
-                // to qMax in the uncert (yellow) palette so the entire
-                // delay shows even when qMin is small. If qMin > 0 we
-                // overlay a dotted marker at qMin to call out "earliest
-                // possible transition". After qMax the output is valid
-                // (green) at the new value.
+                // Anchored at the effective capture/launch edge for
+                // the instance (instOutTEff). For non-MCP flops this
+                // is t=0 (unchanged). For MCP'd flops, this shifts
+                // the clk→Q delay region to tEff so the Q lane stays
+                // visually aligned with the D lane(s) on the same
+                // flop. Until tEff+qMax the output is in its clk→Q
+                // delay region; before that, Q reflects the previous
+                // captured value.
                 const qMin = Math.max(0, L.clkqMin || 0);
                 const qMax = Math.max(qMin, L.clkqMax || 0);
+                const tQLaunch = instOutTEff;
                 if (LANE_H >= 18 && (qMin > 0 || qMax > 0)) {
                     const parts = [];
                     if (qMin > 0) parts.push(`clk→Q≥${qMin.toPrecision(2)}`);
@@ -6364,29 +6502,63 @@ export class SdcWidget {
                             'var(--fg-muted)', 7, 'start');
                     }
                 }
-                // Previous-cycle stable Q value before this launch edge.
-                drawBar(top, tStart, 0, 'valid');
-                // clk→Q delay region: t=0 → qMax, Q not definitely valid.
-                if (qMax > 0) drawBar(top, 0, qMax, 'uncert', 'clk-to-q');
+                // Previous-cycle stable Q value before the launch edge.
+                drawBar(top, tStart, tQLaunch, 'valid');
+                // clk→Q delay region: tQLaunch → tQLaunch+qMax.
+                if (qMax > 0)
+                    drawBar(top, tQLaunch, tQLaunch + qMax,
+                            'uncert', 'clk-to-q');
                 // qMin marker: dotted vertical line at the earliest
                 // possible transition time. Helps the user see that the
-                // delay band has both a lower (qMin) and upper (qMax) edge.
+                // delay band has both a lower (qMin) and upper (qMax)
+                // edge.
                 if (qMin > 0 && qMin < qMax) {
-                    const xq = tx(qMin);
-                    const m = this._svgLine(svg, xq, top + 1, xq, top + LANE_H - 1,
+                    const xq = tx(tQLaunch + qMin);
+                    const m = this._svgLine(svg, xq, top + 1, xq,
+                                            top + LANE_H - 1,
                                             'var(--canvas-axis)', '0.8');
                     m.setAttribute('stroke-dasharray', '2,2');
                 }
-                drawBar(top, qMax, tEnd, 'valid');
+                drawBar(top, tQLaunch + qMax, tEnd, 'valid');
                 this._svgOutlineRect(svg, LABEL_W, top, WAVE_W, LANE_H);
                 continue;
             }
 
-            // ── Input lane: setup/hold around capture edge at t=0 ─────
+            // ── Input lane: setup/hold around the EFFECTIVE capture edge ─
+            //
+            // Without MCP (setup=1, hold=0): tEff=0, tHoldSdc=-T, and
+            // behaviour is identical to the pre-MCP code path —
+            // library bands hug the natural capture, arrival window
+            // is the full prior cycle.
+            //
+            // SDC semantics for `set_multicycle_path -setup N -hold M`:
+            //   setup_edge = launch + N*T          (in our frame: (N-1)*T)
+            //   hold_edge  = launch + (N-1-M)*T    (in our frame: (N-2-M)*T)
+            //
+            // Note hold_edge moves BACKWARD toward launch as M grows:
+            //   `-setup 4 -hold 0`  → hold at  2T (TIGHT — only 1
+            //                                       cycle of arrival)
+            //   `-setup 4 -hold 1`  → hold at   T (2 cycles)
+            //   `-setup 4 -hold 3`  → hold at -T (full 4-cycle grant,
+            //                                     hold matches default)
+            //
+            // The library hold time (th+hu) is a CELL property anchored
+            // at the actual CK edge — it stays at [tEff, tEff+th+hu]
+            // regardless of M. M only moves the SDC slack-check edge,
+            // visualised as a separate marker + the arrival window.
             const tsu = L.tsu, th = L.th, su = L.su, hu = L.hu;
             const thAbs = Math.abs(th);
-            const tSetupDeadline = -(tsu + su);
-            const tHoldVisual    =  hu + thAbs;
+            const N = (L.mcpSetup || 1);
+            const M = (L.mcpHold  || 0);
+            const tEff = (N - 1) * T;                  // SDC setup edge
+            const tHoldSdc = (N - 2 - M) * T;          // SDC hold edge
+            const tSetupDeadline = tEff - (tsu + su);
+            const tHoldVisual    = tEff + hu + thAbs;  // library hold band
+            // Arrival window — where data may settle without violating
+            // either check. Draw the pink line across this span; the
+            // ACTUAL SDC hold check anchors its left edge.
+            const tArrivalStart = tHoldSdc + thAbs;
+            const tArrivalEnd   = tSetupDeadline;
             // Time-borrow on latch input lanes: late D arrival up to
             // `borrow` past the close edge is acceptable (the next
             // stage absorbs the slack). When the borrow window extends
@@ -6398,21 +6570,88 @@ export class SdcWidget {
             const tBorrowEnd = Math.max(tHoldVisual, borrow);
             // Compact tsu/th annotation under the name (only when there's
             // room — otherwise the lane is too dense and the user can
-            // still read the band widths).
+            // still read the band widths). MCP markers come first so
+            // they're never clipped — they're the most important
+            // single-line summary of the lane's check schedule.
             if (LANE_H >= 18) {
                 const parts = [];
+                if ((L.mcpSetup || 1) > 1) {
+                    const extra = (L.mcpSetupCount || 0) > 1
+                        ? `+${L.mcpSetupCount - 1}` : '';
+                    parts.push(`MCP setup×${L.mcpSetup}${extra}`);
+                }
+                if ((L.mcpHold || 0) > 0) {
+                    const extra = (L.mcpHoldCount || 0) > 1
+                        ? `+${L.mcpHoldCount - 1}` : '';
+                    parts.push(`MCP hold×${L.mcpHold}${extra}`);
+                }
                 if (tsu > 0)   parts.push(`${TIMING_LABELS.tsu.short}=${tsu.toPrecision(2)}`);
                 if (su > 0)    parts.push(`${TIMING_LABELS.setup_unc.short}=${su.toPrecision(2)}`);
                 if (hu > 0)    parts.push(`${TIMING_LABELS.hold_unc.short}=${hu.toPrecision(2)}`);
                 if (thAbs > 0) parts.push(`${TIMING_LABELS.th.short}=${thAbs.toPrecision(2)}`);
-                if (borrow > tHoldVisual) {
+                if (borrow > tHoldVisual - tEff) {
                     const tag = (L.timeBorrowLimit != null) ? 'borrow' : 'borrow*';
                     parts.push(`${tag}=${borrow.toPrecision(2)}`);
                 }
                 if (parts.length > 0) {
-                    this._svgText(svg, 4, top + LANE_H / 2 + 9,
+                    const annot = this._svgText(svg, 4,
+                        top + LANE_H / 2 + 9,
                         this._truncateForLane(parts.join(' '), LABEL_W - 8),
                         'var(--fg-muted)', 7, 'start');
+                    // Tooltip on the annotation row spells out the MCP
+                    // shift in human terms — useful when the lane is
+                    // dense and the user can only read the truncated
+                    // summary.
+                    if ((L.mcpSetup || 1) > 1
+                        || (L.mcpHold || 0) > 0) {
+                        const Ntip = (L.mcpSetup || 1);
+                        const Mtip = (L.mcpHold  || 0);
+                        const setupT = ((Ntip - 1) * T);
+                        const holdT  = ((Ntip - 2 - Mtip) * T);
+                        const arrivalCycles = Ntip - 1 - Mtip;
+                        const lines = [];
+                        if (Ntip > 1) {
+                            lines.push(
+                                `set_multicycle_path -setup ${Ntip}`
+                                + ` — setup check at t=`
+                                + `${setupT.toPrecision(3)} ${timeUnit}`
+                                + ` (${Ntip} cycles after launch).`);
+                        }
+                        // Hold MCP semantic: hold-check edge moves to
+                        // (N-1-M) cycles after launch. Larger M ⇒
+                        // hold edge moves toward launch ⇒ wider
+                        // arrival window. Surfacing the actual edge
+                        // location and the resulting arrival-cycle
+                        // count is the clearest explanation when the
+                        // user is verifying their constraint.
+                        if (Mtip > 0 || Ntip > 1) {
+                            lines.push(
+                                `SDC hold check at t=`
+                                + `${holdT.toPrecision(3)} ${timeUnit}`
+                                + ` ((N-1-M) = ${arrivalCycles}`
+                                + ` cycle${arrivalCycles === 1 ? '' : 's'}`
+                                + ` after launch).`);
+                        }
+                        if (Ntip > 1 && Mtip < Ntip - 1) {
+                            lines.push('Heads up: -setup ' + Ntip
+                                + ' without a matching -hold '
+                                + (Ntip - 1) + ' tightens the hold '
+                                + 'check to ' + (Ntip - 1 - Mtip)
+                                + ' cycle'
+                                + (arrivalCycles === 1 ? '' : 's')
+                                + ' of arrival — typically you want '
+                                + '-hold ' + (Ntip - 1)
+                                + ' alongside.');
+                        }
+                        if ((L.mcpSetupCount || 0) > 1
+                            || (L.mcpHoldCount || 0) > 1) {
+                            lines.push('Multiple MCP exceptions match '
+                                + 'this pin; the chip shows the first '
+                                + 'applicable one. Check the '
+                                + 'Exceptions tab for the full list.');
+                        }
+                        this._svgTitle(annot, lines.join('\n'));
+                    }
                 }
             }
             // Bar bands. Use the gray "invalid"/free palette outside the
@@ -6421,15 +6660,158 @@ export class SdcWidget {
             // on output lanes — the two readings are different (input D
             // doesn't have to be at any particular value here, vs. output
             // Q is definitely settled).
+            //
+            // Anchored at tEff (the effective SDC capture edge): the
+            // setup/hold bands sit around tEff, and the natural-cycle
+            // "ghost edges" between launch (t=-T) and tEff are drawn
+            // separately below. With no MCP (tEff=0) the band layout
+            // matches the pre-MCP code path verbatim.
+            // Hold-band anchor: drawn over the actual capture event
+            // (tEff). That's the cell-level library `th` requirement
+            // — once the flop's CK rises at tEff, data must remain
+            // stable for th + hu after, regardless of where the SDC
+            // slack-check edge sits. The SDC hold-check edge
+            // (tHoldSdc) is a SEPARATE concept and is rendered as
+            // the orange dashed marker further below; the pink
+            // arrival-window line connects it to the setup deadline.
+            // Showing both lets the user see (a) where the cell
+            // physically requires stability and (b) where SDC's
+            // slack equation evaluates the hold check.
             drawBar(top, tStart, tSetupDeadline, 'invalid');
-            if (tsu > 0)   drawBar(top, tSetupDeadline, -su, 'lib-setup');
-            if (su > 0)    drawBar(top, -su, 0, 'setup-unc');
-            if (hu > 0)    drawBar(top, 0, hu, 'hold-unc');
-            if (thAbs > 0) drawBar(top, hu, tHoldVisual, 'lib-hold');
-            if (borrow > tHoldVisual) {
-                drawBar(top, tHoldVisual, tBorrowEnd, 'uncert', 'borrow');
+            if (tsu > 0)   drawBar(top, tSetupDeadline, tEff - su, 'lib-setup');
+            if (su > 0)    drawBar(top, tEff - su, tEff, 'setup-unc');
+            if (hu > 0)    drawBar(top, tEff, tEff + hu, 'hold-unc');
+            if (thAbs > 0) drawBar(top, tEff + hu, tHoldVisual, 'lib-hold');
+            if (borrow > tHoldVisual - tEff) {
+                drawBar(top, tHoldVisual, tEff + borrow, 'uncert', 'borrow');
             }
-            drawBar(top, tBorrowEnd, tEnd, 'invalid');
+            const freeStart = Math.max(tHoldVisual,
+                                       tEff + Math.max(borrow, 0));
+            drawBar(top, freeStart, tEnd, 'invalid');
+
+            // Per-lane ghost capture-edge lines for MCP. Skipped cycles
+            // between launch and the effective check edge get a faded
+            // dashed vertical line so the user SEES the natural CK edges
+            // that aren't being checked. The effective edge itself gets
+            // a solid in-lane marker so it's distinct from the natural
+            // capture-edge guide at t=0 (which is now itself a ghost
+            // when MCP applies). A thick pink "MCP span" line over the
+            // top of the lane connects the previous capture's
+            // hold-end to this capture's setup-start — that's the
+            // entire window the design has to settle the data, which
+            // the SDC `set_multicycle_path` is deliberately stretching.
+            if ((L.mcpSetup || 1) > 1 || (L.mcpHold || 0) > 0) {
+                // Ghost CK-edge dashes are only useful when the
+                // waveform itself would be too dense to show every
+                // cycle clearly. For N ≤ 10 the waveform (now sampled
+                // across the full axis) makes every skipped edge
+                // visible without extra annotation; for very long
+                // MCPs the dashed-cap-with-ellipsis representation
+                // still helps. Threshold at 10 matches the cap on
+                // visible ghosts inside the helper, so we never
+                // double-render.
+                if ((L.mcpSetup || 1) > 10) {
+                    this._drawMcpGhostEdges(svg, tx, top, LANE_H, T,
+                                            L.mcpSetup || 1);
+                }
+                // Effective check-edge marker — solid line on this
+                // lane, accent colour, full lane height.
+                const xEff = tx(tEff);
+                const eff = this._svgLine(svg, xEff, top, xEff,
+                                          top + LANE_H,
+                                          'var(--accent-tab)', '1.5');
+                eff.dataset.ref = 'mcp-effective-capture';
+                this._svgTitle(eff,
+                    `effective capture edge — set_multicycle_path `
+                    + `-setup ${L.mcpSetup} shifts the SDC check from `
+                    + `t=0 to t=${tEff.toPrecision(3)} ${timeUnit}`);
+
+                // ── SDC hold-edge marker ─────────────────────────────
+                // Vertical orange dashed line at the SDC hold-check
+                // edge ((N-2-M)*T in our frame). For default
+                // no-MCP this lands at t=-T (= the launch edge, where
+                // the existing dashed launch guide already sits) so
+                // we suppress the marker. For setup-only MCP it
+                // lands at (N-2)*T — a tight hold edge that explains
+                // why the arrival window is short despite the relaxed
+                // setup. For -setup N -hold N-1 it lands back at -T
+                // (default-equivalent hold).
+                if (tHoldSdc > tStart && Math.abs(tHoldSdc - (-T)) > 1e-9) {
+                    const xH = tx(tHoldSdc);
+                    const holdEdge = this._svgLine(
+                        svg, xH, top, xH, top + LANE_H,
+                        'var(--sdc-text-hold,#ff8a5b)', '1.2');
+                    holdEdge.setAttribute('stroke-dasharray', '2,2');
+                    holdEdge.dataset.ref = 'mcp-hold-edge';
+                    this._svgTitle(holdEdge,
+                        `SDC hold check edge — set_multicycle_path `
+                        + `-setup ${N} -hold ${M} places the hold `
+                        + `slack check at t=`
+                        + `${tHoldSdc.toPrecision(3)} ${timeUnit} `
+                        + `((N-1-M)=${N - 1 - M} cycles after launch)`);
+                    // "H" label inside the lane, just to the right of
+                    // the hold edge — completes the L / H / S letter
+                    // set the cycle ruler establishes for launch and
+                    // setup. Placed inside the lane (not above) to
+                    // avoid overlapping the cycle ruler when several
+                    // lanes share the diagram.
+                    const hLetter = this._svgText(svg, xH + 3,
+                        top + 10, 'H',
+                        'var(--sdc-text-hold,#ff8a5b)', 8, 'start');
+                    hLetter.setAttribute('font-weight', '700');
+                    this._svgTitle(hLetter,
+                        `hold check at cycle ${N - 1 - M} after launch`);
+                }
+
+                // ── Thick "MCP arrival window" indicator ─────────────
+                // Pink horizontal bar at the very top of the lane,
+                // spanning the actual interval where data may settle
+                // without violating either check:
+                //   left edge  = SDC hold edge + library hold time
+                //   right edge = SDC setup deadline (tEff - tsu - su)
+                //
+                // For -setup 4 -hold 0 (TIGHT): line is ~1 cycle wide
+                //   between t=2T and t=3T-tsu — the setup edge merely
+                //   shifted, no actual grant.
+                // For -setup 4 -hold 3 (FULL): line is ~4 cycles wide
+                //   from -T+th to 3T-tsu — equivalent to default
+                //   hold relaxation.
+                //
+                // The line moves and resizes with both N and M, making
+                // the SDC's actual arrival schedule visually obvious
+                // (and surfacing the common -setup-without-matching-
+                // -hold trap, where the user expects more arrival time
+                // but gets a shifted-but-narrow window instead).
+                const tSpanStart = tArrivalStart;
+                const tSpanEnd = tArrivalEnd;
+                if (tSpanEnd > tSpanStart) {
+                    const xS = tx(tSpanStart);
+                    const xE = tx(tSpanEnd);
+                    const yMcp = top + 1;  // 1px from top of lane
+                    const PINK = '#ff5fa2';
+                    const span = this._svgLine(
+                        svg, xS, yMcp, xE, yMcp, PINK, '3');
+                    span.setAttribute('stroke-linecap', 'butt');
+                    span.dataset.ref = 'mcp-span';
+                    const cycles = (tSpanEnd - tSpanStart) / T;
+                    this._svgTitle(span,
+                        `MCP arrival window — data may settle in `
+                        + `~${cycles.toPrecision(3)} cycle`
+                        + (cycles >= 1.95 ? 's' : '')
+                        + ` (${(tSpanEnd - tSpanStart).toPrecision(3)} `
+                        + `${timeUnit}) between the SDC hold edge `
+                        + `(t=${tHoldSdc.toPrecision(3)}) and the `
+                        + `setup deadline (t=`
+                        + `${tSetupDeadline.toPrecision(3)})`);
+                    // End caps: short vertical ticks at each end so the
+                    // span boundaries are unambiguous when several
+                    // lanes stack with overlapping spans.
+                    this._svgLine(svg, xS, yMcp - 3, xS, yMcp + 3,
+                                  PINK, '2');
+                    this._svgLine(svg, xE, yMcp - 3, xE, yMcp + 3,
+                                  PINK, '2');
+                }
+            }
             // Outline.
             this._svgOutlineRect(svg, LABEL_W, top, WAVE_W, LANE_H);
         }
@@ -6529,27 +6911,59 @@ export class SdcWidget {
             x: Math.max(LABEL_W + 3, Math.min(totalW - 3, tx(t))),
             label, row, priority, tip,
         });
+        // Boundary anchors. Without MCP everything anchors at the
+        // capture edge (t=0). With MCP the per-instance effective
+        // capture edge (maxTEff for inputs, instOutTEff for Q) is
+        // where the bands actually sit, so the labelled ticks have
+        // to follow — otherwise the "tsu" tick lives at -maxTsuSu
+        // while the setup deadline is at (N-1)·T - maxTsuSu, and the
+        // user's eye reads the diagram as inconsistent.
         const candidates = [
-            addTick(0, '0', 1, 0, isLatch
-                ? 'capture/closing edge — D is captured here'
-                : 'capture edge — t = 0'),
             addTick(tStart, `T=${T.toPrecision(4)}${timeUnit}`, 1, 1,
                 `previous launch edge — one period (T = ${T.toPrecision(4)}${
                     timeUnit}) before the capture edge`),
         ];
+        // The "0" tick is meaningful only on non-MCP diagrams (where
+        // t=0 IS the SDC capture edge). With MCP active, t=0 is a
+        // skipped CK edge with no SDC significance — drop the tick
+        // entirely so the axis labels match the bands. The cycle
+        // ruler above the lanes still shows cycle 1 at t=0 if the
+        // user wants the natural-cycle reference.
+        if (maxTEff === 0) {
+            candidates.unshift(addTick(0, '0', 1, 0, isLatch
+                ? 'capture/closing edge — D is captured here'
+                : 'capture edge — t = 0'));
+        } else {
+            // Effective capture edge for MCP'd diagrams. Becomes the
+            // diagram's primary capture reference; the dashed
+            // full-height guide also moved here. Labelled with its
+            // actual time value so it reads off the axis directly.
+            candidates.unshift(addTick(maxTEff,
+                `${maxTEff.toPrecision(3)}`, 1, 0,
+                `effective capture edge — set_multicycle_path -setup `
+                + `shifts the SDC check to t = ${maxTEff.toPrecision(3)} `
+                + `${timeUnit} ((N-1)·T after launch)`));
+        }
         if (maxTsuSu > 0)
-            candidates.push(addTick(-maxTsuSu, `${(-maxTsuSu).toPrecision(3)}`,
+            candidates.push(addTick(maxTEff - maxTsuSu,
+                `${(maxTEff - maxTsuSu).toPrecision(3)}`,
                 0, 2, `outer setup boundary — D must be stable starting here ` +
                 `(tsu + setup uncertainty = ${maxTsuSu.toPrecision(3)} ${timeUnit})`));
         if (maxThHu > 0)
-            candidates.push(addTick(maxThHu, `${maxThHu.toPrecision(3)}`,
+            candidates.push(addTick(maxTEff + maxThHu,
+                `${(maxTEff + maxThHu).toPrecision(3)}`,
                 0, 2, `outer hold boundary — D must remain stable until here ` +
                 `(th + hold uncertainty = ${maxThHu.toPrecision(3)} ${timeUnit})`));
-        if (maxClkqMax > 0 && maxClkqMax > maxThHu)
-            candidates.push(addTick(maxClkqMax, `${maxClkqMax.toPrecision(3)}`,
+        if (maxClkqMax > 0
+            && (instOutTEff + maxClkqMax) > (maxTEff + maxThHu)) {
+            candidates.push(addTick(instOutTEff + maxClkqMax,
+                `${(instOutTEff + maxClkqMax).toPrecision(3)}`,
                 0, 2, `clk-to-Q upper bound — Q is definitely valid past here`));
-        if (maxBorrow > 0 && maxBorrow > maxThHu && maxBorrow !== maxClkqMax)
-            candidates.push(addTick(maxBorrow, `${maxBorrow.toPrecision(3)}`,
+        }
+        if (maxBorrow > 0 && maxBorrow > maxThHu
+            && (maxTEff + maxBorrow) !== (instOutTEff + maxClkqMax))
+            candidates.push(addTick(maxTEff + maxBorrow,
+                `${(maxTEff + maxBorrow).toPrecision(3)}`,
                 0, 2, `time-borrow boundary — late D arrival up to here is ` +
                 `acceptable (set_max_time_borrow or transparent-period default)`));
         candidates.sort((a, b) => a.priority - b.priority);
@@ -6598,6 +7012,8 @@ export class SdcWidget {
         });
         const anyExplicitBorrow = isLatch && inputLanes.some(
             L => L.timeBorrowLimit != null && L.timeBorrowLimit > 0);
+        const anyMcp = inputLanes.some(L => (L.mcpSetup || 1) > 1
+                                            || (L.mcpHold || 0) > 0);
         // Two semantic flavours for the "outer" bands on a lane:
         //   • input  D pin: gray "free" — data may change, no constraint
         //   • output Q pin: green "valid" — Q is stable at a known value
@@ -6631,32 +7047,50 @@ export class SdcWidget {
             ...(isLatch ? [{ pattern: 'stripes',
                              label: 'transparent',
                              tip: 'latch transparent period — enable asserted, D flows to Q; capture happens at the close edge' }] : []),
+            ...(anyMcp ? [{ kind: 'line', color: '#ff5fa2',
+                             label: 'arrival',
+                             tip: 'MCP arrival window — interval where data may settle without violating SDC setup or hold; bounded on the left by the SDC hold-check edge ((N-1-M) cycles after launch) and on the right by the setup deadline (N cycles after launch − tsu − setup uncertainty)' }] : []),
         ];
         const legW = (label) => label.length * 5.5 + 16;
         let lx = LABEL_W + 4;
         for (const item of legItems) {
-            const { color, pattern, label, tip } = item;
+            const { kind, color, pattern, label, tip } = item;
             const tw = legW(label);
             if (lx + tw > totalW - 4) break;
-            const swatch = document.createElementNS(SVG_NS, 'rect');
-            swatch.setAttribute('x', lx); swatch.setAttribute('y', LEG_Y - 7);
-            swatch.setAttribute('width', 8); swatch.setAttribute('height', 8);
-            if (pattern === 'stripes') {
-                // Reuse the same hatched pattern as the lane overlay so
-                // the legend swatch matches what the user sees on lanes.
-                const ovr = svg.querySelector('.sdc-ep-latch-overlay');
-                const fillRef = ovr ? ovr.getAttribute('fill') : null;
-                if (fillRef) swatch.setAttribute('fill', fillRef);
-                else         swatch.style.fill = 'var(--canvas-axis)';
-                // Outline so the swatch reads even with a sparse pattern.
-                swatch.setAttribute('stroke', 'var(--canvas-axis)');
-                swatch.setAttribute('stroke-width', '0.5');
+            if (kind === 'line') {
+                // Thick line swatch — used for the MCP-grant indicator
+                // so the legend swatch literally matches the per-lane
+                // visual (a 3px pink horizontal line) instead of a
+                // colored block. End caps are purely visual sugar.
+                const cy = LEG_Y - 3;
+                const lineSwatch = this._svgLine(
+                    svg, lx, cy, lx + 8, cy, color, '3');
+                lineSwatch.setAttribute('stroke-linecap', 'butt');
+                this._svgTitle(lineSwatch, tip);
+                this._svgLine(svg, lx, cy - 2, lx, cy + 2, color, '2');
+                this._svgLine(svg, lx + 8, cy - 2, lx + 8, cy + 2,
+                              color, '2');
             } else {
-                swatch.style.fill = color;
-                swatch.style.fillOpacity = BAR_OPA;
+                const swatch = document.createElementNS(SVG_NS, 'rect');
+                swatch.setAttribute('x', lx); swatch.setAttribute('y', LEG_Y - 7);
+                swatch.setAttribute('width', 8); swatch.setAttribute('height', 8);
+                if (pattern === 'stripes') {
+                    // Reuse the same hatched pattern as the lane overlay so
+                    // the legend swatch matches what the user sees on lanes.
+                    const ovr = svg.querySelector('.sdc-ep-latch-overlay');
+                    const fillRef = ovr ? ovr.getAttribute('fill') : null;
+                    if (fillRef) swatch.setAttribute('fill', fillRef);
+                    else         swatch.style.fill = 'var(--canvas-axis)';
+                    // Outline so the swatch reads even with a sparse pattern.
+                    swatch.setAttribute('stroke', 'var(--canvas-axis)');
+                    swatch.setAttribute('stroke-width', '0.5');
+                } else {
+                    swatch.style.fill = color;
+                    swatch.style.fillOpacity = BAR_OPA;
+                }
+                this._svgTitle(swatch, tip);
+                svg.appendChild(swatch);
             }
-            this._svgTitle(swatch, tip);
-            svg.appendChild(swatch);
             const t = this._svgText(svg, lx + 10, LEG_Y, label,
                                     'var(--canvas-label)', 8, 'start');
             this._svgTitle(t, tip);
@@ -6680,6 +7114,46 @@ export class SdcWidget {
     //   { label, titleText, tsu, th, su, hu, pins, count, linkPin,
     //     busRoot? }   busRoot present iff the lane is a bus group AND
     //                  count > 1 (so the diagram knows it's collapsible).
+    // Draw faded dashed vertical lines at every natural CK edge that
+    // multicycle-path skips. With `-setup N`, ghost edges land at
+    // multiples of T from t=0 up to (N-2)*T — i.e. every "would-be
+    // capture edge" between the launch (t=-T) and the effective edge
+    // at (N-1)*T. Caps at 10 visible ghosts; beyond that we draw 9
+    // ghosts plus a "…" indicator to keep the lane readable.
+    _drawMcpGhostEdges(svg, tx, top, laneH, T, setupCycles) {
+        const N = Math.max(1, setupCycles);
+        if (N <= 1 || !T || T <= 0) return;
+        const ghostCount = N - 1;
+        const MAX_VISIBLE = 10;
+        const drawCount = Math.min(ghostCount, MAX_VISIBLE);
+        for (let k = 0; k < drawCount; k++) {
+            const t = k * T;
+            const x = tx(t);
+            const line = this._svgLine(svg, x, top + 2, x,
+                                       top + laneH - 2,
+                                       'var(--fg-muted)', '0.8');
+            line.setAttribute('stroke-dasharray', '2,2');
+            line.setAttribute('stroke-opacity', '0.45');
+            line.dataset.ref = 'mcp-ghost-edge';
+            this._svgTitle(line,
+                `cycle ${k + 1} of ${N} — natural capture edge that `
+                + `set_multicycle_path lets data pass through `
+                + `unchecked`);
+        }
+        if (ghostCount > MAX_VISIBLE) {
+            // Position the "…" between the last visible ghost and the
+            // effective edge, so the user sees the truncation isn't
+            // hiding edges adjacent to the check.
+            const t = (drawCount - 1) * T + T * 0.5;
+            const x = tx(t);
+            const dot = this._svgText(svg, x, top + laneH / 2 + 3,
+                '…', 'var(--fg-muted)', 9, 'middle');
+            this._svgTitle(dot,
+                `+${ghostCount - drawCount} more skipped cycles `
+                + `(set_multicycle_path -setup ${N} on this pin)`);
+        }
+    }
+
     _buildEndpointLanes(pins, clkInfo, expandedBuses, instancePath) {
         const expanded = expandedBuses instanceof Set ? expandedBuses : new Set();
         const clkName = clkInfo && clkInfo.name;
@@ -6718,6 +7192,12 @@ export class SdcWidget {
                 c.uncertainty_setup || 0,
                 c.uncertainty_hold  || 0,
                 c.time_borrow_limit != null ? c.time_borrow_limit : 'def',
+                // MCP cycles also enter the signature: a flop with two
+                // pins on the same clock but different multicycle paths
+                // would otherwise collapse into one lane and the
+                // visualization couldn't show their distinct windows.
+                p.mcp_setup_cycles != null ? p.mcp_setup_cycles : 'def',
+                p.mcp_hold_cycles  != null ? p.mcp_hold_cycles  : 'def',
             ].join('|');
         };
         const busOf = (name) => {
@@ -6788,12 +7268,27 @@ export class SdcWidget {
                 titleText = first.name;
                 linkPin = first;
             }
+            // MCP cycles per lane. Sparse on the backend (only emitted
+            // when an MCP applies); default to setup=1 / hold=0 here so
+            // every lane has well-defined values even on non-MCP pins.
+            // Counts are 0 when no MCP applies, used by the chip-tag
+            // "+N more" hint when multiple MCPs match the same pin.
+            const mcpSetup = (first.mcp_setup_cycles != null
+                              && first.mcp_setup_cycles > 0)
+                ? first.mcp_setup_cycles : 1;
+            const mcpHold = (first.mcp_hold_cycles != null
+                             && first.mcp_hold_cycles >= 0)
+                ? first.mcp_hold_cycles : 0;
+            const mcpSetupCount = first.mcp_setup_count || 0;
+            const mcpHoldCount  = first.mcp_hold_count  || 0;
             lanes.push({
                 kind: dir,                // 'input' | 'output'
                 label, titleText,
                 tsu, th, su, hu,          // input-lane shape
                 timeBorrowLimit: tbl,     // explicit set_max_time_borrow, ns
                 clkqMin: q.min, clkqMax: q.max, hasClkq: q.has,  // output-lane shape
+                mcpSetup, mcpHold,        // SDC cycle counts (1/0 = none)
+                mcpSetupCount, mcpHoldCount,  // multi-MCP indicator
                 isEndpoint,
                 pins: g.pins, count: g.pins.length, linkPin, busRoot,
             });
@@ -6830,7 +7325,17 @@ export class SdcWidget {
     _collectClockEdges(waveform, T, tRef, tStart, tEnd) {
         const { CLK_HIGH, CLK_LOW } = DIAGRAM_CONST;
         const edges = [];
-        for (let period = -2; period <= 2; period++) {
+        // Sample enough periods to cover the FULL [tStart, tEnd] span.
+        // Earlier this was hard-coded to [-2..+2], which silently broke
+        // the clock waveform on multicycle paths whose axis extends
+        // past 2T (e.g. `set_multicycle_path 4 -setup` lands the
+        // effective capture edge at 3T and the right-side margin out
+        // past that — beyond the old sampling cap, the waveform
+        // appeared to "stop ticking" right where the user most needs
+        // to see it).
+        const minPeriod = Math.floor(tStart / T) - 1;
+        const maxPeriod = Math.ceil(tEnd / T) + 1;
+        for (let period = minPeriod; period <= maxPeriod; period++) {
             for (let i = 0; i < waveform.length; i++) {
                 const et = waveform[i] - tRef + period * T;
                 if (et > tStart - 1e-9 && et < tEnd + 1e-9) {
@@ -7498,7 +8003,13 @@ export class SdcWidget {
                 'font-size:12px;color:var(--fg-primary);' +
                 'transition:color 80ms;';
             span.textContent = c;
-            span.title = c;
+            // Rich tooltip: period, freq, duty, generated/virtual
+            // marker. The whole `<th>` shares the title so the user
+            // gets it whether they hover the rotated text or the
+            // empty cell area below it.
+            const clkTip = this._cdcMatrixClockTooltip(c);
+            span.title = clkTip;
+            th.title = clkTip;
             th.appendChild(span);
             hr.appendChild(th);
             colHeaderEls.push(th);
@@ -7548,6 +8059,9 @@ export class SdcWidget {
                 `background:${HEADER_BG};text-align:right;` +
                 `position:sticky;left:${stickLeft}px;z-index:2;`;
             lbl.textContent = launch;
+            // Same rich tooltip on the row label for symmetry with
+            // the column headers.
+            lbl.title = this._cdcMatrixClockTooltip(launch);
             row.appendChild(lbl);
             rowHeaderEls.push(lbl);
 
@@ -8361,15 +8875,19 @@ export class SdcWidget {
                 = 'font-family:monospace;flex:1 1 auto;min-width:0;'
                 + TRUNCATE_PATH_CSS;
             nameEl.textContent = e.name;
-            // _linkifyPin makes the pin name clickable into the
-            // inspector. The pin reference shape it expects matches
-            // {odb_type, odb_id, name} — emit endpoints carry exactly
-            // those fields plus 'kind' / 'clocks' / 'sync_status'.
+            // _linkifyPin direct-ref form: pass {odb_type, odb_id}
+            // and NO prefix. Earlier this passed prefix='name', which
+            // made the helper look for `name_odb_type` /
+            // `name_odb_id` on the host — those keys don't exist on
+            // the entry, so the call silently no-op'd and the row
+            // was unclickable. Direct form picks up pin_odb_type /
+            // pin_odb_id (D pin for data-path rows, instance for
+            // clock-path rows) and dispatches via _inspectByOdb,
+            // which handles iterm / inst / modinst alike.
             this._linkifyPin(nameEl, {
                 odb_type: e.pin_odb_type,
                 odb_id: e.pin_odb_id,
-                name: e.name,
-            }, 'name');
+            });
             nameWrap.appendChild(nameEl);
             row.appendChild(nameWrap);
 
@@ -11572,6 +12090,54 @@ export class SdcWidget {
             const rowStyle =
                 'display:flex;align-items:center;gap:6px;padding:3px 8px;' +
                 'cursor:pointer;user-select:none;font-family:monospace;';
+
+            // Select All / None — quick toggles for designs with many
+            // clocks. "All" sets the null sentinel (== unfiltered);
+            // "None" sets an empty Set (deliberate "show nothing"
+            // state, distinct from null). Both trigger onChange and
+            // re-sync the per-row checkboxes so the user sees the
+            // change reflected immediately.
+            const bulkRow = document.createElement('div');
+            bulkRow.style.cssText
+                = 'display:flex;gap:6px;padding:3px 8px;'
+                + 'border-bottom:1px solid var(--border);'
+                + 'margin-bottom:2px;';
+            const mkBulkBtn = (label, fn) => {
+                const a = document.createElement('a');
+                a.textContent = label;
+                a.style.cssText
+                    = 'cursor:pointer;color:var(--accent-tab);'
+                    + 'text-decoration:underline;font-size:11px;';
+                a.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    fn();
+                    // Re-sync every checkbox in the panel to the new
+                    // state without a full populate() — populate would
+                    // also reset focus/scroll position inside the
+                    // dropdown.
+                    const cbs = panel.querySelectorAll(
+                        'input[type=checkbox]');
+                    cbs.forEach((cb) => {
+                        const row = cb.closest('[data-clock-filter-option]');
+                        const key = row && row.dataset.clockFilterOption;
+                        cb.checked = selected === null
+                            ? true
+                            : (key && selected.has(key));
+                    });
+                    refreshLabel();
+                    onChange && onChange(selected);
+                });
+                return a;
+            };
+            bulkRow.appendChild(mkBulkBtn('Select all', () => {
+                selected = null;
+            }));
+            bulkRow.appendChild(mkBulkBtn('Select none', () => {
+                selected = new Set();
+            }));
+            panel.appendChild(bulkRow);
+
             const buildRow = (key, displayName, count) => {
                 const isChecked = selected === null ? true : selected.has(key);
                 const row = document.createElement('label');
@@ -11650,6 +12216,50 @@ export class SdcWidget {
     }
 
     // Convert a clock period (in the current display time unit) to a frequency string.
+    // Multi-line tooltip for a clock axis label on the CDC matrix.
+    // Surfaces the same numeric facts the user would otherwise have
+    // to dig out of the Clocks tab: period, derived frequency, duty
+    // cycle, generated/virtual marker. Falls back to the plain name
+    // when `_clockMap` doesn't have the clock (e.g. a stale matrix
+    // showing clocks that aren't in the active mode).
+    _cdcMatrixClockTooltip(clockName) {
+        if (!clockName) return '';
+        const clk = this._clockMap && this._clockMap[clockName];
+        if (!clk) return clockName;
+        const lines = [clockName];
+        const T = clk.period;
+        if (Number.isFinite(T) && T > 0) {
+            lines.push(`period:  ${T.toPrecision(4)} ${this._timeUnit}`);
+            lines.push(`freq:    ${this._periodToFreq(T)}`);
+            if (Array.isArray(clk.waveform) && clk.waveform.length >= 2) {
+                const high = clk.waveform[1] - clk.waveform[0];
+                const duty = (high / T) * 100;
+                lines.push(`duty:    ${duty.toPrecision(3)}%`);
+                lines.push(`waveform: rise=${clk.waveform[0]}, `
+                    + `fall=${clk.waveform[1]} ${this._timeUnit}`);
+            }
+        } else {
+            lines.push('period:  — (unresolved)');
+        }
+        if (clk.is_virtual) {
+            lines.push('virtual clock (no source pin / port)');
+        } else if (clk.is_generated) {
+            const tag = clk.combinational
+                ? 'generated (combinational)'
+                : 'generated';
+            lines.push(tag);
+        }
+        if (clk.uncertainty_setup != null) {
+            lines.push(`setup unc: ${clk.uncertainty_setup
+                .toPrecision(3)} ${this._timeUnit}`);
+        }
+        if (clk.uncertainty_hold != null) {
+            lines.push(`hold  unc: ${clk.uncertainty_hold
+                .toPrecision(3)} ${this._timeUnit}`);
+        }
+        return lines.join('\n');
+    }
+
     _periodToFreq(period) {
         // Generated clocks whose period hasn't been resolved come through
         // with period == 0; return a clear marker instead of "Infinity GHz".

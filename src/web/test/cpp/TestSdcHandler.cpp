@@ -1253,6 +1253,48 @@ TEST_F(SdcHandlerWithStaTest, EndpointResolvesPinAndReportsClockDomain)
   EXPECT_TRUE(found_clk) << "out1 should be in clk's domain";
 }
 
+// out2 carries `set_multicycle_path 2 -from in2 -to out2` from the
+// fixture (with min_max="all" — applies to both setup and hold
+// checks). Per-pin payload should resolve `mcp_setup_cycles` for the
+// frontend's shifted capture edge AND `mcp_hold_cycles` for the
+// extended hold band (handled in lockstep when the MCP's min_max is
+// "all").
+TEST_F(SdcHandlerWithStaTest, EndpointResolvedMcpSetupCyclesEmitted)
+{
+  WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpoint);
+  req.json = makeJson({{"pin", "out2"}});
+  auto val = parsePayload(handler_->handleSdcEndpoint(req));
+  ASSERT_TRUE(val.as_object().at("found").as_bool());
+  const auto& pins = val.as_object().at("pins").as_array();
+  ASSERT_FALSE(pins.empty());
+  const auto& pin = pins.at(0).as_object();
+  ASSERT_TRUE(pin.contains("mcp_setup_cycles"))
+      << "fixture has set_multicycle_path 2 -to out2; resolved field "
+         "must be present";
+  EXPECT_EQ(pin.at("mcp_setup_cycles").as_int64(), 2);
+  ASSERT_TRUE(pin.contains("mcp_setup_count"));
+  EXPECT_GE(pin.at("mcp_setup_count").as_int64(), 1);
+  // Fixture's MCP uses min_max="all" so both setup and hold cycles
+  // get the same multiplier per the resolver's "all matches both
+  // buckets" rule. A real `-setup`-only MCP would leave hold absent.
+  ASSERT_TRUE(pin.contains("mcp_hold_cycles"));
+  EXPECT_EQ(pin.at("mcp_hold_cycles").as_int64(), 2);
+}
+
+// out1 has no MCP on it (only the unrelated set_max_delay path-delay
+// constraint). Both resolved-MCP fields stay absent so the frontend's
+// "default = no MCP" behavior kicks in.
+TEST_F(SdcHandlerWithStaTest, EndpointResolvedMcpAbsentOnNonMcpPin)
+{
+  WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpoint);
+  req.json = makeJson({{"pin", "out1"}});
+  auto val = parsePayload(handler_->handleSdcEndpoint(req));
+  ASSERT_TRUE(val.as_object().at("found").as_bool());
+  const auto& pin = val.as_object().at("pins").as_array().at(0).as_object();
+  EXPECT_FALSE(pin.contains("mcp_setup_cycles"));
+  EXPECT_FALSE(pin.contains("mcp_hold_cycles"));
+}
+
 TEST_F(SdcHandlerWithStaTest, EndpointReturnsFalseForMissingPin)
 {
   WebSocketRequest req = makeReq(1, WebSocketRequest::kSdcEndpoint);
