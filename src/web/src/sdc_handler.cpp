@@ -849,6 +849,34 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
     root["directions_total"] = std::move(o);
   }
 
+  // Lightweight per-port metadata for the WHOLE port list (every
+  // entry, not just the requested page). Frontend uses this for
+  // filter-chip counts so "input (N)" / "output (N)" / per-clock
+  // counts honour the active pattern + clock filter against the
+  // full design, not just what's been paginated in. Without this,
+  // chip counts grow as the user scrolls and read wrong under a
+  // pattern filter that excludes most of the loaded subset.
+  {
+    boost::json::array port_meta;
+    for (const RawDelay& rd : raw) {
+      boost::json::object pm;
+      pm["port"] = rd.port_name;
+      pm["direction"]
+          = std::string(portDir.count(rd.port_name)
+                            ? portDir.at(rd.port_name)
+                            : (rd.is_input ? "input" : "output"));
+      sta::Clock* clk = rd.pd ? rd.pd->clock() : nullptr;
+      if (clk) {
+        pm["clock"] = std::string(clk->name());
+      } else {
+        pm["clock"] = nullptr;
+      }
+      pm["is_input"] = rd.is_input;
+      port_meta.push_back(std::move(pm));
+    }
+    root["port_meta"] = std::move(port_meta);
+  }
+
   boost::json::array port_delays;
 
   auto emitDelay = [&](const RawDelay& rd) {

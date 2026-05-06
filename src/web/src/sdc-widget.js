@@ -845,6 +845,14 @@ export class SdcWidget {
         // Cache full-list direction totals so paginated follow-on
         // batches don't have to re-derive (and re-grow) the counts.
         this._pdDirectionsTotal = data.directions_total || null;
+        // Lightweight metadata for every port in the design (not just
+        // the paginated subset) — used by `_updatePdFilterCounts`
+        // and `_pdComputeClockCounts` so chip counts apply the
+        // active pattern + clock filter against the FULL list, not
+        // just what's been streamed in. Without this, chips read
+        // "(2)" early in scrolling and grow as more pages arrive.
+        this._pdPortMeta = Array.isArray(data.port_meta)
+            ? data.port_meta : null;
         this._updatePdFilterCounts();
         if (this._pdClockFilter) {
             this._pdClockFilter.populate(data.clocks_total || {});
@@ -860,14 +868,16 @@ export class SdcWidget {
     // backend response didn't carry `directions_total` (older server).
     _updatePdFilterCounts() {
         if (!this._pdFilterBtns) return;
-        // Counts always come from a client-side scan of `_pdAllEntries`
-        // so they can apply the user's current pattern and clock
-        // filters. The backend-supplied `_pdDirectionsTotal` only
-        // matches when no client-side filters are active — using it
-        // unconditionally produced stale chip counts that didn't
-        // update on search (chips would show design-wide totals while
-        // the cards below reflected the pattern match).
-        const entries = this._pdAllEntries || [];
+        // Prefer the design-wide metadata (`_pdPortMeta`) when the
+        // backend supplied it — that array carries every port,
+        // including ones not yet paginated in. Falls back to the
+        // loaded subset (`_pdAllEntries`) only when metadata is
+        // absent (older server). The earlier "always scan
+        // _pdAllEntries" rule undercounted ports that hadn't
+        // streamed in yet — chips showed (2) → (5) → (12) as the
+        // user scrolled, instead of the right total from the start.
+        const entries = this._pdPortMeta
+            || this._pdAllEntries || [];
         const pattern = (this._pdSearchInput
                          && this._pdSearchInput.value) || '';
         const nameOk = this._compileGlob(pattern);
@@ -1009,11 +1019,15 @@ export class SdcWidget {
             const more = data.port_delays || [];
             this._pdAllEntries = this._pdAllEntries.concat(more);
             if (typeof data.total === 'number') this._pdTotal = data.total;
-            // Refresh the cached direction totals from the server in
-            // case anything changed mid-pagination (rare but cheap to
-            // pick up — keeps the filter buttons honest).
+            // Refresh the cached direction totals + port metadata
+            // from the server in case anything changed mid-pagination
+            // (rare but cheap to pick up — keeps the filter buttons
+            // honest).
             if (data.directions_total) {
                 this._pdDirectionsTotal = data.directions_total;
+            }
+            if (Array.isArray(data.port_meta)) {
+                this._pdPortMeta = data.port_meta;
             }
             this._updatePdFilterCounts();
             // Append-only — keep all existing DOM in place and add cards
@@ -1062,13 +1076,16 @@ export class SdcWidget {
         f.textContent = text;
     }
 
-    // Compute a per-clock port-count map from `_pdAllEntries` under
-    // the current pattern + direction filters (but NOT the clock
-    // filter — each row's count answers "switching to this clock
-    // would show me N ports given my other filters"). Same convention
-    // the backend's clocks_total uses for the Endpoints tab.
+    // Compute a per-clock port-count map under the current pattern
+    // + direction filters (but NOT the clock filter — each row's
+    // count answers "switching to this clock would show me N ports
+    // given my other filters"). Same convention the backend's
+    // clocks_total uses for the Endpoints tab. Sources from the
+    // design-wide `_pdPortMeta` so counts reflect ALL ports, not
+    // just ones the user has scrolled into.
     _pdComputeClockCounts() {
-        const entries = this._pdAllEntries || [];
+        const entries = this._pdPortMeta
+            || this._pdAllEntries || [];
         const pattern = (this._pdSearchInput
                          && this._pdSearchInput.value) || '';
         const nameOk = this._compileGlob(pattern);
@@ -3574,15 +3591,15 @@ export class SdcWidget {
         // Sticky-headers scrollport: this wrapper IS the scroll
         // container for both axes (overflow:auto on both). Column
         // headers pin to its top edge, row labels to its left edge,
-        // corner to both. Padding is 8px — the same 8px we account
-        // for in the CDC matrix — and stickTop/stickLeft compensate
-        // for it so cells don't leak through the padding zone when
-        // scrolling. max-height keeps a multi-clock matrix from
-        // taking over the panel while still letting small ones lay
-        // out at their natural size.
-        const PAD = 8;
-        const stickTop = -(PAD + 1);
-        const stickLeft = -(PAD + 1);
+        // corner to both. Wrapper has NO padding — the recurring
+        // 8 px-margin trap is that padding on a scroll container
+        // creates a band ABOVE the sticky headers where body cells
+        // briefly peek through during scroll-tick before sticky
+        // pins. Edge-to-edge wrapper + sticky top:0/left:0 sidesteps
+        // it entirely. Visual breathing room now lives on the
+        // section (outside the scrollport), not inside it.
+        const stickTop = 0;
+        const stickLeft = 0;
         const HOVER_BG = 'var(--bg-hover)';
         const HEADER_BG = 'var(--bg-header)';
         const HOVER_FG = 'var(--accent-tab)';
@@ -3591,7 +3608,7 @@ export class SdcWidget {
 
         const wrapper = document.createElement('div');
         wrapper.style.cssText =
-            `overflow:auto;padding:${PAD}px;max-height:70vh;`;
+            'overflow:auto;max-height:70vh;';
 
         const table = document.createElement('table');
         table.style.cssText =
@@ -3626,6 +3643,13 @@ export class SdcWidget {
 
         const thead = document.createElement('thead');
         const headerRow = document.createElement('tr');
+        // Solid HEADER_BG behind the entire header row so the
+        // 8 px wrapper padding above (and any sub-pixel gap between
+        // adjacent <th> backgrounds) reads as continuous gray
+        // instead of letting body cells peek through during scroll.
+        // The corner + each <th> still set their own backgrounds for
+        // hover-highlight transitions; this is the under-layer.
+        headerRow.style.background = HEADER_BG;
         const corner = document.createElement('th');
         corner.style.cssText =
             `padding:3px 6px;border:1px solid var(--border);` +
