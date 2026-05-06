@@ -3571,63 +3571,125 @@ export class SdcWidget {
             'Hover a cell to see which set_clock_groups constraint produced it.';
         section.appendChild(sub);
 
+        // Sticky-headers scrollport: this wrapper IS the scroll
+        // container for both axes (overflow:auto on both). Column
+        // headers pin to its top edge, row labels to its left edge,
+        // corner to both. Padding is 8px — the same 8px we account
+        // for in the CDC matrix — and stickTop/stickLeft compensate
+        // for it so cells don't leak through the padding zone when
+        // scrolling. max-height keeps a multi-clock matrix from
+        // taking over the panel while still letting small ones lay
+        // out at their natural size.
+        const PAD = 8;
+        const stickTop = -(PAD + 1);
+        const stickLeft = -(PAD + 1);
+        const HOVER_BG = 'var(--bg-hover)';
+        const HEADER_BG = 'var(--bg-header)';
+        const HOVER_FG = 'var(--accent-tab)';
+        const COL_Z_BASE = 10;
+        const cornerZ = COL_Z_BASE + clocks.length + 1;
+
         const wrapper = document.createElement('div');
-        wrapper.style.cssText = 'overflow-x:auto;padding:8px;';
+        wrapper.style.cssText =
+            `overflow:auto;padding:${PAD}px;max-height:70vh;`;
 
         const table = document.createElement('table');
-        table.style.cssText = 'border-collapse:collapse;font-size:11px;font-family:monospace;';
+        table.style.cssText =
+            'border-collapse:separate;border-spacing:0;' +
+            'font-size:11px;font-family:monospace;' +
+            'min-width:max-content;';
 
         // Column headers: rotated -45° so the full clock name is visible
         // without gobbling horizontal space. Standard pattern:
         //   - Each header cell has a fixed width that matches its data
         //     column below, so labels line up with their columns.
         //   - The rotated text is anchored at the column's center-bottom
-        //     via `right: 50%` + `transform-origin: right bottom`, so it
-        //     grows UP-LEFT into the empty space above earlier columns
-        //     (rather than overlapping later columns to the right).
-        // Data cells get the same CELL_W below so labels stay aligned.
+        //     via `left: 50%` + `transform-origin: left bottom`, so it
+        //     grows up-and-to-the-right from the column center.
+        //   - Earlier columns' z-index sits above later columns so
+        //     long rotated labels paint OVER the next header's
+        //     opaque fill (same stagger trick as the CDC matrix).
         const CELL_W = 40;
         const longestName = clocks.reduce((m, c) => Math.max(m, c.length), 0);
-        // A -45° tilted label of N chars (at 10px monospace ≈ 6px/char)
-        // occupies roughly N * 6 * sin(45°) ≈ N * 4.2 pixels vertically.
-        // Pad by a small constant; clamp so a very long name doesn't
-        // consume the whole panel.
-        const headerPx = Math.min(220, Math.max(60, longestName * 5 + 20));
+        // 11px monospace ≈ 6.6px / char; rotated -45° projects to
+        // char_count * 4.7 px vertically. Pad with a little slack;
+        // clamp so a very long name doesn't consume the whole panel.
+        const headerPx = Math.min(220, Math.max(28, longestName * 5 + 8));
+
+        // Element references for the hover axis-highlight (same
+        // affordance the CDC matrix has — hovering a cell tints the
+        // matching row and column header so the user can read off
+        // the pair on a wide matrix without losing their place).
+        const colHeaderEls = [];
+        const colHeaderSpans = [];
+        const rowHeaderEls = [];
 
         const thead = document.createElement('thead');
         const headerRow = document.createElement('tr');
-        const emptyTh = document.createElement('th');
-        emptyTh.style.cssText =
-            `padding:3px 6px;height:${headerPx}px;vertical-align:bottom;`;
-        headerRow.appendChild(emptyTh);
-        for (const clk of clocks) {
+        const corner = document.createElement('th');
+        corner.style.cssText =
+            `padding:3px 6px;border:1px solid var(--border);` +
+            `background:${HEADER_BG};text-align:right;` +
+            `height:${headerPx}px;vertical-align:bottom;` +
+            `position:sticky;top:${stickTop}px;left:${stickLeft}px;` +
+            `z-index:${cornerZ};` +
+            'font-size:11px;color:var(--fg-muted);font-style:italic;';
+        corner.innerHTML = 'row ↓<br>col →';
+        headerRow.appendChild(corner);
+        for (let cIdx = 0; cIdx < clocks.length; ++cIdx) {
+            const clk = clocks[cIdx];
             const th = document.createElement('th');
+            // Stagger z-index: earlier columns higher than later
+            // ones, so each header's rotated label paints ABOVE the
+            // following column's opaque background.
+            const zCol = COL_Z_BASE + (clocks.length - cIdx);
             th.style.cssText =
                 `width:${CELL_W}px;min-width:${CELL_W}px;max-width:${CELL_W}px;` +
-                `height:${headerPx}px;padding:0;position:relative;` +
-                'border-bottom:1px solid var(--border);vertical-align:bottom;';
-            // Two-step position so the rotation anchor is unambiguously the
-            // column's center-bottom: first put the span's bottom-left edge
-            // at the column center via left:50% + bottom:0 (no translate on
-            // its own coords), then rotate about that left-bottom corner.
-            // The label's baseline "grows" up and to the right from the
-            // center of the column — each character sits directly above the
-            // next column's left boundary, which visually reads as the label
-            // pointing down at the correct column.
+                `height:${headerPx}px;padding:0;` +
+                'border-bottom:1px solid var(--border);' +
+                `background:${HEADER_BG};` +
+                `vertical-align:bottom;position:sticky;top:${stickTop}px;` +
+                `z-index:${zCol};`;
             const span = document.createElement('span');
             span.style.cssText =
-                'position:absolute;left:50%;bottom:2px;' +
+                'position:absolute;left:50%;bottom:2px;z-index:1;' +
                 'transform-origin:left bottom;' +
                 'transform:rotate(-45deg);' +
                 'white-space:nowrap;' +
-                'font-family:monospace;font-size:11px;color:var(--fg-primary);';
+                'font-family:monospace;font-size:11px;color:var(--fg-primary);' +
+                'transition:color 80ms;';
             span.textContent = clk;
             span.title = clk;
+            th.title = clk;
             th.appendChild(span);
             headerRow.appendChild(th);
+            colHeaderEls.push(th);
+            colHeaderSpans.push(span);
         }
         thead.appendChild(headerRow);
         table.appendChild(thead);
+
+        // Hover axis-highlight: tint the matching launch-row + capture-
+        // column headers when the cursor is over a body cell. Same
+        // affordance the CDC matrix uses; lookup is O(1) via the
+        // pre-collected element arrays so big matrices stay fluid.
+        const setAxisHover = (rowIdx, colIdx, on) => {
+            const rowEl = rowHeaderEls[rowIdx];
+            const colEl = colHeaderEls[colIdx];
+            const colSpan = colHeaderSpans[colIdx];
+            if (rowEl) {
+                rowEl.style.background = on ? HOVER_BG : HEADER_BG;
+                rowEl.style.fontWeight = on ? '700' : '';
+                rowEl.style.color = on ? HOVER_FG : 'var(--fg-primary)';
+            }
+            if (colEl) {
+                colEl.style.background = on ? HOVER_BG : HEADER_BG;
+            }
+            if (colSpan) {
+                colSpan.style.color = on ? HOVER_FG : 'var(--fg-primary)';
+                colSpan.style.fontWeight = on ? '700' : '';
+            }
+        };
 
         // Color palette: the four kinds of cells need to be visually distinct.
         // Values live in style.css so they can follow the active light/dark
@@ -3659,22 +3721,27 @@ export class SdcWidget {
         };
 
         const tbody = document.createElement('tbody');
-        clocks.forEach((rowClk) => {
+        clocks.forEach((rowClk, rIdx) => {
             const tr = document.createElement('tr');
 
-            const td0 = document.createElement('td');
-            td0.style.cssText =
-                'padding:3px 10px 3px 4px;color:var(--fg-primary);white-space:nowrap;' +
-                'border-right:1px solid var(--border);font-weight:600;' +
-                'text-align:right;font-family:monospace;';
-            // Row labels show the full clock name — the table lives inside a
-            // horizontally-scrollable wrapper, so long names can push the
-            // data columns right without truncation.
-            td0.textContent = rowClk;
-            td0.title = rowClk;
-            tr.appendChild(td0);
+            const lbl = document.createElement('th');
+            // Row label pinned to the left edge of the wrapper.
+            // Negative offset compensates for the wrapper's 8px
+            // padding so cells don't leak through the padding zone
+            // when scrolling horizontally. Same trick as the CDC
+            // matrix.
+            lbl.style.cssText =
+                'padding:3px 10px 3px 4px;border:1px solid var(--border);' +
+                `background:${HEADER_BG};text-align:right;` +
+                'color:var(--fg-primary);white-space:nowrap;' +
+                'font-weight:600;font-family:monospace;' +
+                `position:sticky;left:${stickLeft}px;z-index:2;`;
+            lbl.textContent = rowClk;
+            lbl.title = rowClk;
+            tr.appendChild(lbl);
+            rowHeaderEls.push(lbl);
 
-            clocks.forEach((colClk) => {
+            clocks.forEach((colClk, cIdx) => {
                 const td = document.createElement('td');
                 // Fixed column width matches the CELL_W used for the rotated
                 // header cells so the labels line up with their data columns.
@@ -3682,6 +3749,15 @@ export class SdcWidget {
                     `width:${CELL_W}px;min-width:${CELL_W}px;max-width:${CELL_W}px;` +
                     'padding:3px 0;text-align:center;white-space:nowrap;' +
                     'border-bottom:1px solid var(--border-subtle);';
+
+                // Every cell — diagonal, "·", and constrained — joins
+                // the axis-highlight handler so the user can use any
+                // cell as orientation cue, not just the constrained
+                // ones.
+                td.addEventListener('mouseenter',
+                    () => setAxisHover(rIdx, cIdx, true));
+                td.addEventListener('mouseleave',
+                    () => setAxisHover(rIdx, cIdx, false));
 
                 if (rowClk === colClk) {
                     td.style.background = 'var(--bg-header)';
