@@ -657,6 +657,10 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
   const std::string& time_suffix = ctx->time_suffix;
   const float cap_scale = ctx->cap_scale;
   const std::string& cap_suffix = ctx->cap_suffix;
+  // STA scenario for clockDomains() lookups — used to expose the
+  // clocks STA actually propagated to each port pin so the frontend
+  // can flag mismatches against the constraint clock.
+  sta::Mode* mode = ctx->sta ? ctx->sta->cmdMode() : nullptr;
 
   // Build ODB port-order index and direction map so we can emit in floorplan
   // order and report the correct port direction.
@@ -881,6 +885,25 @@ WebSocketResponse SdcHandler::handleSdcPortDelays(const WebSocketRequest& req)
     o["exception_count"]
         = port_exc_count.count(rd.port_name) ? port_exc_count.at(rd.port_name)
                                              : 0;
+
+    // Clocks STA propagated to this port pin (whatever the timing
+    // graph actually carries here, regardless of the SDC constraint
+    // clock). The frontend compares this to `clock` below and flags
+    // a mismatch when they diverge — often intentional cross-clock
+    // IO, but the user should see it. Empty when timing graph is
+    // unavailable or the port has no propagated clock.
+    {
+      boost::json::array actual_clocks;
+      if (mode && pin) {
+        sta::ClockSet domains = ctx->sta->clockDomains(pin, mode);
+        for (const sta::Clock* c : domains) {
+          if (c) {
+            actual_clocks.push_back(boost::json::value(c->name()));
+          }
+        }
+      }
+      o["actual_clocks"] = std::move(actual_clocks);
+    }
 
     if (is_exception_only) {
       o["source_latency_included"] = nullptr;

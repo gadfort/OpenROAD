@@ -1737,9 +1737,13 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
   // Resolve the launch clock up front — needed both for the capture
   // stage's `launch_clock` field, to tint launch-side comb / launch-
   // register stages, and to drive the multi-input back-walk through
-  // gates with mixed-domain inputs.
-  const sta::Pin* capture_d_pin
-      = findRegisterDataInput(capture_inst, ctx->network);
+  // gates with mixed-domain inputs. Honour the clicked pin —
+  // a capture flop's endpoint set can include async preset/clear
+  // (recovery/removal arcs) in addition to the data pin, and the
+  // user might have clicked any of them. Using the actual clicked
+  // pin here means the back-walk traces the network feeding THAT
+  // pin (data vs reset), not always D.
+  const sta::Pin* capture_d_pin = capture_pin;
   std::string launch_clock_str;
   const sta::Clock* launch_clk = nullptr;
   if (!requested_launch.empty()) {
@@ -2077,6 +2081,18 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
     stage["is_launch"] = false;
     stage["is_capture"] = (i == 0);
     stage["is_sync_stage"] = (i > 0);
+    // Leaf name of the clicked pin on the capture stage so the
+    // frontend can label the data row by the actual pin role
+    // (e.g. "RN", "CLR") instead of the hardcoded "D" — matters
+    // when the endpoint is an async preset/clear pin.
+    if (i == 0 && d_pin) {
+      const std::string full = ctx->network->pathName(d_pin);
+      const auto slash = full.find_last_of('/');
+      stage["endpoint_pin_kind"]
+          = (slash == std::string::npos) ? full : full.substr(slash + 1);
+    } else {
+      stage["endpoint_pin_kind"] = nullptr;
+    }
     emitOutNet(stage, q_pin);
     // Forward-chain pass-throughs collected by walkToNextSyncFlop
     // when walking from this stage to the next. Same `+ N hidden`

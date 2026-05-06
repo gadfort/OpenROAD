@@ -1333,6 +1333,37 @@ export class SdcWidget {
             header.appendChild(tag);
         }
 
+        // Clock-mismatch tag — STA propagated a different clock to
+        // this port pin than the constraint references. Often
+        // intentional cross-clock IO (a port constrained against the
+        // upstream system clock but read by a derived domain), but
+        // silent until now. Computed across all entries so a single
+        // mismatching constraint flags the port.
+        const mismatchEntry = portEntries.find(e => {
+            if (!e || e.exception_only || !e.clock) return false;
+            const actual = Array.isArray(e.actual_clocks)
+                ? e.actual_clocks : [];
+            if (actual.length === 0) return false;
+            return !actual.includes(e.clock);
+        });
+        if (mismatchEntry) {
+            const actual = Array.isArray(mismatchEntry.actual_clocks)
+                ? mismatchEntry.actual_clocks : [];
+            const tag = document.createElement('span');
+            tag.style.cssText =
+                'font-size:11px;padding:1px 6px;border-radius:8px;' +
+                'background:rgba(255, 167, 38, 0.25);' +
+                'color:var(--fg-primary);font-weight:600;';
+            tag.textContent = 'clock-mismatch';
+            tag.title =
+                `Constraint references "${mismatchEntry.clock}", but ` +
+                `STA propagated ${actual.join(', ')} to this pin. ` +
+                'Often intentional for cross-clock IO; verify the ' +
+                'set_input_delay / set_output_delay clock is the ' +
+                'right one for this port.';
+            header.appendChild(tag);
+        }
+
         // Driving cell, load/wire cap, and fanout (from first entry with data).
         // load_cap   : set_load              — pin capacitance
         // wire_cap   : set_load -wire        — net capacitance
@@ -10639,6 +10670,57 @@ export class SdcWidget {
         strip.appendChild(wrapper);
     }
 
+    // Splice the next batch of upstream stages into the trace in
+    // place of the depth-limit card. Replacing the card (rather
+    // than spawning a new fan-in strip via _toggleCdcClockMix)
+    // keeps the visual flow as one continuous walk: the user
+    // clicks "↑ continue trace" and the cap is replaced by what
+    // would have been there had the depth limit been higher.
+    async _continueCdcClockMixDepthLimit(card, viaPinRef, clocks, link) {
+        if (!viaPinRef || !card || !card.parentElement) return;
+        const clockList = Array.isArray(clocks)
+            ? clocks.filter(c => c).slice() : [];
+        if (link) link.style.outline = '1px dashed var(--accent-tab)';
+        if (!this._cdcClockMixCache) this._cdcClockMixCache = new Map();
+        const sorted = clockList.slice().sort();
+        const key = `mix|${viaPinRef.odb_type}|${viaPinRef.odb_id}|`
+            + sorted.join(',');
+        let tree;
+        if (this._cdcClockMixCache.has(key)) {
+            tree = this._cdcClockMixCache.get(key);
+        } else {
+            try {
+                const data = await this._requestWithTimeout({
+                    type: 'cdc_clock_mix_trace',
+                    pin_odb_type: viaPinRef.odb_type,
+                    pin_odb_id:   viaPinRef.odb_id,
+                    clocks: clockList,
+                    mode: this._cdcActiveModeName(this._cdcOverview),
+                });
+                tree = (data && data.tree) || null;
+                this._cdcClockMixCache.set(key, tree);
+            } catch (e) {
+                console.warn('[CDC] continue-trace fetch failed', e);
+                if (link) link.style.outline = '';
+                return;
+            }
+        }
+        if (!tree) {
+            // Nothing further to walk — note it on the link rather
+            // than blanking the depth-limit card (the user clicked,
+            // we owe them an answer).
+            if (link) {
+                link.textContent = '↑ no further upstream';
+                link.style.cursor = 'default';
+                link.style.pointerEvents = 'none';
+                link.style.outline = '';
+            }
+            return;
+        }
+        const replacement = this._renderCdcClockMixNode(tree);
+        card.parentElement.replaceChild(replacement, card);
+    }
+
     // Recursive entry. Renders the subtree(s) above this node, then
     // the node's own card. Returns a column-flex DOM element with
     // upstream content on top and the node's card at the bottom.
@@ -10958,19 +11040,17 @@ export class SdcWidget {
                     + 'where the depth cap was hit.';
                 const stageClocks = (node.clocks || []).slice();
                 link.addEventListener('click', () => {
-                    this._toggleCdcClockMix(
+                    // Splice the next batch into the SAME trace
+                    // wrapper, replacing this depth-limit card with
+                    // the new subtree. Continues inline instead of
+                    // spawning a separate expand so the user reads
+                    // one continuous walk.
+                    this._continueCdcClockMixDepthLimit(
+                        card,
                         { odb_type: node.via_pin_odb_type,
                           odb_id: node.via_pin_odb_id },
                         stageClocks,
-                        link,
-                        'data',
-                        node.via_pin);
-                    // Once the upstream trace has been launched,
-                    // this depth-limit terminal is just visual
-                    // noise — the new wrapper carries everything
-                    // the user needs. Hide the card so the column
-                    // ends at its real upstream chain.
-                    card.style.display = 'none';
+                        link);
                 });
                 cont.appendChild(link);
                 body.appendChild(cont);
@@ -10984,13 +11064,58 @@ export class SdcWidget {
         }
         card.appendChild(body);
 
-        // Unaccounted-clocks warning band. When a terminal's
-        // actual_clocks doesn't cover the cur_clocks the walker was
-        // tracing, the missing clocks reach cur_pin via some path
-        // the walker didn't follow. Surface them prominently so the
-        // user knows the trace on this branch is incomplete.
-        if (node.unaccounted_clocks
-            && node.unaccounted_clocks.length) {
+        // Unaccounted-clocks band. Partition into "generated here"
+        // (clocks whose create_generated_clock attaches at this very
+        // pin — accounted for, just terminating the trace) and
+        // truly unaccounted (the trace on this branch missed them).
+        // Without the partition, generated-clock origins look like
+        // diagnostics rather than the natural endpoint of the walk.
+        let unaccountedRemaining = Array.isArray(node.unaccounted_clocks)
+            ? node.unaccounted_clocks.slice() : [];
+        const generatedHere = [];
+        if (unaccountedRemaining.length
+            && Array.isArray(this._clocks)) {
+            const boundary = new Set();
+            if (node.out_pin) boundary.add(node.out_pin);
+            if (node.via_pin) boundary.add(node.via_pin);
+            if (boundary.size) {
+                const remaining = [];
+                for (const cn of unaccountedRemaining) {
+                    const clk = this._clocks.find(
+                        c => c && c.name === cn);
+                    const sources = clk
+                        && Array.isArray(clk.sources)
+                        ? clk.sources : [];
+                    if (clk && clk.is_generated
+                        && sources.some(s => boundary.has(s))) {
+                        generatedHere.push(cn);
+                    } else {
+                        remaining.push(cn);
+                    }
+                }
+                unaccountedRemaining = remaining;
+            }
+        }
+        if (generatedHere.length) {
+            const info = document.createElement('div');
+            info.style.cssText
+                = 'padding:3px 8px;font-size:11px;'
+                + 'background:rgba(76, 175, 80, 0.18);'
+                + 'color:var(--fg-primary);'
+                + 'border-top:1px solid var(--border);';
+            info.textContent
+                = `⚙ ${generatedHere.length} clock`
+                + (generatedHere.length === 1 ? '' : 's')
+                + ' generated here: '
+                + generatedHere.join(', ');
+            info.title
+                = 'These clocks originate at this pin — '
+                + 'create_generated_clock attaches here. The trace '
+                + 'stops because this is where the clock is born, '
+                + 'not because the walk missed something.';
+            card.appendChild(info);
+        }
+        if (unaccountedRemaining.length) {
             const warn = document.createElement('div');
             warn.style.cssText
                 = 'padding:3px 8px;font-size:11px;'
@@ -10998,10 +11123,10 @@ export class SdcWidget {
                 + 'color:var(--fg-primary);'
                 + 'border-top:1px solid var(--border);';
             warn.textContent
-                = `⚠ ${node.unaccounted_clocks.length} clock`
-                + (node.unaccounted_clocks.length === 1 ? '' : 's')
+                = `⚠ ${unaccountedRemaining.length} clock`
+                + (unaccountedRemaining.length === 1 ? '' : 's')
                 + ' unaccounted for here: '
-                + node.unaccounted_clocks.join(', ');
+                + unaccountedRemaining.join(', ');
             warn.title
                 = 'These clocks reach the originating pin via some '
                 + 'route this branch didn\'t take. Look at sibling '
@@ -11695,7 +11820,14 @@ export class SdcWidget {
             // without `ck_pin_clocks`.
             const ckClocks = Array.isArray(s.ck_pin_clocks)
                 ? s.ck_pin_clocks : (captureClk ? [captureClk] : []);
-            addPinRow('D', s.d_pin,
+            // Endpoint can be the data pin, an async preset/clear,
+            // or another check pin — backend stamps the leaf name on
+            // the capture stage so the row label matches the actual
+            // pin role. Falls back to "D" for older payloads and for
+            // sync stages, which always run on the data pin.
+            const dRowLabel = (s.is_capture && s.endpoint_pin_kind)
+                ? s.endpoint_pin_kind : 'D';
+            addPinRow(dRowLabel, s.d_pin,
                 { odb_type: s.d_pin_odb_type, odb_id: s.d_pin_odb_id },
                 dClk, dRole);
             addPinRow('CK', s.ck_pin || null,
