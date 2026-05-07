@@ -113,6 +113,63 @@ const DIAGRAM_CONST = {
     LANE_GAP:    1,     // px between stacked lane rows
 };
 
+// Shared CSS fragments. Each entry below was inlined in 5+ places before
+// it got promoted up here. Pulling them up gives every card / banner /
+// chip the same look without a layout-by-layout audit, and a future
+// "tighten the row padding" change is one keystroke.
+//
+// Concatenate to compose: `el.style.cssText = STYLES.MUTED + 'padding:6px;'`.
+// For one-off tweaks the caller owns the suffix; the constant is the
+// shared base.
+const STYLES = {
+    // Muted-foreground colour, used wherever the text is a label /
+    // placeholder / hint rather than primary content. Italic variant
+    // used for empty states and "still loading" placeholders.
+    MUTED:        'color:var(--fg-muted);',
+    MUTED_ITALIC: 'color:var(--fg-muted);font-style:italic;',
+
+    // Header bar at the top of every card section. Same flex layout +
+    // dividing border across Clocks, Endpoints, Port Delays, Exceptions
+    // and Limits cards.
+    CARD_HEADER:
+        'display:flex;align-items:center;gap:8px;padding:5px 10px;'
+        + 'background:var(--bg-header);'
+        + 'border-bottom:1px solid var(--border);font-size:12px;',
+
+    // Card outer frame — rounded, bordered, content-clipping. Standard
+    // wrapper for every domain card the widget builds.
+    CARD_FRAME:
+        'border:1px solid var(--border);border-radius:4px;'
+        + 'overflow:hidden;',
+
+    // Pill / badge with rounded ends. Caller adds the bg/fg/text-color
+    // suffix appropriate to the badge's meaning.
+    PILL:
+        'font-size:11px;padding:1px 6px;border-radius:8px;',
+
+    // Generic small-caps style label inside a card body — the muted
+    // 11-px header for stat strips and "1 of N" footers.
+    SMALL_MUTED: 'font-size:11px;color:var(--fg-muted);',
+
+    // Label or name span — monospaced + bold; appears next to most
+    // path / clock / instance names in card headers and pin rows.
+    LABEL_MONO:  'font-family:monospace;font-weight:600;',
+
+    // Standard "loading…" / "no entries match" placeholder block —
+    // muted italic text with the same padding everywhere so empty
+    // states across tabs feel uniform.
+    PLACEHOLDER:
+        'padding:12px;color:var(--fg-muted);font-style:italic;',
+
+    // "Load more / paginated" footer that sits below scrollable lists
+    // (Endpoints / Port Delays). Centered muted italic, matches the
+    // PLACEHOLDER tone but with shallower padding so the list feels
+    // continuous.
+    MORE_FOOTER:
+        'padding:8px;text-align:center;font-size:12px;'
+        + 'color:var(--fg-muted);font-style:italic;',
+};
+
 // Single source of truth for the band-kind → CSS color mapping used by every
 // diagram on the widget. The data-band attribute carries the kind string so
 // tests can query semantically (`[data-band="setup-unc"]`) without depending
@@ -167,7 +224,7 @@ export class SdcWidget {
 
         const lbl = document.createElement('span');
         lbl.textContent = 'Mode:';
-        lbl.style.cssText = 'color:var(--fg-muted);';
+        lbl.style.cssText = STYLES.MUTED;
         lbl.title = 'analysis mode (set_analysis_type / scenario). ' +
             'Switching modes selects a different SDC scenario; every tab ' +
             'is reloaded against the new mode\'s constraints.';
@@ -536,8 +593,7 @@ export class SdcWidget {
             + 'background:var(--bg-main);min-height:0;'
             + 'scrollbar-gutter:stable;';
         this._cardScrollArea = cardScroll;
-        cardScroll.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Loading…</div>';
+        cardScroll.replaceChildren(this._placeholderDiv('Loading…'));
         container.appendChild(cardScroll);
 
         // Re-draw clock waveforms when the panel's width changes (split
@@ -631,8 +687,7 @@ export class SdcWidget {
     }
 
     _showTreePlaceholder(msg) {
-        this._cardScrollArea.innerHTML =
-            `<div style="padding:12px;color:var(--fg-muted);font-style:italic;">${msg}</div>`;
+        this._cardScrollArea.replaceChildren(this._placeholderDiv(msg));
     }
 
     // ── Port Delays panel ─────────────────────────────────────────────────────
@@ -767,8 +822,7 @@ export class SdcWidget {
             if (this._pdLoaded) this._applyPortDelayFilter();
         });
 
-        scroll.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Loading…</div>';
+        scroll.replaceChildren(this._placeholderDiv('Loading…'));
     }
 
     // Batch size for paginated fetches (port delays + endpoint result list).
@@ -808,8 +862,7 @@ export class SdcWidget {
     async _loadPortDelays() {
         if (this._pdLoaded || this._pdLoading) return;
         this._pdLoading = true;
-        this._pdScrollArea.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Loading…</div>';
+        this._pdScrollArea.replaceChildren(this._placeholderDiv('Loading…'));
         try {
             await this._app.websocketManager.readyPromise;
             // First batch: offset=0, limit=BATCH. Renders immediately so the
@@ -1062,18 +1115,55 @@ export class SdcWidget {
         });
     }
 
-    _showPdMoreFooter(text) {
-        // Replace any existing footer; appended at end of scroll area.
-        let f = this._pdScrollArea.querySelector('.sdc-pd-more-footer');
+    // Standard "Loading…" / "No X found" placeholder block. Returns
+    // a styled div using STYLES.PLACEHOLDER so empty-state and
+    // loading-state messages render uniformly across tabs. Caller
+    // typically appends or replaceChildren into a scroll area.
+    _placeholderDiv(text) {
+        const d = document.createElement('div');
+        d.style.cssText = STYLES.PLACEHOLDER;
+        d.textContent = text;
+        return d;
+    }
+
+    // Compact SVG element builder. Replaces the very common pattern:
+    //   const r = document.createElementNS(SVG_NS, 'rect');
+    //   r.setAttribute('x', 10); r.setAttribute('y', 20); ...
+    // with:
+    //   const r = this._svgEl('rect', { x: 10, y: 20, ... });
+    // Attribute values are coerced to strings via setAttribute's own
+    // contract; null / undefined values are skipped (so optional
+    // attrs can be passed conditionally).
+    _svgEl(tag, attrs) {
+        const el = document.createElementNS(SVG_NS, tag);
+        if (attrs) {
+            for (const k of Object.keys(attrs)) {
+                const v = attrs[k];
+                if (v != null) el.setAttribute(k, v);
+            }
+        }
+        return el;
+    }
+
+    // Generic "load more" footer used by Port Delays, Endpoint List, and
+    // Endpoint Search. Reuses the same scroll-area / class-name / style
+    // contract — appended at the end of the scroll area, single instance
+    // per area, .textContent updated on subsequent calls. Shallow padding
+    // keeps the scroll list feeling continuous.
+    _showMoreFooter(scrollArea, className, text) {
+        if (!scrollArea) return;
+        let f = scrollArea.querySelector('.' + className);
         if (!f) {
             f = document.createElement('div');
-            f.className = 'sdc-pd-more-footer';
-            f.style.cssText =
-                'padding:10px;text-align:center;font-size:12px;' +
-                'color:var(--fg-muted);font-style:italic;';
-            this._pdScrollArea.appendChild(f);
+            f.className = className;
+            f.style.cssText = STYLES.MORE_FOOTER;
+            scrollArea.appendChild(f);
         }
         f.textContent = text;
+    }
+    _showPdMoreFooter(text) {
+        this._showMoreFooter(this._pdScrollArea,
+                             'sdc-pd-more-footer', text);
     }
 
     // Compute a per-clock port-count map under the current pattern
@@ -1139,8 +1229,8 @@ export class SdcWidget {
         const nameOk   = this._compileGlob(pattern);
 
         if (entries.length === 0) {
-            this._pdScrollArea.innerHTML =
-                '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">No port delays defined in SDC.</div>';
+            this._pdScrollArea.replaceChildren(this._placeholderDiv(
+                'No port delays defined in SDC.'));
             return;
         }
 
@@ -1162,8 +1252,8 @@ export class SdcWidget {
             const patternHint = pattern.trim()
                 ? ` matching "${pattern.trim()}"`
                 : '';
-            this._pdScrollArea.innerHTML =
-                `<div style="padding:12px;color:var(--fg-muted);font-style:italic;">No ${msg}${patternHint} match the current filters.</div>`;
+            this._pdScrollArea.replaceChildren(this._placeholderDiv(
+                `No ${msg}${patternHint} match the current filters.`));
             return;
         }
 
@@ -1737,8 +1827,7 @@ export class SdcWidget {
         this._excScrollArea = scroll;
         container.appendChild(scroll);
 
-        scroll.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Loading…</div>';
+        scroll.replaceChildren(this._placeholderDiv('Loading…'));
     }
 
     // Button styling is handled by the _makeFilterButtons helper; this
@@ -1752,8 +1841,7 @@ export class SdcWidget {
     async _loadExceptions() {
         if (this._excLoaded || this._excLoading) return;
         this._excLoading = true;
-        this._excScrollArea.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Loading…</div>';
+        this._excScrollArea.replaceChildren(this._placeholderDiv('Loading…'));
         try {
             await this._app.websocketManager.readyPromise;
             const data = await this._requestWithTimeout({ type: 'sdc_exceptions' });
@@ -1804,9 +1892,8 @@ export class SdcWidget {
         this._excScrollArea.innerHTML = '';
 
         if (exceptions.length === 0) {
-            this._excScrollArea.innerHTML =
-                '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">' +
-                'No timing exceptions match the current filter.</div>';
+            this._excScrollArea.replaceChildren(this._placeholderDiv(
+                'No timing exceptions match the current filter.'));
             return;
         }
 
@@ -3245,15 +3332,13 @@ export class SdcWidget {
         scroll.style.cssText = 'flex:1;overflow-y:auto;padding:8px;background:var(--bg-main);';
         this._cgScrollArea = scroll;
         container.appendChild(scroll);
-        scroll.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Loading…</div>';
+        scroll.replaceChildren(this._placeholderDiv('Loading…'));
     }
 
     async _loadClockGroups() {
         if (this._cgLoaded || this._cgLoading) return;
         this._cgLoading = true;
-        this._cgScrollArea.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Loading…</div>';
+        this._cgScrollArea.replaceChildren(this._placeholderDiv('Loading…'));
         try {
             await this._app.websocketManager.readyPromise;
             // The relationship matrix builds its row/column set from
@@ -4150,12 +4235,9 @@ export class SdcWidget {
             this._epListTotal = 0;
             this._epListPattern = pattern;
             this._epListKind    = kind;
-            this._epListArea.innerHTML =
-                '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">' +
-                (pattern
-                    ? `Searching endpoints for "${pattern}"…`
-                    : 'Listing endpoints…') +
-                '</div>';
+            this._epListArea.replaceChildren(this._placeholderDiv(pattern
+                ? `Searching endpoints for "${pattern}"…`
+                : 'Listing endpoints…'));
         } else {
             this._showEpListMoreFooter('Loading more…');
         }
@@ -4250,13 +4332,10 @@ export class SdcWidget {
             if (f) f.remove();
         }
         if (!append && (!entries || entries.length === 0)) {
-            const none = document.createElement('div');
-            none.style.cssText =
-                'padding:12px;color:var(--fg-muted);font-style:italic;';
             const pat = this._epListPattern;
-            none.textContent = pat
+            const none = this._placeholderDiv(pat
                 ? `No endpoints match "${pat}".`
-                : 'No timing endpoints found.';
+                : 'No timing endpoints found.');
             this._epListArea.appendChild(none);
             return;
         }
@@ -5703,16 +5782,8 @@ export class SdcWidget {
     }
 
     _showEpListMoreFooter(text) {
-        let f = this._epListArea.querySelector('.sdc-ep-list-footer');
-        if (!f) {
-            f = document.createElement('div');
-            f.className = 'sdc-ep-list-footer';
-            f.style.cssText =
-                'padding:8px;text-align:center;font-size:12px;' +
-                'color:var(--fg-muted);font-style:italic;';
-            this._epListArea.appendChild(f);
-        }
-        f.textContent = text;
+        this._showMoreFooter(this._epListArea,
+                             'sdc-ep-list-footer', text);
     }
 
     _installEpListInfiniteScroll() {
@@ -5764,8 +5835,7 @@ export class SdcWidget {
         this._epAllPins    = [];
         this._epTotal      = 0;
         this._epFetchingMore = false;
-        this._epResultArea.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Querying…</div>';
+        this._epResultArea.replaceChildren(this._placeholderDiv('Querying…'));
         try {
             await this._app.websocketManager.readyPromise;
             const data = await this._requestWithTimeout({
@@ -5785,8 +5855,8 @@ export class SdcWidget {
             if (token !== this._epQueryToken) return;
             console.error('[SDC] endpoint query error:', e);
             const msg = e && e.message ? e.message : String(e);
-            this._epResultArea.innerHTML =
-                `<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Error: ${msg}</div>`;
+            this._epResultArea.replaceChildren(this._placeholderDiv(
+                `Error: ${msg}`));
         }
     }
 
@@ -5846,16 +5916,8 @@ export class SdcWidget {
     }
 
     _showEpMoreFooter(text) {
-        let f = this._epResultArea.querySelector('.sdc-ep-more-footer');
-        if (!f) {
-            f = document.createElement('div');
-            f.className = 'sdc-ep-more-footer';
-            f.style.cssText =
-                'padding:10px;text-align:center;font-size:12px;' +
-                'color:var(--fg-muted);font-style:italic;';
-            this._epResultArea.appendChild(f);
-        }
-        f.textContent = text;
+        this._showMoreFooter(this._epResultArea,
+                             'sdc-ep-more-footer', text);
     }
 
     _renderEndpointResult(pinName, data) {
@@ -5883,10 +5945,8 @@ export class SdcWidget {
         // endpoint set gives the user a card per actual endpoint instead
         // of a "No timing endpoints found" message that's wrong.
         if (pins.length === 0) {
-            const none = document.createElement('div');
-            none.style.cssText = 'padding:12px;color:var(--fg-muted);font-style:italic;';
-            none.textContent = `No pin found matching "${pinName}".`;
-            this._epResultArea.appendChild(none);
+            this._epResultArea.appendChild(this._placeholderDiv(
+                `No pin found matching "${pinName}".`));
             return;
         }
 
@@ -7981,8 +8041,7 @@ export class SdcWidget {
             });
             toggleRow.appendChild(toggleBtn);
             const status = document.createElement('span');
-            status.style.cssText
-                = 'color:var(--fg-muted);font-style:italic;';
+            status.style.cssText = STYLES.MUTED_ITALIC;
             status.textContent = this._cdcShowAllClocks
                 ? `Showing all ${allClocks.length} clocks `
                   + `(${activeSet.size} with crossings, `
@@ -8603,7 +8662,7 @@ export class SdcWidget {
             + 'flex:1 1 220px;min-width:160px;';
         const labelEl = document.createElement('span');
         labelEl.textContent = 'Name:';
-        labelEl.style.cssText = 'color:var(--fg-muted);';
+        labelEl.style.cssText = STYLES.MUTED;
         wrap.appendChild(labelEl);
         const input = document.createElement('input');
         input.type = 'search';
@@ -8649,7 +8708,7 @@ export class SdcWidget {
             = 'display:inline-flex;align-items:center;gap:6px;';
         const labelEl = document.createElement('span');
         labelEl.textContent = 'Sync:';
-        labelEl.style.cssText = 'color:var(--fg-muted);';
+        labelEl.style.cssText = STYLES.MUTED;
         wrap.appendChild(labelEl);
         const opts = [
             {key: 'unsynchronized',
@@ -8709,7 +8768,7 @@ export class SdcWidget {
             + 'flex-wrap:wrap;';
         const labelEl = document.createElement('span');
         labelEl.textContent = 'Kind:';
-        labelEl.style.cssText = 'color:var(--fg-muted);';
+        labelEl.style.cssText = STYLES.MUTED;
         wrap.appendChild(labelEl);
         const order = ['flipflop', 'latch', 'port', 'macro', 'clock_gate',
                        'stdcell'];
@@ -10269,7 +10328,7 @@ export class SdcWidget {
         if (clocks.length === 0) {
             const empty = document.createElement('span');
             empty.textContent = '(no clock domains on this path)';
-            empty.style.cssText = 'color:var(--fg-muted);';
+            empty.style.cssText = STYLES.MUTED;
             clkRow.appendChild(empty);
         }
         footer.appendChild(clkRow);
@@ -14103,13 +14162,10 @@ export class SdcWidget {
 
             // Highlight row background for selected clock
             if (isSelected) {
-                const rect = document.createElementNS(SVG_NS, 'rect');
-                rect.setAttribute('x', 0);
-                rect.setAttribute('y', y0);
-                rect.setAttribute('width', SVG_W);
-                rect.setAttribute('height', ROW_H);
-                rect.setAttribute('fill', 'var(--bg-selected-row)');
-                rect.setAttribute('fill-opacity', '0.4');
+                const rect = this._svgEl('rect', {
+                    x: 0, y: y0, width: SVG_W, height: ROW_H,
+                    fill: 'var(--bg-selected-row)', 'fill-opacity': '0.4',
+                });
                 svg.appendChild(rect);
             }
 
@@ -14258,12 +14314,8 @@ export class SdcWidget {
         }
 
         if (this._caseAnalysis.length === 0) {
-            const msg = document.createElement('div');
-            msg.style.cssText =
-                'padding:12px;color:var(--fg-muted);font-style:italic;';
-            msg.textContent =
-                'No set_case_analysis or set_logic_zero/one/dc constraints defined.';
-            this._caseStrip.appendChild(msg);
+            this._caseStrip.appendChild(this._placeholderDiv(
+                'No set_case_analysis or set_logic_zero/one/dc constraints defined.'));
             return;
         }
 
@@ -14385,15 +14437,13 @@ export class SdcWidget {
         scroll.style.cssText = 'flex:1;overflow-y:auto;padding:8px;background:var(--bg-main);';
         this._limScrollArea = scroll;
         container.appendChild(scroll);
-        scroll.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Loading…</div>';
+        scroll.replaceChildren(this._placeholderDiv('Loading…'));
     }
 
     async _loadLimits() {
         if (this._limLoaded || this._limLoading) return;
         this._limLoading = true;
-        this._limScrollArea.innerHTML =
-            '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">Loading…</div>';
+        this._limScrollArea.replaceChildren(this._placeholderDiv('Loading…'));
         try {
             await this._app.websocketManager.readyPromise;
             const data = await this._requestWithTimeout({ type: 'sdc_limits' });
@@ -14431,10 +14481,9 @@ export class SdcWidget {
             || cellLimits.length || clkSlewLimits.length
             || pinCapLimits.length || pinUncerts.length;
         if (!hasAny) {
-            this._limScrollArea.innerHTML =
-                '<div style="padding:12px;color:var(--fg-muted);font-style:italic;">' +
-                'No SDC limits defined (no set_clock_latency, set_clock_uncertainty, ' +
-                'set_load, or set_disable_timing).</div>';
+            this._limScrollArea.replaceChildren(this._placeholderDiv(
+                'No SDC limits defined (no set_clock_latency, set_clock_uncertainty, '
+                + 'set_load, or set_disable_timing).'));
             return;
         }
 
@@ -14767,33 +14816,26 @@ export class SdcWidget {
     // ── SVG helpers ──────────────────────────────────────────────────────────
 
     _makeSvg(w, h) {
-        const svg = document.createElementNS(SVG_NS, 'svg');
-        svg.setAttribute('width', w);
-        svg.setAttribute('height', h);
-        svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+        const svg = this._svgEl('svg', {
+            width: w, height: h, viewBox: `0 0 ${w} ${h}`,
+        });
         svg.style.display = 'block';
         return svg;
     }
 
     _svgLine(svg, x1, y1, x2, y2, stroke, width) {
-        const line = document.createElementNS(SVG_NS, 'line');
-        line.setAttribute('x1', x1);
-        line.setAttribute('y1', y1);
-        line.setAttribute('x2', x2);
-        line.setAttribute('y2', y2);
-        line.setAttribute('stroke', stroke);
-        line.setAttribute('stroke-width', width);
+        const line = this._svgEl('line', {
+            x1, y1, x2, y2, stroke, 'stroke-width': width,
+        });
         svg.appendChild(line);
         return line;
     }
 
     _svgText(svg, x, y, text, fill, size, anchor) {
-        const t = document.createElementNS(SVG_NS, 'text');
-        t.setAttribute('x', x);
-        t.setAttribute('y', y);
-        t.setAttribute('fill', fill);
-        t.setAttribute('font-size', size);
-        t.setAttribute('text-anchor', anchor || 'start');
+        const t = this._svgEl('text', {
+            x, y, fill, 'font-size': size,
+            'text-anchor': anchor || 'start',
+        });
         t.textContent = text;
         svg.appendChild(t);
         return t;
@@ -14824,12 +14866,9 @@ export class SdcWidget {
             prevY = nextY;
         }
         d += `L ${tx(tEnd)} ${prevY}`;
-        const path = document.createElementNS(
-            SVG_NS, 'path');
-        path.setAttribute('d', d);
-        path.setAttribute('stroke', stroke);
-        path.setAttribute('stroke-width', strokeWidth);
-        path.setAttribute('fill', 'none');
+        const path = this._svgEl('path', {
+            d, stroke, 'stroke-width': strokeWidth, fill: 'none',
+        });
         path.dataset.role = 'clock-waveform';
         svg.appendChild(path);
         return path;
@@ -14839,14 +14878,10 @@ export class SdcWidget {
     // data bar.
     _svgOutlineRect(svg, x, y, w, h, stroke = 'var(--border)', width = '1') {
         if (w <= 0 || h <= 0) return null;
-        const r = document.createElementNS(SVG_NS, 'rect');
-        r.setAttribute('x', x);
-        r.setAttribute('y', y);
-        r.setAttribute('width', w);
-        r.setAttribute('height', h);
-        r.setAttribute('fill', 'none');
-        r.setAttribute('stroke', stroke);
-        r.setAttribute('stroke-width', width);
+        const r = this._svgEl('rect', {
+            x, y, width: w, height: h,
+            fill: 'none', stroke, 'stroke-width': width,
+        });
         svg.appendChild(r);
         return r;
     }
@@ -14855,11 +14890,7 @@ export class SdcWidget {
     // the bar-band drawing across the port-delay and endpoint diagrams.
     _svgRect(svg, x, y, w, h, fill, opacity) {
         if (w <= 0 || h <= 0) return null;
-        const r = document.createElementNS(SVG_NS, 'rect');
-        r.setAttribute('x', x);
-        r.setAttribute('y', y);
-        r.setAttribute('width', w);
-        r.setAttribute('height', h);
+        const r = this._svgEl('rect', { x, y, width: w, height: h });
         r.style.fill = fill;
         if (opacity != null) r.style.fillOpacity = opacity;
         svg.appendChild(r);
