@@ -10735,7 +10735,7 @@ export class SdcWidget {
                 + 'level port or has no resolvable driver.';
             wrapper.appendChild(empty);
         } else {
-            wrapper.appendChild(this._renderCdcClockMixNode(tree));
+            wrapper.appendChild(this._renderCdcClockMixTree(tree));
             const arrow = document.createElement('div');
             arrow.style.cssText
                 = 'text-align:center;font-size:11px;'
@@ -10817,8 +10817,489 @@ export class SdcWidget {
             }
             return;
         }
-        const replacement = this._renderCdcClockMixNode(tree);
+        const replacement = this._renderCdcClockMixTree(tree);
         card.parentElement.replaceChild(replacement, card);
+    }
+
+    // Top-level dispatch for rendering a clock-mix trace tree.
+    // Use dagre uniformly whenever it's loaded — even on linear /
+    // non-reconvergent traces — so every trace in the UI looks the
+    // same (dagre-laid-out cards with SVG edges). The flex-tree
+    // path is kept only as a fallback for the offline / dagre-
+    // failed case so the trace still renders if the layout engine
+    // is unavailable. The earlier "DAG only when convergence is
+    // detected" rule produced inconsistent visuals — some traces
+    // showed cards with `↓ feeds into` labels, others showed
+    // dagre-style arrows — which the user flagged as confusing.
+    _renderCdcClockMixTree(tree) {
+        if (tree
+            && typeof window !== 'undefined'
+            && window.dagre) {
+            try {
+                return this._renderCdcClockMixDag(tree);
+            } catch (e) {
+                // Dagre failure must not block the user — fall back to
+                // the flex-tree rendering so the trace still appears.
+                console.warn('[CDC] DAG layout failed; falling back to '
+                             + 'flex tree:', e);
+            }
+        }
+        return this._renderCdcClockMixNode(tree);
+    }
+
+    // Stable key used to dedup nodes across the recursive tree —
+    // two tree positions with the same key are the SAME logical
+    // upstream object, just reached via two paths.
+    //
+    // Cell-based nodes (mixer / net_mixer / register_transit /
+    // comb_transit / stuck / feedback) key on `instance` since the
+    // instance path is unique. Port nodes key on `out_pin` (the top-
+    // level port pin path). Other terminals (depth_limit / unresolved
+    // / no_origin) get unique synthetic keys — they represent
+    // distinct stopping points even when their kind matches.
+    _clockMixNodeKey(node) {
+        if (!node) return null;
+        const k = node.kind || 'unknown';
+        if (node.instance) {
+            return `${k}|${node.instance}`;
+        }
+        if (node.out_pin) {
+            return `${k}|port:${node.out_pin}`;
+        }
+        if (node.via_pin) {
+            return `${k}|via:${node.via_pin}`;
+        }
+        // Terminal with no anchor — synthesise a per-position key so
+        // it stays distinct from any other unanchored terminal.
+        if (!this._clockMixUnanchoredCounter) {
+            this._clockMixUnanchoredCounter = 0;
+        }
+        return `${k}|anon:${++this._clockMixUnanchoredCounter}`;
+    }
+
+    // Walk the tree once. Return true the moment any node-key is
+    // seen twice — that's the signal that DAG layout (rather than
+    // a tree) is needed.
+    _clockMixHasConvergence(tree) {
+        const seen = new Set();
+        const stack = [tree];
+        while (stack.length) {
+            const node = stack.pop();
+            if (!node) continue;
+            const key = this._clockMixNodeKey(node);
+            if (key) {
+                if (seen.has(key)) return true;
+                seen.add(key);
+            }
+            if (Array.isArray(node.branches)) {
+                for (const br of node.branches) {
+                    if (br && br.subtree) stack.push(br.subtree);
+                }
+            }
+            if (node.child) stack.push(node.child);
+        }
+        return false;
+    }
+
+    // Render the trace as a DAG using dagre for layout. Cards are
+    // rendered with the same `_renderCdcClockMixCard` helper used
+    // by the flex-tree path, then absolutely-positioned at dagre's
+    // computed coordinates inside an SVG-edged container.
+    //
+    // Algorithm:
+    //   1. Walk tree, collect unique-by-key nodes + parent→child
+    //      edges (an edge from the upstream node UP-TO the
+    //      consumer node it feeds).
+    //   2. Render each unique node's card; measure its size.
+    //   3. Hand nodes + edges to dagre with rankdir='BT' so the
+    //      root (the originally-clicked downstream node) sits at
+    //      the bottom and upstream cards stack above — matching
+    //      the visual conventions of the flex-tree path.
+    //   4. Absolute-position cards at dagre's coordinates inside
+    //      a container sized to the bounding rect.
+    //   5. Draw an SVG <path> per edge using dagre's waypoints
+    //      with an arrowhead pointing at the consumer.
+    // Convert a sequence of (x, y) waypoints to an SVG path with
+    // smooth cubic-Bezier segments (Catmull-Rom-equivalent). For each
+    // interior waypoint, the bezier control points are derived from
+    // its neighbors so the curve passes THROUGH every waypoint with
+    // no inflections. Falls back to a straight line for 2-point
+    // edges. Used by the DAG renderer to round dagre's polyline
+    // routes — sharp polyline notches at every waypoint were ugly,
+    // especially on edges that cross multiple ranks.
+    _smoothPath(points) {
+        if (!points || points.length < 2) return '';
+        if (points.length === 2) {
+            return `M ${points[0].x} ${points[0].y}`
+                 + ` L ${points[1].x} ${points[1].y}`;
+        }
+        let d = `M ${points[0].x} ${points[0].y}`;
+        for (let i = 0; i < points.length - 1; ++i) {
+            const p0 = i > 0 ? points[i - 1] : points[i];
+            const p1 = points[i];
+            const p2 = points[i + 1];
+            const p3 = i < points.length - 2
+                ? points[i + 2] : p2;
+            // Catmull-Rom → cubic Bezier control points.
+            const cp1x = p1.x + (p2.x - p0.x) / 6;
+            const cp1y = p1.y + (p2.y - p0.y) / 6;
+            const cp2x = p2.x - (p3.x - p1.x) / 6;
+            const cp2y = p2.y - (p3.y - p1.y) / 6;
+            d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y},`
+               + ` ${p2.x} ${p2.y}`;
+        }
+        return d;
+    }
+
+    _renderCdcClockMixDag(tree) {
+        // ── 1. Walk + dedup ───────────────────────────────────────
+        // first-seen wins; subsequent encounters at the same key
+        // contribute new EDGES to the already-collected node.
+        // Each edge carries `feedsPin` — the consumer-side input
+        // pin where the upstream value lands. That's `branch.pin`
+        // for mixer/net_mixer (the gate's input) and `via_pin` for
+        // transits (CK on a register, the chosen comb input on a
+        // CombTransit). Used to label the SVG arrow with the same
+        // "feeds into <pin>" affordance the flex-tree shows
+        // between branch column and mixer card.
+        const nodesByKey = new Map();   // key → original node
+        const edges = [];               // [{ from, to, feedsPin }]
+        const visit = (node, consumer) => {
+            if (!node) return;
+            const key = this._clockMixNodeKey(node);
+            if (consumer && key !== consumer.key) {
+                edges.push({
+                    from: key,
+                    to: consumer.key,
+                    feedsPin: consumer.feedsPin,
+                    consumerInst: consumer.consumerInst,
+                });
+            }
+            if (nodesByKey.has(key)) {
+                // Already collected via another path; the edge above
+                // is the only new info this visit contributes. Don't
+                // re-walk children: the original walk already did.
+                return;
+            }
+            nodesByKey.set(key, node);
+            if (Array.isArray(node.branches)) {
+                for (const br of node.branches) {
+                    if (br && br.subtree) {
+                        visit(br.subtree, {
+                            key,
+                            feedsPin: br.pin || null,
+                            consumerInst: node.instance || null,
+                        });
+                    }
+                }
+            }
+            if (node.child) {
+                visit(node.child, {
+                    key,
+                    feedsPin: node.via_pin || null,
+                    consumerInst: node.instance || null,
+                });
+            }
+        };
+        visit(tree, null);
+
+        // ── 2. Build cards + measure ──────────────────────────────
+        const container = document.createElement('div');
+        container.dataset.cdcClockMixDag = '1';
+        container.style.cssText
+            = 'position:relative;'
+            + 'min-width:max-content;';
+        // Render cards into a hidden measurement parent so we get
+        // real `getBoundingClientRect` sizes before final placement.
+        const measurer = document.createElement('div');
+        measurer.style.cssText
+            = 'position:absolute;visibility:hidden;'
+            + 'pointer-events:none;left:-99999px;top:-99999px;';
+        document.body.appendChild(measurer);
+        const cards = new Map();   // key → card DOM element
+        const sizes = new Map();   // key → { w, h }
+        for (const [key, node] of nodesByKey) {
+            const card = this._renderCdcClockMixCard(node);
+            // Cards float without a flex parent in this layout; pin
+            // the width so dagre can size by content height.
+            card.style.position = 'absolute';
+            card.style.width = '320px';
+            card.style.boxSizing = 'border-box';
+            measurer.appendChild(card);
+            cards.set(key, card);
+        }
+        for (const [key, card] of cards) {
+            const rect = card.getBoundingClientRect();
+            // Width has a sensible floor — cards are pinned at 320px
+            // so anything narrower is a measurement glitch worth
+            // protecting against. Height has NO floor: collapsed
+            // transit cards are ~22px tall, and forcing a 60px
+            // minimum left a 40px dead zone below them where dagre
+            // routed edges through empty space (user-visible as
+            // arrows that "stop 3x heights down" past the card).
+            sizes.set(key, {
+                w: Math.max(rect.width, 280),
+                h: rect.height,
+            });
+        }
+        measurer.remove();
+
+        // ── 3. Dagre layout ───────────────────────────────────────
+        // rankdir TB: sources (= upstream terminals like ports) sit
+        // at the TOP, sinks (= the originally-clicked root node) at
+        // the BOTTOM. Edges flow downstream, top → bottom — matching
+        // the flex-tree convention the user is used to. (Earlier
+        // BT version was an off-by-direction; dagre BT puts sources
+        // at the bottom, the opposite of what we want.)
+        const g = new window.dagre.graphlib.Graph();
+        g.setGraph({
+            rankdir: 'TB',          // upstream at top, root at bottom
+            nodesep: 24,            // siblings within a rank
+            ranksep: 36,            // between ranks (= "feeds into" gap)
+            marginx: 8,
+            marginy: 8,
+        });
+        g.setDefaultEdgeLabel(() => ({}));
+        for (const [key, _] of nodesByKey) {
+            const sz = sizes.get(key);
+            g.setNode(key, { width: sz.w, height: sz.h });
+        }
+        for (const e of edges) {
+            // Edge direction: data flows downstream (`from` →
+            // `to` consumer). Dagre expects (source, target);
+            // for `rankdir:BT`, target is BELOW source visually.
+            // Attach the consumer-side pin so we can render the
+            // "feeds into <pin>" label on the arrow midpoint.
+            g.setEdge(e.from, e.to, {
+                feedsPin: e.feedsPin,
+                consumerInst: e.consumerInst,
+            });
+        }
+        window.dagre.layout(g);
+        const graphRect = g.graph();
+        container.style.width = `${graphRect.width}px`;
+        container.style.height = `${graphRect.height}px`;
+
+        // ── 4. Position cards ─────────────────────────────────────
+        for (const [key, card] of cards) {
+            const dn = g.node(key);
+            card.style.left = `${dn.x - dn.width / 2}px`;
+            card.style.top  = `${dn.y - dn.height / 2}px`;
+            container.appendChild(card);
+        }
+
+        // ── 5. Edges as SVG paths ─────────────────────────────────
+        // Edge styling carries semantic information — same data the
+        // walker already records, surfaced visually:
+        //   - clock-path edges (consumer node has on_clock_path)
+        //     paint in clock-amber to match the existing CDC banner
+        //     convention (orange = clock side, gray/red = data side).
+        //   - register-transit edges (edge feeds a register_transit)
+        //     are dashed to signal "crossed a register boundary" —
+        //     where the walker switched from data tracing to clock
+        //     tracing.
+        // Two arrow markers (one per palette) so each edge gets the
+        // matching color tip.
+        const COLOR_DATA  = 'var(--fg-muted)';
+        const COLOR_CLOCK = 'rgba(255, 167, 38, 0.85)';
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(svgNS, 'svg');
+        svg.setAttribute('width', graphRect.width);
+        svg.setAttribute('height', graphRect.height);
+        svg.style.cssText
+            = 'position:absolute;left:0;top:0;'
+            + 'pointer-events:none;overflow:visible;';
+        const defs = document.createElementNS(svgNS, 'defs');
+        // Arrowheads point at the CONSUMER end (data-flow direction)
+        // — the same convention as the flex tree's `↓ feeds into`
+        // labels, where the arrow says "this branch feeds into that
+        // gate input". Read-direction matches the rankdir:TB layout
+        // (top→bottom = upstream→downstream).
+        for (const [id, fill] of [
+            ['cdc-mix-edge-arrow-data',  COLOR_DATA],
+            ['cdc-mix-edge-arrow-clock', COLOR_CLOCK],
+        ]) {
+            const marker = document.createElementNS(svgNS, 'marker');
+            marker.setAttribute('id', id);
+            marker.setAttribute('viewBox', '0 0 10 10');
+            marker.setAttribute('refX', '9');
+            marker.setAttribute('refY', '5');
+            marker.setAttribute('markerWidth', '6');
+            marker.setAttribute('markerHeight', '6');
+            marker.setAttribute('orient', 'auto-start-reverse');
+            const arrowPath = document.createElementNS(svgNS, 'path');
+            arrowPath.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+            arrowPath.setAttribute('fill', fill);
+            marker.appendChild(arrowPath);
+            defs.appendChild(marker);
+        }
+        svg.appendChild(defs);
+        for (const e of g.edges()) {
+            const edgeMeta = g.edge(e);
+            const points = edgeMeta.points;
+            if (!points || points.length < 2) continue;
+            // Consumer node decides the styling. Clock-path tint
+            // when the consumer sits above a CK hop; dashed when
+            // the consumer is itself a register-transit (the edge
+            // crosses INTO a register's domain).
+            const consumerNode = nodesByKey.get(e.w);
+            const isClock = !!(consumerNode && consumerNode.on_clock_path);
+            const isRegHop = !!(consumerNode
+                && consumerNode.kind === 'register_transit');
+            const stroke = isClock ? COLOR_CLOCK : COLOR_DATA;
+            const markerId = isClock
+                ? 'cdc-mix-edge-arrow-clock'
+                : 'cdc-mix-edge-arrow-data';
+            const path = document.createElementNS(svgNS, 'path');
+            path.setAttribute('d', this._smoothPath(points));
+            path.setAttribute('fill', 'none');
+            path.setAttribute('stroke', stroke);
+            path.setAttribute('stroke-width', '1.5');
+            if (isRegHop) {
+                path.setAttribute('stroke-dasharray', '5,3');
+            }
+            path.setAttribute('marker-end', `url(#${markerId})`);
+            svg.appendChild(path);
+
+            // "↓ feeds into <pin>" label at the edge midpoint.
+            // Same affordance the flex-tree path shows; without it
+            // the user can't tell which gate input a branch wires
+            // to (rendered as `↓ <leaf-name>`).
+            const feedsPin = edgeMeta && edgeMeta.feedsPin;
+            if (feedsPin) {
+                const mid = points[Math.floor(points.length / 2)];
+                const leaf = this._pinLeafName(
+                    feedsPin, edgeMeta.consumerInst || null);
+                const labelText
+                    = document.createElementNS(svgNS, 'text');
+                labelText.setAttribute('x', mid.x);
+                labelText.setAttribute('y', mid.y - 2);
+                labelText.setAttribute('text-anchor', 'middle');
+                labelText.setAttribute('font-size', '10');
+                labelText.setAttribute('font-family', 'monospace');
+                labelText.setAttribute('fill', 'var(--fg-muted)');
+                labelText.setAttribute('paint-order', 'stroke');
+                labelText.setAttribute('stroke',
+                                       'var(--bg-main)');
+                labelText.setAttribute('stroke-width', '3');
+                labelText.setAttribute('stroke-linejoin',
+                                       'round');
+                labelText.textContent = `↓ ${leaf}`;
+                svg.appendChild(labelText);
+            }
+        }
+        container.insertBefore(svg, container.firstChild);
+
+        // Cards paint above SVG so edges pass underneath card
+        // boundaries (dagre's routing aims at card centres, so the
+        // last segment overlaps the card edge — z-index keeps the
+        // card body opaque on top).
+        for (const card of cards.values()) {
+            card.style.zIndex = '1';
+        }
+
+        // ── 6. Re-layout when card sizes change ───────────────────
+        // Transit cards are collapsed-by-default and grow when the
+        // user clicks to expand the body. Without re-layout, the
+        // expanded card overlaps neighbors and the SVG edges no
+        // longer line up with card boundaries. ResizeObserver
+        // catches both expansion and any other size change (e.g.
+        // browser font scale), debounced via rAF.
+        const relayout = () => {
+            if (typeof window === 'undefined' || !window.dagre) return;
+            for (const [key, card] of cards) {
+                // Use offset* so we get the LAYOUT size, not a
+                // (possibly stale) bounding-rect cached against
+                // the previous transform. Width gets a sensible
+                // floor; height takes whatever the card actually
+                // is (no min) so collapsed transit cards don't
+                // get padded to 60 px and leave dagre routing
+                // through empty space below them.
+                const w = Math.max(card.offsetWidth, 280);
+                const h = card.offsetHeight;
+                g.setNode(key, { width: w, height: h });
+            }
+            window.dagre.layout(g);
+            const newGR = g.graph();
+            container.style.width = `${newGR.width}px`;
+            container.style.height = `${newGR.height}px`;
+            for (const [key, card] of cards) {
+                const dn = g.node(key);
+                card.style.left = `${dn.x - dn.width / 2}px`;
+                card.style.top  = `${dn.y - dn.height / 2}px`;
+            }
+            // Rebuild SVG content (markers + paths + labels) with
+            // the new node positions / edge routes. Cheaper than
+            // full re-render and keeps event listeners on the
+            // cards intact.
+            svg.setAttribute('width', newGR.width);
+            svg.setAttribute('height', newGR.height);
+            // Strip old paths/labels but keep the <defs>.
+            const stash = svg.querySelector('defs');
+            svg.innerHTML = '';
+            if (stash) svg.appendChild(stash);
+            for (const e2 of g.edges()) {
+                const m = g.edge(e2);
+                const pts = m.points;
+                if (!pts || pts.length < 2) continue;
+                const consumer = nodesByKey.get(e2.w);
+                const cIsClock = !!(consumer
+                    && consumer.on_clock_path);
+                const cIsRegHop = !!(consumer
+                    && consumer.kind === 'register_transit');
+                const p = document.createElementNS(svgNS, 'path');
+                p.setAttribute('d', this._smoothPath(pts));
+                p.setAttribute('fill', 'none');
+                p.setAttribute('stroke',
+                               cIsClock ? COLOR_CLOCK : COLOR_DATA);
+                p.setAttribute('stroke-width', '1.5');
+                if (cIsRegHop) {
+                    p.setAttribute('stroke-dasharray', '5,3');
+                }
+                p.setAttribute('marker-end',
+                    `url(#${cIsClock
+                        ? 'cdc-mix-edge-arrow-clock'
+                        : 'cdc-mix-edge-arrow-data'})`);
+                svg.appendChild(p);
+                if (m.feedsPin) {
+                    const mid2 = pts[Math.floor(pts.length / 2)];
+                    const leaf2 = this._pinLeafName(
+                        m.feedsPin, m.consumerInst || null);
+                    const t = document.createElementNS(svgNS, 'text');
+                    t.setAttribute('x', mid2.x);
+                    t.setAttribute('y', mid2.y - 2);
+                    t.setAttribute('text-anchor', 'middle');
+                    t.setAttribute('font-size', '10');
+                    t.setAttribute('font-family', 'monospace');
+                    t.setAttribute('fill', 'var(--fg-muted)');
+                    t.setAttribute('paint-order', 'stroke');
+                    t.setAttribute('stroke', 'var(--bg-main)');
+                    t.setAttribute('stroke-width', '3');
+                    t.setAttribute('stroke-linejoin', 'round');
+                    t.textContent = `↓ ${leaf2}`;
+                    svg.appendChild(t);
+                }
+            }
+        };
+        if (typeof ResizeObserver !== 'undefined') {
+            let pending = false;
+            let suppress = true;   // ignore the initial-attach burst
+            const ro = new ResizeObserver(() => {
+                if (suppress || pending) return;
+                pending = true;
+                requestAnimationFrame(() => {
+                    pending = false;
+                    relayout();
+                });
+            });
+            for (const card of cards.values()) ro.observe(card);
+            // The initial observe-attach fires once per card; let
+            // those settle before listening for real changes (an
+            // initial relayout right after the first paint would
+            // double the layout cost on every render).
+            requestAnimationFrame(() => { suppress = false; });
+        }
+        return container;
     }
 
     // Recursive entry. Renders the subtree(s) above this node, then

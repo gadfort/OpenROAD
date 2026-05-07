@@ -19,6 +19,14 @@
     <script src="https://nturley.github.io/netlistsvg/elk.bundled.js"></script>
     <script src="https://nturley.github.io/netlistsvg/built/netlistsvg.bundle.js"></script>
 
+    <!-- dagre — Sugiyama-style hierarchical DAG layout. Used by the
+         SDC widget's CDC clock-mix trace to lay out reconvergent
+         fan-in correctly (shared upstream nodes appear once, with
+         multiple outgoing edges, instead of being duplicated under
+         each downstream consumer). Layout-only library; the cards
+         themselves are still rendered as the existing custom DOM. -->
+    <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+
     <link rel="stylesheet" href="style.css"/>
 </head>
 <body>

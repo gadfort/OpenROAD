@@ -6014,6 +6014,116 @@ describe('SdcWidget', () => {
     });
 
 
+    // Reconvergent fan-in detection — the dagre-based DAG layout
+    // only kicks in when the trace tree has the same logical
+    // upstream node reached via two paths. The detection helper
+    // (`_clockMixHasConvergence`) is what gates the dispatch, so
+    // it gets a focused test even though the actual DAG render
+    // path needs `window.dagre` (which jsdom doesn't load).
+    describe('CDC clock-mix convergence detection', () => {
+        let widget;
+        beforeEach(() => {
+            const app = createMockApp({});
+            widget = new SdcWidget(app);
+        });
+
+        it('returns false on a linear trace (no shared nodes)', () => {
+            const tree = {
+                kind: 'register_transit',
+                instance: 'r1', via_pin: 'r1/CK',
+                child: {
+                    kind: 'port',
+                    out_pin: 'clk_root',
+                    actual_clocks: ['clk_a'],
+                },
+            };
+            assert.equal(
+                widget._clockMixHasConvergence(tree), false,
+                'two-deep linear chain has no reconvergence');
+        });
+
+        it('returns false on a fan-out tree without shared upstream',
+           () => {
+            const tree = {
+                kind: 'mixer',
+                instance: 'gate1',
+                branches: [
+                    { pin: 'gate1/A1',
+                      subtree: { kind: 'port', out_pin: 'clk_a' } },
+                    { pin: 'gate1/A2',
+                      subtree: { kind: 'port', out_pin: 'clk_b' } },
+                ],
+            };
+            assert.equal(
+                widget._clockMixHasConvergence(tree), false,
+                'two distinct branches with distinct terminals do '
+                + 'not converge');
+        });
+
+        it('returns true when two branches share an upstream cell',
+           () => {
+            // Both branches reach `clk_buf` (same instance) — the
+            // canonical reconvergent-fan-in case.
+            const sharedSubtree = {
+                kind: 'port',
+                out_pin: 'clk_root',
+                actual_clocks: ['clk_a'],
+            };
+            const tree = {
+                kind: 'mixer',
+                instance: 'gate1',
+                branches: [
+                    { pin: 'gate1/A1',
+                      subtree: {
+                          kind: 'register_transit',
+                          instance: 'clk_buf',
+                          via_pin: 'clk_buf/CK',
+                          child: sharedSubtree,
+                      } },
+                    { pin: 'gate1/A2',
+                      subtree: {
+                          kind: 'register_transit',
+                          instance: 'clk_buf',
+                          via_pin: 'clk_buf/CK',
+                          child: sharedSubtree,
+                      } },
+                ],
+            };
+            assert.equal(
+                widget._clockMixHasConvergence(tree), true,
+                'shared `clk_buf` instance reached via two branches '
+                + 'is a convergence');
+        });
+
+        it('keys mixer/transit/port/terminal nodes consistently',
+           () => {
+            // Same instance → same key, regardless of node `kind`.
+            const a = widget._clockMixNodeKey({
+                kind: 'register_transit', instance: 'foo' });
+            const b = widget._clockMixNodeKey({
+                kind: 'register_transit', instance: 'foo' });
+            assert.equal(a, b,
+                'identical instance + kind produce identical keys');
+            // Different kind on same instance → different keys (we
+            // err on the side of NOT merging across kinds, since a
+            // node showing up as both a mixer and a register-transit
+            // would be a backend bug worth surfacing).
+            const c = widget._clockMixNodeKey({
+                kind: 'mixer', instance: 'foo' });
+            assert.notEqual(a, c,
+                'different `kind` produces a different key even on '
+                + 'the same instance');
+            // Port nodes key on out_pin since they have no instance.
+            const p1 = widget._clockMixNodeKey({
+                kind: 'port', out_pin: 'top/clk_in' });
+            const p2 = widget._clockMixNodeKey({
+                kind: 'port', out_pin: 'top/clk_in' });
+            assert.equal(p1, p2,
+                'port nodes with same out_pin key the same');
+        });
+    });
+
+
     // Multi-clock CK rendering — when a register stage carries
     // `ck_pin_clocks` with more than one entry, the card renders
     // a CK pin row showing every clock + a "⚠ multi-clock CK"
