@@ -18,6 +18,7 @@
 #include "db_sta/dbSta.hh"
 #include "request_dispatcher.h"
 #include "request_handler.h"
+#include "sdc_handler.h"
 #include "sta/Clock.hh"
 #include "sta/Graph.hh"
 #include "sta/Liberty.hh"
@@ -59,84 +60,8 @@ static WebSocketResponse emptyPaths(uint32_t id)
       R"("category_total":{"synced":0,"excluded":0,"unsynced":0},"paths":[]})");
 }
 
-// Glue: resolve a sta::Pin into {odb_type, odb_id} and emit the bare
-// fields for the array-of-objects form used by Level 2 / Level 3.
-static bool resolvePinOdb(const sta::Pin* pin,
-                          sta::dbNetwork* db_network,
-                          const char*& out_type,
-                          int& out_id)
-{
-  if (!pin || !db_network) {
-    return false;
-  }
-  odb::dbITerm* iterm = nullptr;
-  odb::dbBTerm* bterm = nullptr;
-  odb::dbModITerm* moditerm = nullptr;
-  db_network->staToDb(pin, iterm, bterm, moditerm);
-  if (iterm) {
-    out_type = "iterm";
-    out_id = static_cast<int>(iterm->getId());
-    return true;
-  }
-  if (bterm) {
-    out_type = "bterm";
-    out_id = static_cast<int>(bterm->getId());
-    return true;
-  }
-  if (moditerm) {
-    out_type = "moditerm";
-    out_id = static_cast<int>(moditerm->getId());
-    return true;
-  }
-  return false;
-}
-
-static void emitPinOdbBare(boost::json::object& obj,
-                           const sta::Pin* pin,
-                           sta::dbNetwork* db_network)
-{
-  const char* type = nullptr;
-  int id = 0;
-  if (resolvePinOdb(pin, db_network, type, id)) {
-    obj["odb_type"] = std::string(type);
-    obj["odb_id"] = id;
-  }
-}
-
-// Prefix variant: emits "<prefix>_odb_type" / "<prefix>_odb_id" so a
-// pin can carry inline ODB refs alongside other fields on the same
-// object (e.g. d_pin / q_pin / out_pin on a stage card).
-static void emitPinOdbPrefixed(boost::json::object& obj,
-                               const std::string& prefix,
-                               const sta::Pin* pin,
-                               sta::dbNetwork* db_network)
-{
-  const char* type = nullptr;
-  int id = 0;
-  if (resolvePinOdb(pin, db_network, type, id)) {
-    obj[prefix + "_odb_type"] = std::string(type);
-    obj[prefix + "_odb_id"] = id;
-  }
-}
-
-static void emitInstanceOdbBare(boost::json::object& obj,
-                                const sta::Instance* inst,
-                                sta::dbNetwork* db_network)
-{
-  if (!inst || !db_network) {
-    return;
-  }
-  odb::dbInst* di = nullptr;
-  odb::dbModInst* dmi = nullptr;
-  db_network->staToDb(inst, di, dmi);
-  if (di) {
-    obj["odb_type"] = std::string("inst");
-    obj["odb_id"] = static_cast<int>(di->getId());
-  } else if (dmi) {
-    obj["odb_type"] = std::string("modinst");
-    obj["odb_id"] = static_cast<int>(dmi->getId());
-  }
-}
+// resolvePinOdb / emitPinOdbBare / emitPinOdbRef / emitInstanceOdbBare
+// are shared with sdc_handler.cpp via sdc_handler.h.
 
 // Bundle of pointers the multi-mode walk needs. Unlike SdcContext, this
 // carries no specific mode/sdc/scene — the overview handler iterates
@@ -1778,7 +1703,7 @@ WebSocketResponse CdcHandler::handleCdcPathDetail(const WebSocketRequest& req)
   auto emitOdbPinFields = [&](boost::json::object& target,
                               const std::string& prefix,
                               const sta::Pin* pin) {
-    emitPinOdbPrefixed(target, prefix, pin, ctx->db_network);
+    emitPinOdbRef(target, prefix, pin, ctx->db_network);
   };
   auto emitOutNet = [&](boost::json::object& target, const sta::Pin* out_pin) {
     if (!out_pin) {
@@ -2381,7 +2306,7 @@ WebSocketResponse CdcHandler::handleCdcPinFanIn(const WebSocketRequest& req)
   auto emitOdbPinFields = [&](boost::json::object& target,
                               const std::string& prefix,
                               const sta::Pin* pin) {
-    emitPinOdbPrefixed(target, prefix, pin, ctx->db_network);
+    emitPinOdbRef(target, prefix, pin, ctx->db_network);
   };
   auto emitOutNet = [&](boost::json::object& target, const sta::Pin* out_pin) {
     if (!out_pin) {
@@ -3168,7 +3093,7 @@ WebSocketResponse CdcHandler::handleCdcClockMixTrace(
                           const std::string& prefix,
                           const sta::Pin* pin)
     {
-      emitPinOdbPrefixed(target, prefix, pin, db_network);
+      emitPinOdbRef(target, prefix, pin, db_network);
     }
 
     void emitOutNet(boost::json::object& target, const sta::Pin* out_pin)

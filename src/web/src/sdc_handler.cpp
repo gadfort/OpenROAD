@@ -18,6 +18,7 @@
 #include "db_sta/dbSta.hh"
 #include "request_dispatcher.h"
 #include "request_handler.h"
+#include "sdc_handler.h"
 #include "sta/Clock.hh"
 #include "sta/ClockGroups.hh"
 #include "sta/ClockInsertion.hh"
@@ -152,38 +153,8 @@ static std::optional<SdcContext> makeSdcContext(
   };
 }
 
-// Emit a RiseFallMinMax as four nullable JSON fields (rise_max, rise_min,
-// fall_max, fall_min). When `rfmm` is null, every slot is emitted as null.
-static void emitRiseFallMinMax(boost::json::object& obj,
-                               const sta::RiseFallMinMax* rfmm,
-                               float scale)
-{
-  const struct
-  {
-    const char* key;
-    const sta::RiseFall* rf;
-    const sta::MinMax* mm;
-  } slots[] = {
-      {"rise_max", sta::RiseFall::rise(), sta::MinMax::max()},
-      {"rise_min", sta::RiseFall::rise(), sta::MinMax::min()},
-      {"fall_max", sta::RiseFall::fall(), sta::MinMax::max()},
-      {"fall_min", sta::RiseFall::fall(), sta::MinMax::min()},
-  };
-  for (const auto& s : slots) {
-    float val;
-    bool exists;
-    if (rfmm) {
-      rfmm->value(s.rf, s.mm, val, exists);
-    } else {
-      exists = false;
-    }
-    if (exists) {
-      obj[s.key] = static_cast<double>(val / scale);
-    } else {
-      obj[s.key] = nullptr;
-    }
-  }
-}
+// emitRiseFallMinMax / emitPinOdb* / resolvePinOdb / emitInstanceOdbBare
+// are shared with cdc_handler.cpp via sdc_handler.h.
 
 // Classify an SDC exception path into the wire-format type string used by
 // both handleSdcExceptions and the per-pin endpoint emit.
@@ -218,90 +189,6 @@ static const char* logicValueStr(sta::LogicValue val)
       return "fall";
     default:
       return "X";
-  }
-}
-
-// Resolve a sta::Pin to its ODB handle and write {type, id} into the two
-// out-params. Returns false if either input is null or the pin is unresolved.
-static bool resolvePinOdb(const sta::Pin* pin,
-                          sta::dbNetwork* db_network,
-                          const char*& out_type,
-                          int& out_id)
-{
-  if (!pin || !db_network) {
-    return false;
-  }
-  odb::dbITerm* iterm = nullptr;
-  odb::dbBTerm* bterm = nullptr;
-  odb::dbModITerm* moditerm = nullptr;
-  db_network->staToDb(pin, iterm, bterm, moditerm);
-  if (iterm) {
-    out_type = "iterm";
-    out_id = static_cast<int>(iterm->getId());
-    return true;
-  }
-  if (bterm) {
-    out_type = "bterm";
-    out_id = static_cast<int>(bterm->getId());
-    return true;
-  }
-  if (moditerm) {
-    // Hierarchical (module-boundary) pin — also inspectable via kInspect
-    // with odb_type=moditerm.
-    out_type = "moditerm";
-    out_id = static_cast<int>(moditerm->getId());
-    return true;
-  }
-  return false;
-}
-
-// Emit "<prefix>_odb_type" / "<prefix>_odb_id" so the frontend can dispatch
-// an inspect-by-ODB without a name-resolution round-trip. Emits nothing for
-// unresolved pins; _linkifyPin on the frontend no-ops in that case.
-static void emitPinOdbRef(boost::json::object& obj,
-                          const std::string& prefix,
-                          const sta::Pin* pin,
-                          sta::dbNetwork* db_network)
-{
-  const char* type = nullptr;
-  int id = 0;
-  if (resolvePinOdb(pin, db_network, type, id)) {
-    obj[prefix + "_odb_type"] = std::string(type);
-    obj[prefix + "_odb_id"] = id;
-  }
-}
-
-// Bare-field variant of emitPinOdbRef for arrays of {name, odb_type, odb_id}.
-static void emitPinOdbBare(boost::json::object& obj,
-                           const sta::Pin* pin,
-                           sta::dbNetwork* db_network)
-{
-  const char* type = nullptr;
-  int id = 0;
-  if (resolvePinOdb(pin, db_network, type, id)) {
-    obj["odb_type"] = std::string(type);
-    obj["odb_id"] = id;
-  }
-}
-
-// Emit bare "odb_type" / "odb_id" for an Instance: dbInst → "inst",
-// dbModInst → "modinst".
-static void emitInstanceOdbBare(boost::json::object& obj,
-                                const sta::Instance* inst,
-                                sta::dbNetwork* db_network)
-{
-  if (!inst || !db_network) {
-    return;
-  }
-  odb::dbInst* di = nullptr;
-  odb::dbModInst* dmi = nullptr;
-  db_network->staToDb(inst, di, dmi);
-  if (di) {
-    obj["odb_type"] = std::string("inst");
-    obj["odb_id"] = static_cast<int>(di->getId());
-  } else if (dmi) {
-    obj["odb_type"] = std::string("modinst");
-    obj["odb_id"] = static_cast<int>(dmi->getId());
   }
 }
 
