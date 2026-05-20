@@ -132,9 +132,16 @@ const STYLES = {
     // dividing border across Clocks, Endpoints, Port Delays, Exceptions
     // and Limits cards.
     CARD_HEADER:
-        'display:flex;align-items:center;gap:8px;padding:5px 10px;'
+        'display:flex;align-items:center;gap:8px;padding:4px 8px;'
         + 'background:var(--bg-header);'
         + 'border-bottom:1px solid var(--border);font-size:12px;',
+
+    // Card body content rows — slightly more vertical breathing room
+    // than the header so paragraph-style content reads comfortably.
+    // Pair with CARD_HEADER on the same card. (4px / 6px is the only
+    // pair allowed; no other padding sizes for cards.)
+    CARD_BODY:
+        'padding:6px 8px;',
 
     // Card outer frame — rounded, bordered, content-clipping. Standard
     // wrapper for every domain card the widget builds.
@@ -1126,6 +1133,73 @@ export class SdcWidget {
         return d;
     }
 
+    // Status pill — small, rounded, monochrome by var-pair. Replaces
+    // the ~15 inline patterns where a span is built with `STYLES.PILL`
+    // + `font-weight:600;background:var(--sdc-X-bg);color:var(--sdc-X-fg);`.
+    // Caller passes the bg/fg variable NAMES (without the `var(...)`
+    // wrapping) so theme switching just works. `tooltip` is optional.
+    _makeStatusPill(text, varBg, varFg, tooltip) {
+        const el = document.createElement('span');
+        el.style.cssText
+            = STYLES.PILL + 'font-weight:600;'
+            + `background:var(${varBg});color:var(${varFg});`;
+        el.textContent = text;
+        if (tooltip) el.title = tooltip;
+        return el;
+    }
+
+    // Card bar — the standard `STYLES.CARD_HEADER` flex layout with a
+    // badge slot, a name span (mono+bold, leading-ellipsis truncating),
+    // and an optional trailing tags row. When `expandable=true` the
+    // bar is wired with cursor:pointer + user-select:none and an
+    // arrow span (▶) is the FIRST child; the caller wires the
+    // toggle behaviour. The name span is NEVER linkified — per the
+    // "Expandable cards" UX rule, inspect goes inside the body.
+    //
+    //   const { bar, arrow, body } = this._makeCardBar({
+    //     badge: this._makeStatusPill('FLOP', '--sdc-master-bg', '--sdc-master-fg'),
+    //     name:  'top/u_core/u_dut/q_reg',
+    //     tags:  [cellSpan, clockSpan],
+    //     expandable: true,
+    //   });
+    //   card.appendChild(bar); card.appendChild(body);
+    //   bar.addEventListener('click', () => { ... });
+    _makeCardBar({ badge, name, tags, expandable }) {
+        const bar = document.createElement('div');
+        bar.style.cssText = STYLES.CARD_HEADER
+            + (expandable
+                ? 'cursor:pointer;user-select:none;'
+                : '');
+        let arrow = null;
+        if (expandable) {
+            arrow = document.createElement('span');
+            arrow.style.cssText
+                = 'font-size:11px;color:var(--fg-muted);'
+                + 'width:10px;flex-shrink:0;';
+            arrow.textContent = '▶';
+            bar.appendChild(arrow);
+        }
+        if (badge) bar.appendChild(badge);
+        if (name != null) {
+            const nameEl = document.createElement('span');
+            nameEl.style.cssText
+                = STYLES.LABEL_MONO
+                + 'color:var(--fg-primary);'
+                + 'flex:1 1 auto;min-width:0;'
+                + TRUNCATE_PATH_CSS;
+            nameEl.textContent = name;
+            nameEl.title = name;
+            bar.appendChild(nameEl);
+        }
+        if (Array.isArray(tags)) {
+            for (const t of tags) if (t) bar.appendChild(t);
+        }
+        const body = document.createElement('div');
+        body.style.cssText = 'display:none;' + STYLES.CARD_BODY
+            + 'border-top:1px solid var(--border-subtle);';
+        return { bar, arrow, body };
+    }
+
     // Compact SVG element builder. Replaces the very common pattern:
     //   const r = document.createElementNS(SVG_NS, 'rect');
     //   r.setAttribute('x', 10); r.setAttribute('y', 20); ...
@@ -1459,7 +1533,7 @@ export class SdcWidget {
             const tag = document.createElement('span');
             tag.style.cssText =
                 'font-size:11px;padding:1px 6px;border-radius:8px;' +
-                'background:rgba(255, 167, 38, 0.25);' +
+                'background:var(--sdc-status-amber-bg);' +
                 'color:var(--fg-primary);font-weight:600;';
             tag.textContent = 'clock-mismatch';
             tag.title =
@@ -1752,7 +1826,7 @@ export class SdcWidget {
     _renderPortDelayFallback(entry, timeUnit) {
         const row = document.createElement('div');
         row.style.cssText =
-            'display:flex;align-items:baseline;gap:12px;padding:5px 10px;' +
+            'display:flex;align-items:baseline;gap:12px;padding:4px 8px;' +
             'font-size:12px;color:var(--fg-secondary);border-top:1px solid var(--border-subtle);';
 
         const clkSpan = document.createElement('span');
@@ -3474,7 +3548,7 @@ export class SdcWidget {
     _makeMultiMatrixHeader(numClocks, numGroups) {
         const div = document.createElement('div');
         div.style.cssText =
-            'margin-top:14px;padding:6px 10px;font-size:12px;color:var(--fg-muted);' +
+            'margin-top:14px;padding:6px 8px;font-size:12px;color:var(--fg-muted);' +
             'background:var(--bg-panel);border:1px solid var(--border-subtle);' +
             'border-radius:4px;';
         div.innerHTML =
@@ -3495,7 +3569,7 @@ export class SdcWidget {
             'background:var(--bg-panel);';
         const hdr = document.createElement('div');
         hdr.style.cssText =
-            'padding:5px 10px;background:var(--bg-header);font-size:12px;' +
+            'padding:4px 8px;background:var(--bg-header);font-size:12px;' +
             'font-weight:600;color:var(--fg-primary);' +
             'border-bottom:1px solid var(--border);';
         hdr.textContent = opts.headerText
@@ -3508,7 +3582,7 @@ export class SdcWidget {
         // any inherited line-height.
         const body = document.createElement('div');
         body.style.cssText =
-            'padding:6px 10px;font-family:monospace;font-size:12px;' +
+            'padding:6px 8px;font-family:monospace;font-size:12px;' +
             'color:var(--fg-primary);' +
             (names.length > 12 ? 'max-height:240px;overflow-y:auto;' : '');
         for (const n of names) {
@@ -3531,7 +3605,7 @@ export class SdcWidget {
 
         const header = document.createElement('div');
         header.style.cssText =
-            'display:flex;align-items:center;gap:8px;padding:5px 10px;' +
+            'display:flex;align-items:center;gap:8px;padding:4px 8px;' +
             'background:var(--bg-header);border-bottom:1px solid var(--border-subtle);';
 
         const typeColors = {
@@ -3570,7 +3644,7 @@ export class SdcWidget {
         card.appendChild(header);
 
         const body = document.createElement('div');
-        body.style.cssText = 'padding:6px 10px;display:flex;flex-direction:column;gap:4px;';
+        body.style.cssText = 'padding:6px 8px;display:flex;flex-direction:column;gap:4px;';
 
         const sets = grp.clk_sets || [];
         sets.forEach((set, i) => {
@@ -3659,7 +3733,7 @@ export class SdcWidget {
 
         const hdr = document.createElement('div');
         hdr.style.cssText =
-            'padding:5px 10px;background:var(--bg-header);font-size:12px;font-weight:600;' +
+            'padding:4px 8px;background:var(--bg-header);font-size:12px;font-weight:600;' +
             'color:var(--fg-primary);border-bottom:1px solid var(--border);';
         hdr.textContent = `Clock Relationship Matrix${opts.titleSuffix || ''}`;
         section.appendChild(hdr);
@@ -5706,7 +5780,7 @@ export class SdcWidget {
             'rise': 'rgba(220, 180, 60, 0.20)',
             'fall': 'rgba(80, 140, 220, 0.20)',
         };
-        const bg = bgByVal[info.value] || 'rgba(150, 150, 150, 0.20)';
+        const bg = bgByVal[info.value] || 'var(--sdc-status-muted-bg)';
         badge.style.cssText =
             `font-size:11px;padding:0 5px;border-radius:8px;`
             + `background:${bg};color:var(--fg-primary);`
@@ -5991,7 +6065,7 @@ export class SdcWidget {
         // Pin header
         const pinHeader = document.createElement('div');
         pinHeader.style.cssText =
-            'padding:5px 10px;background:var(--bg-header);border-bottom:1px solid var(--border);' +
+            'padding:4px 8px;background:var(--bg-header);border-bottom:1px solid var(--border);' +
             'display:flex;align-items:center;gap:8px;font-size:12px;';
         const pinIcon = document.createElement('span');
         pinIcon.style.cssText =
@@ -7691,7 +7765,7 @@ export class SdcWidget {
         legend.style.cssText
             = 'flex-shrink:0;border-top:1px solid var(--border);'
             + 'background:var(--bg-header);'
-            + 'padding:6px 10px;'
+            + 'padding:6px 8px;'
             + 'font-size:11px;color:var(--fg-muted);'
             + 'display:none;'
             + 'flex-direction:column;gap:4px;'
@@ -8292,15 +8366,15 @@ export class SdcWidget {
                 // both stay readable).
                 let bg, fg, hint;
                 if (cell.unsynced > 0) {
-                    bg  = 'rgba(220, 64, 64, 0.30)';
+                    bg  = 'var(--sdc-status-red-bg-strong)';
                     fg  = 'var(--fg-primary)';
                     hint = 'unsynced paths present';
                 } else if (cell.synced > 0) {
-                    bg  = 'rgba(76, 175, 80, 0.25)';
+                    bg  = 'var(--sdc-status-green-bg)';
                     fg  = 'var(--fg-primary)';
                     hint = 'every path synchronized or excluded';
                 } else {
-                    bg  = 'rgba(150, 150, 150, 0.18)';
+                    bg  = 'var(--sdc-status-muted-bg)';
                     fg  = 'var(--fg-secondary)';
                     hint = 'every path excluded by SDC';
                 }
@@ -8434,7 +8508,7 @@ export class SdcWidget {
         const header = document.createElement('div');
         header.style.cssText
             = 'display:flex;align-items:center;gap:8px;'
-            + 'padding:6px 10px;cursor:pointer;'
+            + 'padding:6px 8px;cursor:pointer;'
             + 'font-weight:600;color:var(--fg-primary);'
             + 'user-select:none;';
         header.title = id === 'data'
@@ -8897,22 +8971,12 @@ export class SdcWidget {
             + TRUNCATE_PATH_CSS;
         const labelText = this._mixOriginLabel(grp);
         originLbl.textContent = labelText;
-        // Make the origin clickable into the inspector when the
-        // backend resolved a real ODB target. For Mixer / NetMixer
-        // the natural target is the mixer cell's instance (so the
-        // user lands on the AND/OR cell with all its pin context);
-        // for Port the target is the port pin itself. Terminal kinds
-        // (depth_limit / feedback / stuck / unresolved / no_origin)
-        // have no useful target so they stay non-clickable.
-        const k = grp.origin_kind;
-        if (k === 'mixer' || k === 'net_mixer') {
-            this._linkifyPin(originLbl, grp, 'origin_inst');
-        } else if (k === 'port') {
-            this._linkifyPin(originLbl, grp, 'origin_pin');
-        }
-        // Suppress click bubbling so the linkified origin doesn't
-        // also toggle the group's expand/collapse arrow.
-        originLbl.addEventListener('click', (ev) => ev.stopPropagation());
+        // The origin label is read-only here — an expandable card's
+        // title clicks expand, not select. Inspector access for the
+        // origin lives inside the expanded body (see
+        // _renderMixGroupEndpoints) as an explicit `↗ inspect`
+        // link. See the "Expandable cards" UX rule in
+        // plans/sdc-visualizer-plan.md.
         originLblWrap.appendChild(originLbl);
         header.appendChild(originLblWrap);
 
@@ -9046,6 +9110,37 @@ export class SdcWidget {
     }
 
     _renderMixGroupEndpoints(parent, grp, includeSync) {
+        // First row of the expanded body: an explicit "↗ inspect
+        // origin" link when the backend resolved a real ODB target
+        // for the group's origin. The card header itself is reserved
+        // for expand/collapse (per the "Expandable cards" UX rule);
+        // the inspector affordance lives down here so click intent
+        // stays unambiguous on the header. `_linkifyPin`'s prefix
+        // form uses the same flat-field convention the original
+        // header link used (origin_inst_odb_type / origin_inst_odb_id
+        // for mixer cells; origin_pin_odb_type / odb_id for ports).
+        const k = grp.origin_kind;
+        const prefix = (k === 'mixer' || k === 'net_mixer')
+            ? 'origin_inst'
+            : (k === 'port' ? 'origin_pin' : null);
+        if (prefix
+            && grp[`${prefix}_odb_type`]
+            && grp[`${prefix}_odb_id`] != null) {
+            const row = document.createElement('div');
+            row.style.cssText
+                = 'display:flex;align-items:center;gap:6px;'
+                + 'padding:0 0 4px 0;font-size:11px;'
+                + 'border-bottom:1px solid var(--border-faint, var(--border));'
+                + 'margin-bottom:4px;';
+            const link = document.createElement('a');
+            link.textContent = (k === 'port')
+                ? '↗ inspect origin (port)'
+                : '↗ inspect origin (mixer cell)';
+            link.title = this._mixOriginLabel(grp);
+            this._linkifyPin(link, grp, prefix);
+            row.appendChild(link);
+            parent.appendChild(row);
+        }
         const eps = grp.endpoints || [];
         for (const e of eps) {
             const row = document.createElement('div');
@@ -9771,17 +9866,17 @@ export class SdcWidget {
         catEl.style.cssText =
             'padding:1px 6px;border-radius:3px;font-weight:600;';
         if (p.category === 'unsynchronized') {
-            catEl.style.background = 'rgba(220, 64, 64, 0.30)';
+            catEl.style.background = 'var(--sdc-status-red-bg-strong)';
             catEl.title =
                 'no synchronizer detected on the capture side — ' +
                 'this is the actionable bug bucket';
         } else if (p.category === 'synchronized') {
-            catEl.style.background = 'rgba(76, 175, 80, 0.25)';
+            catEl.style.background = 'var(--sdc-status-green-bg)';
             catEl.title =
                 'capture flop is followed by a synchronizer ' +
                 'matching one of the detector tiers';
         } else {
-            catEl.style.background = 'rgba(150, 150, 150, 0.20)';
+            catEl.style.background = 'var(--sdc-status-muted-bg)';
             catEl.style.color = 'var(--fg-muted)';
             catEl.title =
                 'covered by an SDC clock_groups / false_path entry — ' +
@@ -9978,7 +10073,7 @@ export class SdcWidget {
         const sc = (data && data.sync_chain) || { kind: 'none', depth: 0 };
         const summary = document.createElement('div');
         summary.style.cssText =
-            'padding:6px 10px;background:var(--bg-input);border-radius:3px;' +
+            'padding:6px 8px;background:var(--bg-input);border-radius:3px;' +
             'font-size:12px;line-height:1.5;';
         const stages = (data && data.stages) || [];
         // Stage-shape inventory drives the summary suffix so the user
@@ -10359,28 +10454,28 @@ export class SdcWidget {
             'The launch flop / port — start of the path. Its CK '
             + 'sets the launch domain; its Q drives the path.'));
         badgeRow.appendChild(badgeItem(
-            'comb · X', 'rgba(150, 150, 150, 0.20)',
+            'comb · X', 'var(--sdc-status-muted-bg)',
             'Combinational gate on the launch-side back-walk. '
             + '"X" is the cell master. Same-domain inputs are '
             + 'expected here; multi-domain inputs upgrade the '
             + 'banner to "⚠ domain mix".'));
         badgeRow.appendChild(badgeItem(
-            '⚠ domain mix · X', 'rgba(220, 64, 64, 0.20)',
+            '⚠ domain mix · X', 'var(--sdc-status-red-bg)',
             'Combinational gate whose inputs span more than one '
             + 'clock domain — the CDC bug originates here, NOT '
             + 'at the downstream capture flop.'));
         badgeRow.appendChild(badgeItem(
-            'crossover · stage 1', 'rgba(76, 175, 80, 0.18)',
+            'crossover · stage 1', 'var(--sdc-status-green-bg)',
             'Capture flop — D is in the launch domain, CK is in '
             + 'the capture domain. A sync chain was detected '
             + 'downstream so this flop is also the meta-resolver '
             + '(stage 1) of that chain.'));
         badgeRow.appendChild(badgeItem(
-            '⚠ crossover', 'rgba(220, 64, 64, 0.20)',
+            '⚠ crossover', 'var(--sdc-status-red-bg)',
             'Capture flop with NO synchronizer detected. The '
             + 'metastability risk is live at this exact pin.'));
         badgeRow.appendChild(badgeItem(
-            'sync stage N', 'rgba(76, 175, 80, 0.18)',
+            'sync stage N', 'var(--sdc-status-green-bg)',
             'Subsequent sync flops downstream of the crossover '
             + '— each adds margin against metastability '
             + 'propagation.'));
@@ -10795,12 +10890,21 @@ export class SdcWidget {
             wrapper.appendChild(empty);
         } else {
             wrapper.appendChild(this._renderCdcClockMixTree(tree));
-            const arrow = document.createElement('div');
-            arrow.style.cssText
-                = 'text-align:center;font-size:11px;'
-                + 'color:var(--fg-muted);padding:2px;';
-            arrow.textContent = '↓ feeds into';
-            wrapper.appendChild(arrow);
+            // `↓ feeds into` is only meaningful when the trace is
+            // anchored ABOVE its originating stage card (path-detail
+            // convention: the trace tree feeds DOWN into the card).
+            // For listing in-place expansions (placement: 'after')
+            // the trace IS the expansion — there's no downstream
+            // stage to feed into — so we omit the arrow. See the
+            // "Expandable cards" UX rule in the plan.
+            if (placement !== 'after') {
+                const arrow = document.createElement('div');
+                arrow.style.cssText
+                    = 'text-align:center;font-size:11px;'
+                    + 'color:var(--fg-muted);padding:2px;';
+                arrow.textContent = '↓ feeds into';
+                wrapper.appendChild(arrow);
+            }
         }
 
         // Strip placement: BEFORE the anchor (path-detail convention,
@@ -11160,7 +11264,7 @@ export class SdcWidget {
         // Two arrow markers (one per palette) so each edge gets the
         // matching color tip.
         const COLOR_DATA  = 'var(--fg-muted)';
-        const COLOR_CLOCK = 'rgba(255, 167, 38, 0.85)';
+        const COLOR_CLOCK = 'var(--sdc-status-amber-fg)';
         const svgNS = 'http://www.w3.org/2000/svg';
         const svg = document.createElementNS(svgNS, 'svg');
         svg.setAttribute('width', graphRect.width);
@@ -11520,14 +11624,14 @@ export class SdcWidget {
                           + ' inputs merge';
                     // Yellow/orange — clock convergence is often
                     // intentional (clock mux), not a bug per se.
-                    bannerBg = 'rgba(255, 167, 38, 0.20)';
+                    bannerBg = 'var(--sdc-status-amber-bg)';
                 } else {
                     bannerText = node.degenerate
                         ? '⚠ DATA-PATH MIX · single contributor'
                         : `⚠ DATA-PATH MIX · ${node.branches.length}`
                           + ' inputs merge';
                     // Red — data-path mix is the actual CDC bug.
-                    bannerBg = 'rgba(220, 64, 64, 0.22)';
+                    bannerBg = 'var(--sdc-status-red-bg)';
                 }
                 break;
             case 'net_mixer':
@@ -11536,22 +11640,22 @@ export class SdcWidget {
                         ? '⚡ CLOCK-PATH NET CONVERGENCE · 1 driver'
                         : `⚡ CLOCK-PATH NET CONVERGENCE · `
                           + `${node.branches.length} drivers`;
-                    bannerBg = 'rgba(255, 167, 38, 0.20)';
+                    bannerBg = 'var(--sdc-status-amber-bg)';
                 } else {
                     bannerText = node.degenerate
                         ? '⚠ DATA-PATH NET CONVERGENCE · 1 driver'
                         : `⚠ DATA-PATH NET CONVERGENCE · `
                           + `${node.branches.length} drivers`;
-                    bannerBg = 'rgba(220, 64, 64, 0.22)';
+                    bannerBg = 'var(--sdc-status-red-bg)';
                 }
                 break;
             case 'port':
                 bannerText = '⏚ clock source · port';
-                bannerBg = 'rgba(76, 175, 80, 0.18)';
+                bannerBg = 'var(--sdc-status-green-bg)';
                 break;
             case 'stuck':
                 bannerText = '⊘ trace stopped';
-                bannerBg = 'rgba(220, 64, 64, 0.18)';
+                bannerBg = 'var(--sdc-status-red-bg)';
                 break;
             case 'feedback':
                 bannerText = '↺ feedback cycle';
@@ -11740,7 +11844,7 @@ export class SdcWidget {
             const info = document.createElement('div');
             info.style.cssText
                 = 'padding:3px 8px;font-size:11px;'
-                + 'background:rgba(76, 175, 80, 0.18);'
+                + 'background:var(--sdc-status-green-bg);'
                 + 'color:var(--fg-primary);'
                 + 'border-top:1px solid var(--border);';
             info.textContent
@@ -11759,7 +11863,7 @@ export class SdcWidget {
             const warn = document.createElement('div');
             warn.style.cssText
                 = 'padding:3px 8px;font-size:11px;'
-                + 'background:rgba(255, 167, 38, 0.20);'
+                + 'background:var(--sdc-status-amber-bg);'
                 + 'color:var(--fg-primary);'
                 + 'border-top:1px solid var(--border);';
             warn.textContent
@@ -12049,7 +12153,7 @@ export class SdcWidget {
             // case but keep the green colour so the user still sees
             // "this is synced".
             card.style.borderColor = 'rgba(76, 175, 80, 0.7)';
-            banner.style.background = 'rgba(76, 175, 80, 0.18)';
+            banner.style.background = 'var(--sdc-status-green-bg)';
             banner.style.color = 'var(--fg-primary)';
             if (hasDownstream) {
                 banner.textContent = 'crossover · stage 1';
@@ -12072,7 +12176,7 @@ export class SdcWidget {
                     `external sync stages downstream.`;
             }
         } else if (s.is_capture) {
-            banner.style.background = 'rgba(220, 64, 64, 0.20)';
+            banner.style.background = 'var(--sdc-status-red-bg)';
             banner.style.color = 'var(--fg-primary)';
             banner.textContent = '⚠ crossover';
             banner.title =
@@ -12082,7 +12186,7 @@ export class SdcWidget {
                 `chain detected, so the metastability risk is live at ` +
                 `this exact pin.`;
         } else if (s.is_sync_stage) {
-            banner.style.background = 'rgba(76, 175, 80, 0.18)';
+            banner.style.background = 'var(--sdc-status-green-bg)';
             banner.style.color = 'var(--fg-primary)';
             // Capture flop is stage 1 (the meta-resolver); subsequent
             // sync stages count up from there. syncOrdinal is computed
@@ -12097,7 +12201,7 @@ export class SdcWidget {
                 'wiring (buffers and inverters tolerated, no ' +
                 'combinational decision logic).';
         } else if (s.is_launch && s.kind === 'port') {
-            banner.style.background = 'rgba(255, 167, 38, 0.20)';
+            banner.style.background = 'var(--sdc-status-amber-bg)';
             banner.style.color = 'var(--fg-primary)';
             banner.textContent = '◂ launch · port';
             banner.title =
@@ -12105,7 +12209,7 @@ export class SdcWidget {
                 'signal enters the design. The launch-side walk could ' +
                 'not trace through the module boundary.';
         } else if (s.is_launch) {
-            banner.style.background = 'rgba(255, 167, 38, 0.20)';
+            banner.style.background = 'var(--sdc-status-amber-bg)';
             banner.style.color = 'var(--fg-primary)';
             banner.textContent = '◂ launch';
             banner.title =
@@ -12123,7 +12227,7 @@ export class SdcWidget {
             // the listed input clocks and decides if they really
             // expected the requested clock to reach this gate.
             card.style.borderColor = 'rgba(255, 167, 38, 0.7)';
-            banner.style.background = 'rgba(255, 167, 38, 0.20)';
+            banner.style.background = 'var(--sdc-status-amber-bg)';
             banner.style.color = 'var(--fg-primary)';
             banner.textContent = `⊘ trace stopped · ${s.cell || 'gate'}`;
             banner.title =
@@ -12159,7 +12263,7 @@ export class SdcWidget {
                 : 'rgba(220, 64, 64, 0.7)';
             banner.style.background = isClockPath
                 ? 'rgba(80, 140, 220, 0.20)'
-                : 'rgba(220, 64, 64, 0.20)';
+                : 'var(--sdc-status-red-bg)';
             banner.style.color = 'var(--fg-primary)';
             if (isClockPath) {
                 banner.textContent
@@ -12318,9 +12422,9 @@ export class SdcWidget {
                         + 'color:var(--fg-secondary);'
                         + 'white-space:nowrap;';
                     if (role === 'launch') {
-                        chip.style.background = 'rgba(220, 64, 64, 0.18)';
+                        chip.style.background = 'var(--sdc-status-red-bg)';
                     } else if (role === 'capture') {
-                        chip.style.background = 'rgba(76, 175, 80, 0.18)';
+                        chip.style.background = 'var(--sdc-status-green-bg)';
                     }
                     chip.title = role === 'launch'
                         ? `${c} — launches this transition (clock on `
@@ -13691,7 +13795,7 @@ export class SdcWidget {
             //  `details`; appended to the card after `body` below.)
             const details = document.createElement('div');
             details.style.cssText =
-                'display:none;padding:6px 10px;font-size:12px;'
+                'display:none;padding:6px 8px;font-size:12px;'
                 + 'border-top:1px solid var(--border-subtle);'
                 + 'color:var(--fg-primary);'
                 + 'flex-direction:column;gap:2px;';
@@ -14306,7 +14410,7 @@ export class SdcWidget {
         if (this._currentMode) {
             const modeHdr = document.createElement('div');
             modeHdr.style.cssText =
-                'padding:6px 10px;font-size:12px;font-weight:600;color:var(--fg-muted);' +
+                'padding:6px 8px;font-size:12px;font-weight:600;color:var(--fg-muted);' +
                 'border-bottom:1px solid var(--border-subtle);' +
                 'letter-spacing:0.04em;text-transform:uppercase;';
             modeHdr.textContent = `Mode: ${this._currentMode}`;
@@ -14322,7 +14426,7 @@ export class SdcWidget {
         // Summary header listing the breakdown by source command.
         const header = document.createElement('div');
         header.style.cssText =
-            'padding:6px 10px;font-size:12px;color:var(--fg-muted);' +
+            'padding:6px 8px;font-size:12px;color:var(--fg-muted);' +
             'border-bottom:1px solid var(--border-subtle);margin-bottom:4px;';
         const pieces = [];
         if (caseCount  > 0) pieces.push(`${caseCount} set_case_analysis`);
@@ -14709,7 +14813,7 @@ export class SdcWidget {
     _makeLimGroupHeader(title, subtitle) {
         const div = document.createElement('div');
         div.style.cssText =
-            'margin:14px 2px 6px 2px;padding:6px 10px;border-radius:4px;' +
+            'margin:14px 2px 6px 2px;padding:6px 8px;border-radius:4px;' +
             'background:var(--bg-input-deep);' +
             'border-left:3px solid var(--accent-tab);';
         const h = document.createElement('div');
@@ -14736,7 +14840,7 @@ export class SdcWidget {
 
         const hdr = document.createElement('div');
         hdr.style.cssText =
-            'display:flex;align-items:center;gap:6px;padding:5px 10px;' +
+            'display:flex;align-items:center;gap:6px;padding:4px 8px;' +
             'background:var(--bg-header);cursor:pointer;user-select:none;';
         const arrow = document.createElement('span');
         arrow.style.cssText = 'font-size:11px;color:var(--fg-muted);transition:transform 0.15s;';

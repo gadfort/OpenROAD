@@ -116,6 +116,20 @@ html[data-theme="dark"] {
        on their own (no opacity) against the dark canvas. */
     --sdc-text-setup:      #e07050;
     --sdc-text-hold:       #7aa8e8;
+
+    /* Status tints — used uniformly for synced (green), unsynced /
+       data-mix (red), clock-path / unaccounted (amber), and excluded /
+       muted (gray). Subtle alpha for backgrounds; -strong variants for
+       emphasized fills (matrix cells, callouts). */
+    --sdc-status-green-bg:        rgba(76, 175, 80, 0.20);
+    --sdc-status-green-bg-strong: rgba(76, 175, 80, 0.28);
+    --sdc-status-red-bg:          rgba(220, 64, 64, 0.22);
+    --sdc-status-red-bg-strong:   rgba(220, 64, 64, 0.30);
+    --sdc-status-amber-bg:        rgba(255, 167, 38, 0.20);
+    --sdc-status-amber-bg-strong: rgba(255, 167, 38, 0.28);
+    --sdc-status-amber-fg:        #ff9a2a;
+    --sdc-status-muted-bg:        rgba(150, 150, 150, 0.20);
+    --sdc-status-muted-bg-strong: rgba(150, 150, 150, 0.28);
 }
 
 html[data-theme="light"] {
@@ -227,6 +241,17 @@ html[data-theme="light"] {
 
     --sdc-text-setup:      #c05030;
     --sdc-text-hold:       #3060a0;
+
+    /* Status tints (light theme — same RGB, same alphas). */
+    --sdc-status-green-bg:        rgba(76, 175, 80, 0.20);
+    --sdc-status-green-bg-strong: rgba(76, 175, 80, 0.28);
+    --sdc-status-red-bg:          rgba(220, 64, 64, 0.22);
+    --sdc-status-red-bg-strong:   rgba(220, 64, 64, 0.30);
+    --sdc-status-amber-bg:        rgba(255, 167, 38, 0.20);
+    --sdc-status-amber-bg-strong: rgba(255, 167, 38, 0.28);
+    --sdc-status-amber-fg:        #b86c00;
+    --sdc-status-muted-bg:        rgba(150, 150, 150, 0.20);
+    --sdc-status-muted-bg-strong: rgba(150, 150, 150, 0.28);
 }
 
 /* ─── Ruler overlay ──────────────────────────────────────────────────────── */
