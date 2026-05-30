@@ -143,3 +143,5 @@ or_integration_tests(
     widthtable
 )
 
+add_subdirectory(cpp)
+
