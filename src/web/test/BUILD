@@ -269,7 +269,6 @@ cc_test(
     ],
 )
 
-
 cc_test(
     name = "debug_graphics_test",
     srcs = ["cpp/TestDebugGraphics.cpp"],
