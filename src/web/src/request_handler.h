@@ -138,6 +138,7 @@ struct WebSocketRequest
     kCdcGetWhitelist,
     kDebugContinue,
     kDebugCharts,
+    kGet3DData,
     kUnknown
   };
 
@@ -320,6 +321,7 @@ class SelectHandler
   WebSocketResponse handleSchematicFull(const WebSocketRequest& req);
   WebSocketResponse handleSchematicInspect(const WebSocketRequest& req,
                                            SessionState& state);
+  WebSocketResponse handleGet3DData(const WebSocketRequest& req);
 
  private:
   // Shared inspect pipeline used by both handleInspect (resolves the

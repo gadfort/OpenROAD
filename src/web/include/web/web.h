@@ -3,8 +3,6 @@
 
 #pragma once
 
-#include <spdlog/common.h>
-
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -17,6 +15,7 @@
 #include "boost/asio/ip/tcp.hpp"
 #include "boost/asio/steady_timer.hpp"
 #include "odb/db.h"
+#include "spdlog/common.h"
 #include "tcl.h"
 #include "utl/Logger.h"
 
@@ -76,6 +75,14 @@ class WebServer
             Tcl_Interp* interp,
             int num_threads);
   ~WebServer();
+
+  // Register the WebLogSink with the Logger so startup output is captured
+  // (and buffered) before any client connects, without opening the network
+  // or installing the headless viewer.  Idempotent and cheap; serve() calls
+  // it too.  Splitting this out lets Main.cc capture read_db/script logs
+  // while deferring serve() until the database is fully loaded, which avoids
+  // the network threads racing the main thread's db construction.
+  void initLogger();
 
   // Start the web server on the given port.  Launches background
   // I/O threads and returns immediately.  A second call is a no-op if
@@ -157,6 +164,11 @@ class WebServer
 
   // Set by tclExitHandler when `exit` is run on a worker thread.
   bool exit_requested_ = false;
+
+  // True once initLogger() registered the WebLogSink.  Lets serve() and
+  // initLogger() be idempotent and lets stop() know the sink needs removing.
+  // Reset in stop() so a subsequent serve() re-registers the sink.
+  bool logger_initialized_ = false;
 
   // Tcl command override: replaces `exit` while the server is running
   // so a worker-thread `exit` doesn't run Tcl_Exit (which would self-join

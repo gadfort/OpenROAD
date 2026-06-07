@@ -178,6 +178,7 @@ COMPULSORY_TESTS = [
     "gcd_def_access",
     "gcd_pdn_def_access",
     "import_package",
+    "lef58_backside_bridge",
     "lef_data_access",
     "lef_mask",
     "multi_tech",
@@ -188,6 +189,7 @@ COMPULSORY_TESTS = [
     "read_3dbx",
     "read_db",
     "read_def",
+    "read_def_virtual",
     "read_def58",
     "read_lef",
     "read_zipped",
@@ -217,6 +219,7 @@ COMPULSORY_TESTS = [
 
 PASSFAIL_TESTS = [
     # pass-fail
+    "read_def_virtual_invalid",
     "test_block",
     "test_bterm",
     "test_destroy",
@@ -303,6 +306,8 @@ filegroup(
         "data/rounding.def",
         "data/sky130_fd_sc_hd__inv_1.gds",
         "data/sky130hd_multi_patterned.def",
+        "data/virtual_route.def",
+        "data/virtual_route_invalid.def",
         "dump_netlists.tcl",
         "dump_netlists_withfill.tcl",
         "fake_macros.def",

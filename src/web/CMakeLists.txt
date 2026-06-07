@@ -35,6 +35,7 @@ set(WEB_ASSET_FILES
     src/timing-widget.js
     src/drc-widget.js
     src/sdc-widget.js
+    src/3d-viewer-widget.js
     src/main.js
 )
 
@@ -69,7 +70,11 @@ add_custom_command(
         ${CMAKE_CURRENT_SOURCE_DIR}/src/charts-widget.js
         ${CMAKE_CURRENT_SOURCE_DIR}/src/timing-widget.js
         ${CMAKE_CURRENT_SOURCE_DIR}/src/drc-widget.js
+<<<<<<< HEAD
         ${CMAKE_CURRENT_SOURCE_DIR}/src/sdc-widget.js
+=======
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/3d-viewer-widget.js
+>>>>>>> origin/master
         ${CMAKE_CURRENT_SOURCE_DIR}/src/main.js
   DEPENDS
     src/embed_report_assets.py
@@ -116,6 +121,7 @@ target_link_libraries(web
   PUBLIC
     odb
   PRIVATE
+    cli_completer
     gui_descriptors
     gui_heatmap_core
     dbSta_lib
