@@ -19,6 +19,9 @@ assign_io_bump -net p_ddr_dm_1_o BUMP_0_0
 assign_io_bump -net p_ddr_dm_1_o BUMP_11_12
 assign_io_bump -net p_ddr_dm_1_o BUMP_12_12
 
+set_debug_level PAD Router 3
+set_debug_level PAD RouterPairs 3
+
 rdl_route -layer metal10 -width 4 -spacing 4 "p_ddr_dm_1_o"
 
 set def_file [make_result_file "rdl_route_daisy_chain.def"]

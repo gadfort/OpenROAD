@@ -241,6 +241,19 @@ void RDLRouter::buildIntialRouteSet()
       routes_.emplace_back(new RDLRoute(iterm, iterm_pairs));
     }
   }
+
+  if (logger_->debugCheck(utl::PAD, "RouterPairs", 1)) {
+    for (const auto& route : routes_) {
+      std::string pairs;
+      for (const auto& iterm : route->getTerminals()) {
+        if (!pairs.empty()) {
+          pairs += ", ";
+        }
+        pairs += iterm->getName();
+      }
+      logger_->report("Route {} -> {}", route->getTerminal()->getName(), pairs);
+    }
+  }
 }
 
 int RDLRouter::getRoutingTermCount() const
@@ -455,7 +468,6 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
     route->markRouting();
 
     odb::dbNet* net = src->getNet();
-    auto& net_targets = routing_targets_[net];
 
     if (routed_covers.find(src) != routed_covers.end()) {
       // we've already routed this cover once (indicates the cover has multiple
@@ -471,6 +483,8 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
       routed_pairs[src] = nullptr;
       route->moveNextTerminalToEnd();
     } else {
+      auto& net_targets = routing_targets_[net];
+
       // get the next destination
       odb::dbITerm* dst = nullptr;
       do {
