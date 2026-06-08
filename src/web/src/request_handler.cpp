@@ -204,6 +204,14 @@ static void collectHighlightShapes(const gui::Selected& sel,
   if (!sel) {
     return;
   }
+  // Skip selections the descriptor flags as slow (supply or high-fanout nets).
+  // On the single server thread their highlight would block every other
+  // request (freezing the UI) and emit an enormous shape payload. Selection and
+  // inspection still work; only the overlay is omitted. Mirrors the Qt
+  // inspector, which likewise skips focus-highlight for slow selections.
+  if (sel.isSlowHighlight()) {
+    return;
+  }
   ShapeCollector collector;
   sel.highlight(collector);
   rects = std::move(collector.rects);
@@ -230,7 +238,7 @@ static void collectMultiHighlightShapes(const gui::SelectionSet& selections,
   rects.clear();
   polys.clear();
   for (const auto& sel : selections) {
-    if (!sel) {
+    if (!sel || sel.isSlowHighlight()) {
       continue;
     }
     ShapeCollector collector;

@@ -74,6 +74,18 @@ class FakeDescriptor : public gui::Descriptor
   }
 };
 
+// Stands in for an expensive-to-highlight selection (supply/high-fanout net):
+// highlight() would still draw, but isSlowHighlight() reports true so the
+// handler must skip it.
+class SlowFakeDescriptor : public FakeDescriptor
+{
+ public:
+  bool isSlowHighlight(const std::any& /* object */) const override
+  {
+    return true;
+  }
+};
+
 class LazyMetadataHeatMap : public gui::HeatMapDataSource
 {
  public:
@@ -420,6 +432,7 @@ class SelectHandlerTest : public tst::Nangate45Fixture
   std::unique_ptr<SelectHandler> handler_;
   SessionState state_;
   FakeDescriptor fake_descriptor_;
+  SlowFakeDescriptor slow_descriptor_;
   FakeInspectable fake_current_;
   FakeInspectable fake_previous_;
 };
@@ -1107,6 +1120,85 @@ TEST_F(SelectHandlerTest, SelectNextRestoresSelectionSetHighlights)
   }
   EXPECT_TRUE(found_current);
   EXPECT_TRUE(found_previous);
+}
+
+//------------------------------------------------------------------------------
+// isSlowHighlight honoring: the handler must skip highlight collection for
+// selections the descriptor flags as slow (supply / high-fanout nets), so a
+// single click can't block the server thread or emit a huge shape payload.
+//------------------------------------------------------------------------------
+
+TEST_F(SelectHandlerTest, InspectSkipsHighlightForSlowSelection)
+{
+  FakeInspectable slow_obj{
+      .name = "bignet", .type = "Net", .bbox = {0, 0, 500, 500}};
+  const gui::Selected slow_sel(&slow_obj, &slow_descriptor_);
+  ASSERT_TRUE(slow_sel);
+  ASSERT_TRUE(slow_sel.isSlowHighlight());
+  {
+    std::lock_guard<std::mutex> lock(state_.selectables_mutex);
+    state_.selectables = {slow_sel};
+  }
+  // Seed a stale highlight to prove it is cleared and not replaced.
+  {
+    std::lock_guard<std::mutex> lock(state_.selection_mutex);
+    state_.highlight_rects.emplace_back(1, 2, 3, 4);
+  }
+
+  WebSocketRequest req;
+  req.id = 60;
+  req.type = WebSocketRequest::kInspect;
+  req.json = parseObj(R"({"select_id":0})");
+
+  auto resp = handler_->handleInspect(req, state_);
+  EXPECT_EQ(resp.type, WebSocketResponse::kJson) << payloadStr(resp);
+
+  std::lock_guard<std::mutex> lock(state_.selection_mutex);
+  EXPECT_TRUE(state_.highlight_rects.empty());
+  EXPECT_TRUE(state_.highlight_polys.empty());
+}
+
+TEST_F(SelectHandlerTest, InspectHighlightsNonSlowSelection)
+{
+  // Counterpart: a normal selection IS highlighted (guards against the skip
+  // being too broad).
+  const gui::Selected sel = makeFakeSelected(&fake_current_);
+  ASSERT_FALSE(sel.isSlowHighlight());
+  {
+    std::lock_guard<std::mutex> lock(state_.selectables_mutex);
+    state_.selectables = {sel};
+  }
+
+  WebSocketRequest req;
+  req.id = 61;
+  req.type = WebSocketRequest::kInspect;
+  req.json = parseObj(R"({"select_id":0})");
+
+  handler_->handleInspect(req, state_);
+
+  std::lock_guard<std::mutex> lock(state_.selection_mutex);
+  ASSERT_EQ(state_.highlight_rects.size(), 1u);
+  EXPECT_EQ(state_.highlight_rects[0], fake_current_.bbox);
+}
+
+TEST_F(SelectHandlerTest, SelectionSetSkipsSlowHighlightButKeepsOthers)
+{
+  FakeInspectable slow_obj{
+      .name = "bignet", .type = "Net", .bbox = {500, 500, 600, 600}};
+  const gui::Selected slow_sel(&slow_obj, &slow_descriptor_);
+  const gui::Selected normal_sel = makeFakeSelected(&fake_current_);
+
+  populateSelectionSet(state_, slow_sel, normal_sel, 0);
+
+  WebSocketRequest req;
+  req.id = 62;
+  req.type = WebSocketRequest::kSelectNext;
+  handler_->handleSelectNext(req, state_);
+
+  std::lock_guard<std::mutex> lock(state_.selection_mutex);
+  // Only the non-slow member contributes a highlight rect.
+  ASSERT_EQ(state_.highlight_rects.size(), 1u);
+  EXPECT_EQ(state_.highlight_rects[0], fake_current_.bbox);
 }
 
 //------------------------------------------------------------------------------
