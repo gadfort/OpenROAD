@@ -147,8 +147,8 @@ TEST_F(TestEnclosure, IsPreferredOverMinimizeYTieBreaksOnX)
 // across-track extent dominates).
 TEST_F(TestEnclosure, IsPreferredOverHorizontalLayerMinimizesY)
 {
-  odb::dbTechLayer* h = odb::dbTechLayer::create(
-      tech(), "M_h", odb::dbTechLayerType::ROUTING);
+  odb::dbTechLayer* h
+      = odb::dbTechLayer::create(tech(), "M_h", odb::dbTechLayerType::ROUTING);
   h->setDirection(odb::dbTechLayerDir::HORIZONTAL);
 
   Enclosure small_y(10, 5);
@@ -160,8 +160,8 @@ TEST_F(TestEnclosure, IsPreferredOverHorizontalLayerMinimizesY)
 // On a vertical layer, isPreferredOver minimizes x first instead.
 TEST_F(TestEnclosure, IsPreferredOverVerticalLayerMinimizesX)
 {
-  odb::dbTechLayer* v = odb::dbTechLayer::create(
-      tech(), "M_v", odb::dbTechLayerType::ROUTING);
+  odb::dbTechLayer* v
+      = odb::dbTechLayer::create(tech(), "M_v", odb::dbTechLayerType::ROUTING);
   v->setDirection(odb::dbTechLayerDir::VERTICAL);
 
   Enclosure small_x(5, 10);
@@ -223,8 +223,8 @@ TEST_F(TestEnclosure, IsPreferredOverEqualEnclosureIsFalse)
 // firstOverhang as x and secondOverhang as y and disables axis swapping.
 TEST_F(TestEnclosure, RuleConstructorHorzAndVertStoresOverhangsAsIs)
 {
-  odb::dbTechLayer* layer = odb::dbTechLayer::create(
-      tech(), "M_hv", odb::dbTechLayerType::ROUTING);
+  odb::dbTechLayer* layer
+      = odb::dbTechLayer::create(tech(), "M_hv", odb::dbTechLayerType::ROUTING);
   layer->setDirection(odb::dbTechLayerDir::HORIZONTAL);
 
   odb::dbTechLayerCutEnclosureRule* rule
@@ -233,10 +233,8 @@ TEST_F(TestEnclosure, RuleConstructorHorzAndVertStoresOverhangsAsIs)
   rule->setFirstOverhang(10);   // horizontal overhang -> x
   rule->setSecondOverhang(20);  // vertical overhang -> y
 
-  Enclosure e(rule,
-              layer,
-              odb::Rect(0, 0, 50, 50),
-              odb::dbTechLayerDir::HORIZONTAL);
+  Enclosure e(
+      rule, layer, odb::Rect(0, 0, 50, 50), odb::dbTechLayerDir::HORIZONTAL);
   EXPECT_EQ(e.getX(), 10);
   EXPECT_EQ(e.getY(), 20);
   // HORZ_AND_VERT disables axis swapping in check().
@@ -259,8 +257,7 @@ TEST_F(TestEnclosure, RuleConstructorDefaultSwapsForHorizontalLayer)
 
   // x=10, y=20 with HORIZONTAL layer -> y > x triggers a swap so x ends up
   // larger (preferred-direction extent dominates).
-  Enclosure e(rule, layer, odb::Rect(0, 0, 50, 50),
-              odb::dbTechLayerDir::NONE);
+  Enclosure e(rule, layer, odb::Rect(0, 0, 50, 50), odb::dbTechLayerDir::NONE);
   EXPECT_EQ(e.getX(), 20);
   EXPECT_EQ(e.getY(), 10);
 }
@@ -281,8 +278,7 @@ TEST_F(TestEnclosure, RuleConstructorDefaultSwapsForVerticalLayer)
 
   // x=20, y=10 with VERTICAL layer -> x > y triggers a swap so y ends up
   // larger.
-  Enclosure e(rule, layer, odb::Rect(0, 0, 50, 50),
-              odb::dbTechLayerDir::NONE);
+  Enclosure e(rule, layer, odb::Rect(0, 0, 50, 50), odb::dbTechLayerDir::NONE);
   EXPECT_EQ(e.getX(), 10);
   EXPECT_EQ(e.getY(), 20);
 }
@@ -300,10 +296,8 @@ TEST_F(TestEnclosure, RuleConstructorEolHorizontalUsesFirstAsX)
   rule->setFirstOverhang(7);
   rule->setSecondOverhang(13);
 
-  Enclosure e(rule,
-              layer,
-              odb::Rect(0, 0, 50, 50),
-              odb::dbTechLayerDir::HORIZONTAL);
+  Enclosure e(
+      rule, layer, odb::Rect(0, 0, 50, 50), odb::dbTechLayerDir::HORIZONTAL);
   EXPECT_EQ(e.getX(), 7);
   EXPECT_EQ(e.getY(), 13);
   EXPECT_FALSE(e.check(13, 7));  // EOL disables axis swapping
@@ -322,10 +316,8 @@ TEST_F(TestEnclosure, RuleConstructorEolVerticalSwapsAxes)
   rule->setFirstOverhang(7);
   rule->setSecondOverhang(13);
 
-  Enclosure e(rule,
-              layer,
-              odb::Rect(0, 0, 50, 50),
-              odb::dbTechLayerDir::VERTICAL);
+  Enclosure e(
+      rule, layer, odb::Rect(0, 0, 50, 50), odb::dbTechLayerDir::VERTICAL);
   EXPECT_EQ(e.getX(), 13);
   EXPECT_EQ(e.getY(), 7);
 }
@@ -342,10 +334,7 @@ TEST_F(TestEnclosure, RuleConstructorEolNoneUsesMaxOverhang)
   rule->setFirstOverhang(7);
   rule->setSecondOverhang(13);
 
-  Enclosure e(rule,
-              layer,
-              odb::Rect(0, 0, 50, 50),
-              odb::dbTechLayerDir::NONE);
+  Enclosure e(rule, layer, odb::Rect(0, 0, 50, 50), odb::dbTechLayerDir::NONE);
   EXPECT_EQ(e.getX(), 13);  // max(7, 13)
   EXPECT_EQ(e.getY(), 13);
 }
@@ -360,14 +349,12 @@ TEST_F(TestEnclosure, RuleConstructorEndsideTallCutSwapsOverhangs)
   odb::dbTechLayerCutEnclosureRule* rule
       = odb::dbTechLayerCutEnclosureRule::create(layer);
   rule->setType(odb::dbTechLayerCutEnclosureRule::ENDSIDE);
-  rule->setFirstOverhang(7);   // SIDE
-  rule->setSecondOverhang(13); // END
+  rule->setFirstOverhang(7);    // SIDE
+  rule->setSecondOverhang(13);  // END
 
   // Tall cut: width (dx) = 10 < height (dy) = 20.
-  Enclosure e(rule,
-              layer,
-              odb::Rect(0, 0, 10, 20),
-              odb::dbTechLayerDir::HORIZONTAL);
+  Enclosure e(
+      rule, layer, odb::Rect(0, 0, 10, 20), odb::dbTechLayerDir::HORIZONTAL);
   EXPECT_EQ(e.getX(), 13);  // END overhang
   EXPECT_EQ(e.getY(), 7);   // SIDE overhang
 }
@@ -386,10 +373,8 @@ TEST_F(TestEnclosure, RuleConstructorEndsideWideCutKeepsOverhangsAsIs)
   rule->setSecondOverhang(13);
 
   // Wide cut: width (dx) = 20 > height (dy) = 10.
-  Enclosure e(rule,
-              layer,
-              odb::Rect(0, 0, 20, 10),
-              odb::dbTechLayerDir::HORIZONTAL);
+  Enclosure e(
+      rule, layer, odb::Rect(0, 0, 20, 10), odb::dbTechLayerDir::HORIZONTAL);
   EXPECT_EQ(e.getX(), 7);
   EXPECT_EQ(e.getY(), 13);
 }
@@ -431,13 +416,11 @@ TEST_F(TestEnclosure, RuleConstructorDefaultAllowsAxisSwapInCheck)
 
   // After construction with a HORIZONTAL layer, the stored values become
   // (x, y) = (10, 5) due to the directional swap.
-  Enclosure e(rule, layer, odb::Rect(0, 0, 50, 50),
-              odb::dbTechLayerDir::NONE);
+  Enclosure e(rule, layer, odb::Rect(0, 0, 50, 50), odb::dbTechLayerDir::NONE);
   EXPECT_TRUE(e.check(10, 5));   // exact orientation
   EXPECT_TRUE(e.check(5, 10));   // swapped orientation also passes
   EXPECT_FALSE(e.check(4, 10));  // x too small even after swap
 }
-
 
 // =============================================================================
 // Tests that exercise the rest of the via classes (DbTechVia, DbGenerateVia,
@@ -463,9 +446,12 @@ TEST_F(TestPDNViaTech, TechViaGeneratorIdentifiesLayersFromVia)
 {
   const ViaStack s = makeBasicViaStack();
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_EQ(gen.getBottomLayer(), s.bottom);
   EXPECT_EQ(gen.getTopLayer(), s.top);
   EXPECT_EQ(gen.getCutLayer(), s.cut);
@@ -476,9 +462,12 @@ TEST_F(TestPDNViaTech, TechViaGeneratorGetNameMatchesDbTechVia)
 {
   const ViaStack s = makeBasicViaStack();
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_EQ(gen.getName(), s.via->getName());
 }
 
@@ -487,9 +476,12 @@ TEST_F(TestPDNViaTech, TechViaGeneratorTotalCutsIsZeroBeforeBuild)
 {
   const ViaStack s = makeBasicViaStack();
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_EQ(gen.getTotalCuts(), 0);
 }
 
@@ -499,9 +491,12 @@ TEST_F(TestPDNViaTech, TechViaGeneratorIsSetupValidWhenLayersMatch)
 {
   const ViaStack s = makeBasicViaStack();
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_TRUE(gen.isSetupValid(s.bottom, s.top));
 }
 
@@ -513,9 +508,12 @@ TEST_F(TestPDNViaTech, TechViaGeneratorIsSetupInvalidWhenLayersMismatch)
   odb::dbTechLayer* other = odb::dbTechLayer::create(
       tech(), "other", odb::dbTechLayerType::ROUTING);
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_FALSE(gen.isSetupValid(s.bottom, other));
 }
 
@@ -540,9 +538,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorCutPitchSettersRoundTrip)
 {
   const ViaStack s = makeBasicViaStack();
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   gen.setCutPitchX(100);
   gen.setCutPitchY(200);
   EXPECT_EQ(gen.getCutPitchX(), 100);
@@ -554,9 +555,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorCutOffsetSettersRoundTrip)
 {
   const ViaStack s = makeBasicViaStack();
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   gen.setCutOffsetX(5);
   gen.setCutOffsetY(7);
   EXPECT_EQ(gen.getCutOffsetX(), 5);
@@ -580,9 +584,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorHasCutClassFalseByDefault)
 {
   const ViaStack s = makeBasicViaStack();
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_FALSE(gen.hasCutClass());
   EXPECT_EQ(gen.getCutClass(), nullptr);
 }
@@ -592,9 +599,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorSplitCutArrayDefaultsToFalse)
 {
   const ViaStack s = makeBasicViaStack();
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_FALSE(gen.isSplitCutArray());
   gen.setSplitCutArray(true, false);
   EXPECT_TRUE(gen.isSplitCutArray());
@@ -650,9 +660,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorDetermineCutClassWithoutLengthValid)
   // intentionally NOT calling setLengthValid(true) so the rule's
   // rule_length = rule_width path executes.
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_TRUE(gen.hasCutClass());
   EXPECT_EQ(gen.getCutClass(), cls);
 }
@@ -704,7 +717,7 @@ TEST_F(TestPDNViaTech, ViaGeneratorRecheckConstraintsLeavesLowerRectIntact)
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
   ASSERT_TRUE(gen.build(false, false));
   const odb::Rect before = gen.getLowerRect();
-  (void)gen.recheckConstraints(odb::Rect(0, 0, 500, 500), /*bottom=*/true);
+  (void) gen.recheckConstraints(odb::Rect(0, 0, 500, 500), /*bottom=*/true);
   EXPECT_EQ(gen.getLowerRect(), before);
 }
 
@@ -768,20 +781,21 @@ TEST_F(TestPDNViaTech, ViaGeneratorBuildWithInternalLayerFlags)
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
-  (void)gen.build(/*bottom_is_internal_layer=*/true,
-                  /*top_is_internal_layer=*/true);
+  (void) gen.build(/*bottom_is_internal_layer=*/true,
+                   /*top_is_internal_layer=*/true);
   SUCCEED();
 }
 
 // Tight must_fit constraints drive checkConstraints' rejection path.
-TEST_F(TestPDNViaTech, ViaGeneratorBuildWithTightFitConstraintsExercisesFailPaths)
+TEST_F(TestPDNViaTech,
+       ViaGeneratorBuildWithTightFitConstraintsExercisesFailPaths)
 {
   const ViaStack s = makeBasicViaStack();
 
   const odb::Rect tight(0, 0, 10, 10);
   const ViaGenerator::Constraint must_fit{true, true, false};
   TechViaGenerator gen(getLogger(), s.via, tight, must_fit, tight, must_fit);
-  (void)gen.build(false, false);
+  (void) gen.build(false, false);
   SUCCEED();
 }
 
@@ -794,7 +808,7 @@ TEST_F(TestPDNViaTech, ViaGeneratorBuildWithIntersectionOnlyConstraint)
   const odb::Rect upper(500, 0, 2000, 1500);
   const ViaGenerator::Constraint inter{false, false, true};
   TechViaGenerator gen(getLogger(), s.via, lower, inter, upper, inter);
-  (void)gen.build(false, false);
+  (void) gen.build(false, false);
   SUCCEED();
 }
 
@@ -807,7 +821,7 @@ TEST_F(TestPDNViaTech, ViaGeneratorBuildWithExplicitCutPitch)
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
   gen.setCutPitchX(500);
   gen.setCutPitchY(500);
-  (void)gen.build(false, false);
+  (void) gen.build(false, false);
   SUCCEED();
 }
 
@@ -832,8 +846,11 @@ TEST_F(TestPDNViaTech, DbTechViaSingleCutNameMatchesDbVia)
 {
   const ViaStack s = makeBasicViaStack();
 
-  DbTechVia dbtv(s.via, /*rows=*/1, /*row_pitch=*/0,
-                 /*cols=*/1, /*col_pitch=*/0);
+  DbTechVia dbtv(s.via,
+                 /*rows=*/1,
+                 /*row_pitch=*/0,
+                 /*cols=*/1,
+                 /*col_pitch=*/0);
   EXPECT_EQ(dbtv.getName(), s.via->getName());
 }
 
@@ -851,8 +868,11 @@ TEST_F(TestPDNViaTech, DbTechViaArrayRequiresPatch)
 {
   const ViaStack s = makeBasicViaStack();
 
-  DbTechVia dbtv(s.via, /*rows=*/2, /*row_pitch=*/100,
-                 /*cols=*/2, /*col_pitch=*/100);
+  DbTechVia dbtv(s.via,
+                 /*rows=*/2,
+                 /*row_pitch=*/100,
+                 /*cols=*/2,
+                 /*col_pitch=*/100);
   EXPECT_TRUE(dbtv.requiresPatch());
 }
 
@@ -910,9 +930,13 @@ TEST_F(TestPDNViaTech, DbTechViaGenerateProducesShapes)
   odb::dbSWire* wire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
 
   DbTechVia dbtv(s.via, 1, 0, 1, 0);
-  const auto shapes = dbtv.generate(
-      block(), wire, odb::dbWireShapeType::STRIPE,
-      /*x=*/200, /*y=*/200, /*ongrid=*/{}, getLogger());
+  const auto shapes = dbtv.generate(block(),
+                                    wire,
+                                    odb::dbWireShapeType::STRIPE,
+                                    /*x=*/200,
+                                    /*y=*/200,
+                                    /*ongrid=*/{},
+                                    getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -930,8 +954,11 @@ TEST_F(TestPDNViaTech, DbTechViaMultiCutInputArraySimplifies)
   // Outer rows=2/cols=2 with row_pitch=col_pitch=200 -> via_cols * dx (=
   // 2*100=200) is divisible by col_pitch, so pitch_match succeeds and the
   // simplification fires.
-  DbTechVia dbtv(mv, /*rows=*/2, /*row_pitch=*/200,
-                 /*cols=*/2, /*col_pitch=*/200);
+  DbTechVia dbtv(mv,
+                 /*rows=*/2,
+                 /*row_pitch=*/200,
+                 /*cols=*/2,
+                 /*col_pitch=*/200);
   EXPECT_EQ(dbtv.getName(), std::string("MV"));
   EXPECT_TRUE(dbtv.requiresPatch());
 }
@@ -943,11 +970,13 @@ TEST_F(TestPDNViaTech, DbTechViaGenerateArrayProducesShapes)
   odb::dbNet* net = odb::dbNet::create(block(), "VDDA");
   odb::dbSWire* wire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
 
-  DbTechVia dbtv(s.via, /*rows=*/2, /*row_pitch=*/200,
-                 /*cols=*/2, /*col_pitch=*/200);
+  DbTechVia dbtv(s.via,
+                 /*rows=*/2,
+                 /*row_pitch=*/200,
+                 /*cols=*/2,
+                 /*col_pitch=*/200);
   const auto shapes = dbtv.generate(
-      block(), wire, odb::dbWireShapeType::STRIPE,
-      500, 500, {}, getLogger());
+      block(), wire, odb::dbWireShapeType::STRIPE, 500, 500, {}, getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -959,8 +988,19 @@ TEST_F(TestPDNViaTech, DbGenerateViaGetNameUsesRuleName)
 {
   const ViaStack s = makeBasicViaStack();
 
-  DbGenerateVia dbgv(odb::Rect(0, 0, 500, 500), s.rule, 1, 1, 0, 0,
-                     10, 10, 10, 10, s.bottom, s.cut, s.top);
+  DbGenerateVia dbgv(odb::Rect(0, 0, 500, 500),
+                     s.rule,
+                     1,
+                     1,
+                     0,
+                     0,
+                     10,
+                     10,
+                     10,
+                     10,
+                     s.bottom,
+                     s.cut,
+                     s.top);
   EXPECT_EQ(dbgv.getName(), s.rule->getName());
 }
 
@@ -971,10 +1011,21 @@ TEST_F(TestPDNViaTech, DbGenerateViaViaRectMatchesCutExtent)
 {
   const ViaStack s = makeBasicViaStack();
 
-  DbGenerateVia dbgv(odb::Rect(0, 0, 500, 500), s.rule, 1, 1, 0, 0,
-                     10, 10, 10, 10, s.bottom, s.cut, s.top);
-  const odb::Rect r = dbgv.getViaRect(/*include_enclosure=*/false,
-                                      true, true, true);
+  DbGenerateVia dbgv(odb::Rect(0, 0, 500, 500),
+                     s.rule,
+                     1,
+                     1,
+                     0,
+                     0,
+                     10,
+                     10,
+                     10,
+                     10,
+                     s.bottom,
+                     s.cut,
+                     s.top);
+  const odb::Rect r
+      = dbgv.getViaRect(/*include_enclosure=*/false, true, true, true);
   EXPECT_EQ(r, odb::Rect(-25, -25, 25, 25));
 }
 
@@ -985,14 +1036,21 @@ TEST_F(TestPDNViaTech, DbGenerateViaViaRectIncludesEnclosure)
 {
   const ViaStack s = makeBasicViaStack();
 
-  DbGenerateVia dbgv(odb::Rect(0, 0, 500, 500), s.rule,
-                     /*rows=*/1, /*columns=*/1,
-                     /*cut_pitch_x=*/0, /*cut_pitch_y=*/0,
-                     /*bot_enc_x=*/20, /*bot_enc_y=*/20,
-                     /*top_enc_x=*/40, /*top_enc_y=*/40,
-                     s.bottom, s.cut, s.top);
-  const odb::Rect r = dbgv.getViaRect(/*include_enclosure=*/true,
-                                      true, true, true);
+  DbGenerateVia dbgv(odb::Rect(0, 0, 500, 500),
+                     s.rule,
+                     /*rows=*/1,
+                     /*columns=*/1,
+                     /*cut_pitch_x=*/0,
+                     /*cut_pitch_y=*/0,
+                     /*bot_enc_x=*/20,
+                     /*bot_enc_y=*/20,
+                     /*top_enc_x=*/40,
+                     /*top_enc_y=*/40,
+                     s.bottom,
+                     s.cut,
+                     s.top);
+  const odb::Rect r
+      = dbgv.getViaRect(/*include_enclosure=*/true, true, true, true);
   EXPECT_EQ(r, odb::Rect(-65, -65, 65, 65));
 }
 
@@ -1003,15 +1061,26 @@ TEST_F(TestPDNViaTech, DbGenerateViaGenerateProducesShapes)
   odb::dbNet* net = odb::dbNet::create(block(), "VDDB");
   odb::dbSWire* wire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
 
-  DbGenerateVia dbgv(odb::Rect(-100, -100, 100, 100), s.rule,
-                     /*rows=*/1, /*columns=*/1,
-                     /*cut_pitch_x=*/0, /*cut_pitch_y=*/0,
-                     /*bottom_enclosure_x=*/40, /*bottom_enclosure_y=*/40,
-                     /*top_enclosure_x=*/40, /*top_enclosure_y=*/40,
-                     s.bottom, s.cut, s.top);
-  const auto shapes = dbgv.generate(
-      block(), wire, odb::dbWireShapeType::STRIPE,
-      /*x=*/300, /*y=*/300, /*ongrid=*/{}, getLogger());
+  DbGenerateVia dbgv(odb::Rect(-100, -100, 100, 100),
+                     s.rule,
+                     /*rows=*/1,
+                     /*columns=*/1,
+                     /*cut_pitch_x=*/0,
+                     /*cut_pitch_y=*/0,
+                     /*bottom_enclosure_x=*/40,
+                     /*bottom_enclosure_y=*/40,
+                     /*top_enclosure_x=*/40,
+                     /*top_enclosure_y=*/40,
+                     s.bottom,
+                     s.cut,
+                     s.top);
+  const auto shapes = dbgv.generate(block(),
+                                    wire,
+                                    odb::dbWireShapeType::STRIPE,
+                                    /*x=*/300,
+                                    /*y=*/300,
+                                    /*ongrid=*/{},
+                                    getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -1024,9 +1093,14 @@ TEST_F(TestPDNViaTech, DbArrayViaReportContainsCoreViaName)
   const ViaStack s = makeBasicViaStack();
 
   auto* core = new DbTechVia(s.via, 1, 0, 1, 0);
-  DbArrayVia array(core, nullptr, nullptr, nullptr,
-                   /*core_rows=*/2, /*core_columns=*/2,
-                   /*array_spacing_x=*/100, /*array_spacing_y=*/100);
+  DbArrayVia array(core,
+                   nullptr,
+                   nullptr,
+                   nullptr,
+                   /*core_rows=*/2,
+                   /*core_columns=*/2,
+                   /*array_spacing_x=*/100,
+                   /*array_spacing_y=*/100);
   const ViaReport report = array.getViaReport();
   ASSERT_EQ(report.count(s.via->getName()), 1u);
 }
@@ -1046,12 +1120,16 @@ TEST_F(TestPDNViaTech, DbArrayViaWithEndViasDrivesAllCellSelectionBranches)
   auto* end_row = new DbTechVia(s.via, 1, 0, 1, 0);
   auto* end_col = new DbTechVia(s.via, 1, 0, 1, 0);
   auto* end_rc = new DbTechVia(s.via, 1, 0, 1, 0);
-  DbArrayVia array(core, end_row, end_col, end_rc,
-                   /*core_rows=*/2, /*core_columns=*/2,
-                   /*array_spacing_x=*/100, /*array_spacing_y=*/100);
-  const auto shapes = array.generate(block(), wire,
-                                     odb::dbWireShapeType::STRIPE,
-                                     500, 500, {}, getLogger());
+  DbArrayVia array(core,
+                   end_row,
+                   end_col,
+                   end_rc,
+                   /*core_rows=*/2,
+                   /*core_columns=*/2,
+                   /*array_spacing_x=*/100,
+                   /*array_spacing_y=*/100);
+  const auto shapes = array.generate(
+      block(), wire, odb::dbWireShapeType::STRIPE, 500, 500, {}, getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
   EXPECT_TRUE(array.requiresPatch());
@@ -1065,13 +1143,21 @@ TEST_F(TestPDNViaTech, DbArrayViaGenerateProducesShapes)
   odb::dbSWire* wire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
 
   auto* core = new DbTechVia(s.via, 1, 0, 1, 0);
-  DbArrayVia array(core, nullptr, nullptr, nullptr,
-                   /*core_rows=*/2, /*core_columns=*/2,
-                   /*array_spacing_x=*/200, /*array_spacing_y=*/200);
-  const auto shapes = array.generate(block(), wire,
+  DbArrayVia array(core,
+                   nullptr,
+                   nullptr,
+                   nullptr,
+                   /*core_rows=*/2,
+                   /*core_columns=*/2,
+                   /*array_spacing_x=*/200,
+                   /*array_spacing_y=*/200);
+  const auto shapes = array.generate(block(),
+                                     wire,
                                      odb::dbWireShapeType::STRIPE,
-                                     /*x=*/500, /*y=*/500,
-                                     /*ongrid=*/{}, getLogger());
+                                     /*x=*/500,
+                                     /*y=*/500,
+                                     /*ongrid=*/{},
+                                     getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
   EXPECT_TRUE(array.requiresPatch());
@@ -1086,11 +1172,17 @@ TEST_F(TestPDNViaTech, DbSplitCutViaReportContainsInnerViaName)
 
   auto* inner = new DbTechVia(s.via, 1, 0, 1, 0);
   DbSplitCutVia split(inner,
-                      /*rows=*/2, /*row_pitch=*/200, /*row_offset=*/0,
-                      /*cols=*/2, /*col_pitch=*/200, /*col_offset=*/0,
+                      /*rows=*/2,
+                      /*row_pitch=*/200,
+                      /*row_offset=*/0,
+                      /*cols=*/2,
+                      /*col_pitch=*/200,
+                      /*col_offset=*/0,
                       block(),
-                      s.bottom, /*snap_bottom=*/false,
-                      s.top, /*snap_top=*/false);
+                      s.bottom,
+                      /*snap_bottom=*/false,
+                      s.top,
+                      /*snap_top=*/false);
   const ViaReport report = split.getViaReport();
   ASSERT_EQ(report.count(s.via->getName()), 1u);
 }
@@ -1101,12 +1193,10 @@ TEST_F(TestPDNViaTech, DbSplitCutViaReportContainsInnerViaName)
 TEST_F(TestPDNViaTech, DbSplitCutViaWithSnapEnabledUsesTrackGrids)
 {
   const ViaStack s = makeBasicViaStack();
-  odb::dbTrackGrid* bot_tracks
-      = odb::dbTrackGrid::create(block(), s.bottom);
+  odb::dbTrackGrid* bot_tracks = odb::dbTrackGrid::create(block(), s.bottom);
   bot_tracks->addGridPatternX(0, 10, 50);
   bot_tracks->addGridPatternY(0, 10, 50);
-  odb::dbTrackGrid* top_tracks
-      = odb::dbTrackGrid::create(block(), s.top);
+  odb::dbTrackGrid* top_tracks = odb::dbTrackGrid::create(block(), s.top);
   top_tracks->addGridPatternX(0, 10, 50);
   top_tracks->addGridPatternY(0, 10, 50);
 
@@ -1115,14 +1205,19 @@ TEST_F(TestPDNViaTech, DbSplitCutViaWithSnapEnabledUsesTrackGrids)
 
   auto* inner = new DbTechVia(s.via, 1, 0, 1, 0);
   DbSplitCutVia split(inner,
-                      /*rows=*/2, /*row_pitch=*/300, /*row_offset=*/0,
-                      /*cols=*/2, /*col_pitch=*/300, /*col_offset=*/0,
+                      /*rows=*/2,
+                      /*row_pitch=*/300,
+                      /*row_offset=*/0,
+                      /*cols=*/2,
+                      /*col_pitch=*/300,
+                      /*col_offset=*/0,
                       block(),
-                      s.bottom, /*snap_bottom=*/true,
-                      s.top, /*snap_top=*/true);
-  const auto shapes = split.generate(block(), wire,
-                                     odb::dbWireShapeType::STRIPE,
-                                     500, 500, {}, getLogger());
+                      s.bottom,
+                      /*snap_bottom=*/true,
+                      s.top,
+                      /*snap_top=*/true);
+  const auto shapes = split.generate(
+      block(), wire, odb::dbWireShapeType::STRIPE, 500, 500, {}, getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -1136,13 +1231,19 @@ TEST_F(TestPDNViaTech, DbSplitCutViaGenerateProducesShapes)
 
   auto* inner = new DbTechVia(s.via, 1, 0, 1, 0);
   DbSplitCutVia split(inner,
-                      /*rows=*/2, /*row_pitch=*/300, /*row_offset=*/0,
-                      /*cols=*/2, /*col_pitch=*/300, /*col_offset=*/0,
+                      /*rows=*/2,
+                      /*row_pitch=*/300,
+                      /*row_offset=*/0,
+                      /*cols=*/2,
+                      /*col_pitch=*/300,
+                      /*col_offset=*/0,
                       block(),
-                      s.bottom, false, s.top, false);
-  const auto shapes = split.generate(block(), wire,
-                                     odb::dbWireShapeType::STRIPE,
-                                     500, 500, {}, getLogger());
+                      s.bottom,
+                      false,
+                      s.top,
+                      false);
+  const auto shapes = split.generate(
+      block(), wire, odb::dbWireShapeType::STRIPE, 500, 500, {}, getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -1156,8 +1257,8 @@ TEST_F(TestPDNViaTech, DbGenerateStackedViaReportIncludesAllVias)
   const ViaStack s1 = makeBasicViaStack();
   const ViaStack s2 = addStackedLevel(s1);
 
-  std::vector<DbVia*> vias = {new DbTechVia(s1.via, 1, 0, 1, 0),
-                              new DbTechVia(s2.via, 1, 0, 1, 0)};
+  std::vector<DbVia*> vias
+      = {new DbTechVia(s1.via, 1, 0, 1, 0), new DbTechVia(s2.via, 1, 0, 1, 0)};
   DbGenerateStackedVia stacked(vias, s1.bottom, block());
   const ViaReport report = stacked.getViaReport();
   EXPECT_EQ(report.size(), 2u);
@@ -1174,12 +1275,11 @@ TEST_F(TestPDNViaTech, DbGenerateStackedViaGenerateProducesShapes)
   odb::dbNet* net = odb::dbNet::create(block(), "VDDST");
   odb::dbSWire* wire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
 
-  std::vector<DbVia*> vias = {new DbTechVia(s1.via, 1, 0, 1, 0),
-                              new DbTechVia(s2.via, 1, 0, 1, 0)};
+  std::vector<DbVia*> vias
+      = {new DbTechVia(s1.via, 1, 0, 1, 0), new DbTechVia(s2.via, 1, 0, 1, 0)};
   DbGenerateStackedVia stacked(vias, s1.bottom, block());
-  const auto shapes = stacked.generate(block(), wire,
-                                       odb::dbWireShapeType::STRIPE,
-                                       600, 600, {}, getLogger());
+  const auto shapes = stacked.generate(
+      block(), wire, odb::dbWireShapeType::STRIPE, 600, 600, {}, getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -1191,9 +1291,12 @@ TEST_F(TestPDNViaTech, GenerateViaGeneratorReadsLayersFromRule)
 {
   const ViaStack s = makeBasicViaStack();
 
-  GenerateViaGenerator gen(getLogger(), s.rule,
-                           odb::Rect(0, 0, 1000, 1000), loose(),
-                           odb::Rect(0, 0, 1000, 1000), loose());
+  GenerateViaGenerator gen(getLogger(),
+                           s.rule,
+                           odb::Rect(0, 0, 1000, 1000),
+                           loose(),
+                           odb::Rect(0, 0, 1000, 1000),
+                           loose());
   EXPECT_EQ(gen.getBottomLayer(), s.bottom);
   EXPECT_EQ(gen.getCutLayer(), s.cut);
   EXPECT_EQ(gen.getTopLayer(), s.top);
@@ -1205,9 +1308,12 @@ TEST_F(TestPDNViaTech, GenerateViaGeneratorGetNameIsNonEmpty)
 {
   const ViaStack s = makeBasicViaStack();
 
-  GenerateViaGenerator gen(getLogger(), s.rule,
-                           odb::Rect(0, 0, 2000, 2000), loose(),
-                           odb::Rect(0, 0, 2000, 2000), loose());
+  GenerateViaGenerator gen(getLogger(),
+                           s.rule,
+                           odb::Rect(0, 0, 2000, 2000),
+                           loose(),
+                           odb::Rect(0, 0, 2000, 2000),
+                           loose());
   EXPECT_FALSE(gen.getName().empty());
 }
 
@@ -1216,8 +1322,11 @@ TEST_F(TestPDNViaTech, GenerateViaGeneratorGetNameIsNonEmpty)
 TEST_F(TestPDNViaTech, ViaGeneratorMinCutAboveOnlyAppliesToTopLayer)
 {
   ViaStack s = makeBasicViaStack();
-  addMinCutRuleV54(s.top, /*num_cuts=*/1, /*width=*/1,
-                   /*above_only=*/true, /*below_only=*/false);
+  addMinCutRuleV54(s.top,
+                   /*num_cuts=*/1,
+                   /*width=*/1,
+                   /*above_only=*/true,
+                   /*below_only=*/false);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -1249,9 +1358,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorPicksUpMatchingCutClass)
   ViaStack s = makeBasicViaStack();
   auto* cut_class = addCutClassMatching(s, "VC", /*cut_dim=*/50);
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_TRUE(gen.hasCutClass());
   EXPECT_EQ(gen.getCutClass(), cut_class);
 }
@@ -1260,12 +1372,15 @@ TEST_F(TestPDNViaTech, ViaGeneratorPicksUpMatchingCutClass)
 // cutclass_ unset, exercising the non-matching branch in determineCutClass.
 TEST_F(TestPDNViaTech, ViaGeneratorIgnoresNonMatchingCutClass)
 {
-  ViaStack s = makeBasicViaStack();  // cut is 50x50
+  ViaStack s = makeBasicViaStack();               // cut is 50x50
   addCutClassMatching(s, "VC", /*cut_dim=*/999);  // won't match
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_FALSE(gen.hasCutClass());
 }
 
@@ -1278,9 +1393,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorDetermineCutSpacingUsesSpacingTable)
   addCutClassMatching(s, "VC", /*cut_dim=*/50);
   addCutSpacingTableRule(s.cut, "VC", /*spacing=*/120);
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_EQ(gen.getCutPitchX(), 170);
   EXPECT_EQ(gen.getCutPitchY(), 170);
 }
@@ -1296,9 +1414,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorDetermineCutSpacingHonorsCenterToCenter)
   auto* rule = addCutSpacingTableRule(s.cut, "VC", /*spacing=*/120);
   rule->addCenterToCenterEntry("VC", "VC");
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_EQ(gen.getCutPitchX(), 120);
   EXPECT_EQ(gen.getCutPitchY(), 120);
 }
@@ -1312,9 +1433,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorDetermineCutSpacingHonorsSameNetBreak)
   addCutClassMatching(s, "VC", /*cut_dim=*/50);
   addCutSpacingTableRule(s.cut, "VC", /*spacing=*/120, /*same_net=*/true);
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   EXPECT_EQ(gen.getCutPitchX(), 170);
   EXPECT_EQ(gen.getCutPitchY(), 170);
 }
@@ -1332,9 +1456,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorDetermineCutSpacingSkipsSecondLayerRule)
   auto* skipped = addCutSpacingTableRule(s.cut, "VC", /*spacing=*/999);
   skipped->setSecondLayer(s.top);
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   // The pitch reflects only the non-second-layer rule.
   EXPECT_EQ(gen.getCutPitchX(), 170);
   EXPECT_EQ(gen.getCutPitchY(), 170);
@@ -1347,9 +1474,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorDetermineCutSpacingUsesLayerSpacing)
   ViaStack s = makeBasicViaStack();
   setCutLayerSpacing(s, /*spacing=*/40);
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   // Cut is 50x50, so pitch should now be cut_dim + spacing = 50 + 40 = 90.
   EXPECT_EQ(gen.getCutPitchX(), 90);
   EXPECT_EQ(gen.getCutPitchY(), 90);
@@ -1393,8 +1523,11 @@ TEST_F(TestPDNViaTech, ViaGeneratorCheckConstraintsPassesWithLooseMinCuts)
 TEST_F(TestPDNViaTech, ViaGeneratorMinCutBelowOnlyAppliesToBottomLayer)
 {
   ViaStack s = makeBasicViaStack();
-  addMinCutRuleV54(s.bottom, /*num_cuts=*/1, /*width=*/1,
-                   /*above_only=*/false, /*below_only=*/true);
+  addMinCutRuleV54(s.bottom,
+                   /*num_cuts=*/1,
+                   /*width=*/1,
+                   /*above_only=*/false,
+                   /*below_only=*/true);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -1407,8 +1540,11 @@ TEST_F(TestPDNViaTech, ViaGeneratorMinCutBelowOnlyAppliesToBottomLayer)
 TEST_F(TestPDNViaTech, ViaGeneratorMinCutBelowOnlyIsIgnoredForTopLayer)
 {
   ViaStack s = makeBasicViaStack();
-  addMinCutRuleV54(s.top, /*num_cuts=*/99, /*width=*/1,
-                   /*above_only=*/false, /*below_only=*/true);
+  addMinCutRuleV54(s.top,
+                   /*num_cuts=*/99,
+                   /*width=*/1,
+                   /*above_only=*/false,
+                   /*below_only=*/true);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -1424,8 +1560,11 @@ TEST_F(TestPDNViaTech, ViaGeneratorMinCutAboveOnlyIsIgnoredForBottomLayer)
   ViaStack s = makeBasicViaStack();
   // above_only on the BOTTOM layer means: only enforce when the via is
   // coming from above. Our via has bottom==s.bottom, so it isn't "above".
-  addMinCutRuleV54(s.bottom, /*num_cuts=*/99, /*width=*/1,
-                   /*above_only=*/true, /*below_only=*/false);
+  addMinCutRuleV54(s.bottom,
+                   /*num_cuts=*/99,
+                   /*width=*/1,
+                   /*above_only=*/true,
+                   /*below_only=*/false);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -1456,7 +1595,8 @@ TEST_F(TestPDNViaTech, ViaGeneratorBuildOrCheckRejectsTooLargeOverhangRule)
 {
   ViaStack s = makeBasicViaStack();
   // Require an overhang so large the via can't be placed in a 200x200 rect.
-  addCutEnclosureRule(s.cut, /*first_overhang=*/1000,
+  addCutEnclosureRule(s.cut,
+                      /*first_overhang=*/1000,
                       /*second_overhang=*/1000);
 
   const odb::Rect tight(0, 0, 200, 200);
@@ -1490,8 +1630,8 @@ TEST_F(TestPDNViaTech, GenerateViaGeneratorIsSetupInvalidOutsideWidthRange)
   setRoutingWidthRange(s, /*min_w=*/10, /*max_w=*/100);
 
   const odb::Rect too_wide(0, 0, 500, 500);  // 500 > max 100
-  GenerateViaGenerator gen(getLogger(), s.rule, too_wide, loose(),
-                           too_wide, loose());
+  GenerateViaGenerator gen(
+      getLogger(), s.rule, too_wide, loose(), too_wide, loose());
   EXPECT_FALSE(gen.isSetupValid(s.bottom, s.top));
 }
 
@@ -1521,8 +1661,8 @@ TEST_F(TestPDNViaTech, ViaGeneratorRecheckConstraintsUpperRectPath)
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
   ASSERT_TRUE(gen.build(false, false));
   const odb::Rect before = gen.getUpperRect();
-  (void)gen.recheckConstraints(odb::Rect(0, 0, 1000, 1000),
-                               /*bottom=*/false);
+  (void) gen.recheckConstraints(odb::Rect(0, 0, 1000, 1000),
+                                /*bottom=*/false);
   EXPECT_EQ(gen.getUpperRect(), before);
 }
 
@@ -1546,7 +1686,8 @@ TEST_F(TestPDNViaTech, ViaGeneratorIsPreferredOverEqualPairIsBothFalse)
 // (getCutArea() > other->getCutArea()).
 TEST_F(TestPDNViaTech, ViaGeneratorIsPreferredOverLargerCutAreaWins)
 {
-  const ViaStack big = makeBasicViaStack("big_", /*cut_half=*/40, /*enc_half=*/60);
+  const ViaStack big
+      = makeBasicViaStack("big_", /*cut_half=*/40, /*enc_half=*/60);
   const ViaStack small
       = makeBasicViaStack("sml_", /*cut_half=*/20, /*enc_half=*/40);
 
@@ -1567,9 +1708,11 @@ TEST_F(TestPDNViaTech, ViaGeneratorIsPreferredOverLargerCutAreaWins)
 // (it covers more of the routing track).
 TEST_F(TestPDNViaTech, ViaGeneratorIsPreferredOverPicksLargerEnclosure)
 {
-  const ViaStack a = makeBasicViaStack("sm_", /*cut_half=*/25,
+  const ViaStack a = makeBasicViaStack("sm_",
+                                       /*cut_half=*/25,
                                        /*enc_half=*/35);  // shape 70
-  const ViaStack b = makeBasicViaStack("lg_", /*cut_half=*/25,
+  const ViaStack b = makeBasicViaStack("lg_",
+                                       /*cut_half=*/25,
                                        /*enc_half=*/50);  // shape 100
 
   const odb::Rect r(0, 0, 2000, 2000);
@@ -1611,11 +1754,10 @@ static odb::dbTechVia* makeAsymVia(odb::dbTech* tech,
                                    int top_h_half)
 {
   odb::dbTechVia* v = odb::dbTechVia::create(tech, name);
-  odb::dbBox::create(v, bottom, -bot_w_half, -bot_h_half,
-                     bot_w_half, bot_h_half);
+  odb::dbBox::create(
+      v, bottom, -bot_w_half, -bot_h_half, bot_w_half, bot_h_half);
   odb::dbBox::create(v, cut, -cut_half, -cut_half, cut_half, cut_half);
-  odb::dbBox::create(v, top, -top_w_half, -top_h_half,
-                     top_w_half, top_h_half);
+  odb::dbBox::create(v, top, -top_w_half, -top_h_half, top_w_half, top_h_half);
   return v;
 }
 
@@ -1626,13 +1768,26 @@ TEST_F(TestPDNViaTech, ViaGeneratorIsPreferredOverTopPreferredTieBreaks)
   const ViaStack s = makeBasicViaStack();
   // Two vias share the basic stack's layers but differ only in top metal
   // enclosure width.
-  odb::dbTechVia* va
-      = makeAsymVia(tech(), s.bottom, s.cut, s.top, "VA",
-                    /*cut_half=*/25, /*bot_w*/35, /*bot_h*/35,
-                    /*top_w=*/35, /*top_h=*/35);
-  odb::dbTechVia* vb
-      = makeAsymVia(tech(), s.bottom, s.cut, s.top, "VB",
-                    25, 35, 35, /*top_w=*/50, /*top_h=*/35);
+  odb::dbTechVia* va = makeAsymVia(tech(),
+                                   s.bottom,
+                                   s.cut,
+                                   s.top,
+                                   "VA",
+                                   /*cut_half=*/25,
+                                   /*bot_w*/ 35,
+                                   /*bot_h*/ 35,
+                                   /*top_w=*/35,
+                                   /*top_h=*/35);
+  odb::dbTechVia* vb = makeAsymVia(tech(),
+                                   s.bottom,
+                                   s.cut,
+                                   s.top,
+                                   "VB",
+                                   25,
+                                   35,
+                                   35,
+                                   /*top_w=*/50,
+                                   /*top_h=*/35);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator ga(getLogger(), va, r, loose(), r, loose());
@@ -1653,12 +1808,26 @@ TEST_F(TestPDNViaTech, ViaGeneratorIsPreferredOverBottomNonPreferredTieBreaks)
 {
   const ViaStack s = makeBasicViaStack();
   // Same heights everywhere, only bottom width differs.
-  odb::dbTechVia* va
-      = makeAsymVia(tech(), s.bottom, s.cut, s.top, "VAN",
-                    25, /*bot_w*/35, /*bot_h*/35, 35, 35);
-  odb::dbTechVia* vb
-      = makeAsymVia(tech(), s.bottom, s.cut, s.top, "VBN",
-                    25, /*bot_w*/50, /*bot_h*/35, 35, 35);
+  odb::dbTechVia* va = makeAsymVia(tech(),
+                                   s.bottom,
+                                   s.cut,
+                                   s.top,
+                                   "VAN",
+                                   25,
+                                   /*bot_w*/ 35,
+                                   /*bot_h*/ 35,
+                                   35,
+                                   35);
+  odb::dbTechVia* vb = makeAsymVia(tech(),
+                                   s.bottom,
+                                   s.cut,
+                                   s.top,
+                                   "VBN",
+                                   25,
+                                   /*bot_w*/ 50,
+                                   /*bot_h*/ 35,
+                                   35,
+                                   35);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator ga(getLogger(), va, r, loose(), r, loose());
@@ -1676,12 +1845,10 @@ TEST_F(TestPDNViaTech, ViaGeneratorIsPreferredOverBottomNonPreferredTieBreaks)
 TEST_F(TestPDNViaTech, ViaGeneratorIsPreferredOverTopNonPreferredTieBreaks)
 {
   const ViaStack s = makeBasicViaStack();
-  odb::dbTechVia* va
-      = makeAsymVia(tech(), s.bottom, s.cut, s.top, "VAT",
-                    25, 35, 35, 35, /*top_h=*/35);
-  odb::dbTechVia* vb
-      = makeAsymVia(tech(), s.bottom, s.cut, s.top, "VBT",
-                    25, 35, 35, 35, /*top_h=*/50);
+  odb::dbTechVia* va = makeAsymVia(
+      tech(), s.bottom, s.cut, s.top, "VAT", 25, 35, 35, 35, /*top_h=*/35);
+  odb::dbTechVia* vb = makeAsymVia(
+      tech(), s.bottom, s.cut, s.top, "VBT", 25, 35, 35, 35, /*top_h=*/50);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator ga(getLogger(), va, r, loose(), r, loose());
@@ -1710,8 +1877,10 @@ TEST_F(TestPDNViaTech, ViaGeneratorUpdateCutSpacingHonorsV54Rule)
 {
   ViaStack s = makeBasicViaStack();
   setCutLayerSpacing(s, /*spacing=*/30);
-  addV54AdjacentCutsRule(s.cut, /*numcuts=*/2, /*within=*/100,
-                        /*spacing=*/250);
+  addV54AdjacentCutsRule(s.cut,
+                         /*numcuts=*/2,
+                         /*within=*/100,
+                         /*spacing=*/250);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -1725,8 +1894,11 @@ TEST_F(TestPDNViaTech, ViaGeneratorUpdateCutSpacingHonorsV54Rule)
 TEST_F(TestPDNViaTech, ViaGeneratorCutEnclosureRuleAboveOnlyAppliesToTop)
 {
   ViaStack s = makeBasicViaStack();
-  addAboveBelowCutEnclosureRule(s.cut, /*first=*/5, /*second=*/5,
-                                /*above=*/true, /*below=*/false);
+  addAboveBelowCutEnclosureRule(s.cut,
+                                /*first=*/5,
+                                /*second=*/5,
+                                /*above=*/true,
+                                /*below=*/false);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -1739,8 +1911,11 @@ TEST_F(TestPDNViaTech, ViaGeneratorCutEnclosureRuleAboveOnlyAppliesToTop)
 TEST_F(TestPDNViaTech, ViaGeneratorCutEnclosureRuleBelowOnlyAppliesToBottom)
 {
   ViaStack s = makeBasicViaStack();
-  addAboveBelowCutEnclosureRule(s.cut, 5, 5,
-                                /*above=*/false, /*below=*/true);
+  addAboveBelowCutEnclosureRule(s.cut,
+                                5,
+                                5,
+                                /*above=*/false,
+                                /*below=*/true);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -1772,11 +1947,15 @@ TEST_F(TestPDNViaTech, ViaGeneratorMustFitXOnlyDrivesXAxisCheck)
   const ViaStack s = makeBasicViaStack();
   const odb::Rect lower(0, 0, 200, 2000);
   const ViaGenerator::Constraint must_fit_x{true, false, false};
-  TechViaGenerator gen(getLogger(), s.via, lower, must_fit_x,
-                       odb::Rect(0, 0, 2000, 2000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       lower,
+                       must_fit_x,
+                       odb::Rect(0, 0, 2000, 2000),
+                       loose());
   // isSetupValid drives mostlyContains' must_fit_x branch directly.
-  (void)gen.isSetupValid(s.bottom, s.top);
-  (void)gen.build(false, false);
+  (void) gen.isSetupValid(s.bottom, s.top);
+  (void) gen.build(false, false);
   SUCCEED();
 }
 
@@ -1786,10 +1965,14 @@ TEST_F(TestPDNViaTech, ViaGeneratorMustFitYOnlyDrivesYAxisCheck)
   const ViaStack s = makeBasicViaStack();
   const odb::Rect lower(0, 0, 2000, 200);
   const ViaGenerator::Constraint must_fit_y{false, true, false};
-  TechViaGenerator gen(getLogger(), s.via, lower, must_fit_y,
-                       odb::Rect(0, 0, 2000, 2000), loose());
-  (void)gen.isSetupValid(s.bottom, s.top);
-  (void)gen.build(false, false);
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       lower,
+                       must_fit_y,
+                       odb::Rect(0, 0, 2000, 2000),
+                       loose());
+  (void) gen.isSetupValid(s.bottom, s.top);
+  (void) gen.build(false, false);
   SUCCEED();
 }
 
@@ -1804,9 +1987,13 @@ TEST_F(TestPDNViaTech, DbTechViaGenerateWithBottomOnGrid)
   DbTechVia dbtv(s.via, 1, 0, 1, 0);
   odb::PtrSet<odb::dbTechLayer> ongrid;
   ongrid.insert(s.bottom);
-  const auto shapes = dbtv.generate(
-      block(), wire, odb::dbWireShapeType::STRIPE,
-      200, 200, ongrid, getLogger());
+  const auto shapes = dbtv.generate(block(),
+                                    wire,
+                                    odb::dbWireShapeType::STRIPE,
+                                    200,
+                                    200,
+                                    ongrid,
+                                    getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
 }
 
@@ -1819,22 +2006,28 @@ TEST_F(TestPDNViaTech, DbTechViaGenerateArrayWithOnGridSnapsPitch)
   odb::dbTrackGrid* tracks = odb::dbTrackGrid::create(block(), s.bottom);
   tracks->addGridPatternY(0, 10, 50);
   tracks->addGridPatternX(0, 10, 50);
-  odb::dbTrackGrid* top_tracks
-      = odb::dbTrackGrid::create(block(), s.top);
+  odb::dbTrackGrid* top_tracks = odb::dbTrackGrid::create(block(), s.top);
   top_tracks->addGridPatternX(0, 10, 50);
   top_tracks->addGridPatternY(0, 10, 50);
 
   odb::dbNet* net = odb::dbNet::create(block(), "VDDAOG");
   odb::dbSWire* wire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
 
-  DbTechVia dbtv(s.via, /*rows=*/2, /*row_pitch=*/200,
-                 /*cols=*/2, /*col_pitch=*/200);
+  DbTechVia dbtv(s.via,
+                 /*rows=*/2,
+                 /*row_pitch=*/200,
+                 /*cols=*/2,
+                 /*col_pitch=*/200);
   odb::PtrSet<odb::dbTechLayer> ongrid;
   ongrid.insert(s.bottom);
   ongrid.insert(s.top);
-  const auto shapes = dbtv.generate(
-      block(), wire, odb::dbWireShapeType::STRIPE,
-      500, 500, ongrid, getLogger());
+  const auto shapes = dbtv.generate(block(),
+                                    wire,
+                                    odb::dbWireShapeType::STRIPE,
+                                    500,
+                                    500,
+                                    ongrid,
+                                    getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -1849,9 +2042,13 @@ TEST_F(TestPDNViaTech, DbTechViaGenerateWithTopOnGrid)
   DbTechVia dbtv(s.via, 1, 0, 1, 0);
   odb::PtrSet<odb::dbTechLayer> ongrid;
   ongrid.insert(s.top);
-  const auto shapes = dbtv.generate(
-      block(), wire, odb::dbWireShapeType::STRIPE,
-      200, 200, ongrid, getLogger());
+  const auto shapes = dbtv.generate(block(),
+                                    wire,
+                                    odb::dbWireShapeType::STRIPE,
+                                    200,
+                                    200,
+                                    ongrid,
+                                    getLogger());
   EXPECT_FALSE(shapes.top.empty());
 }
 
@@ -1876,8 +2073,11 @@ TEST_F(TestPDNViaTech, ViaGeneratorArraySpacingLongArrayBranch)
 {
   ViaStack s = makeBasicViaStack();
   addCutClassMatching(s, "VC", /*cut_dim=*/50);
-  addArraySpacingRule(s.cut, /*num_cuts=*/2, /*array_spacing=*/200,
-                      /*cut_spacing=*/0, /*long_array=*/true);
+  addArraySpacingRule(s.cut,
+                      /*num_cuts=*/2,
+                      /*array_spacing=*/200,
+                      /*cut_spacing=*/0,
+                      /*long_array=*/true);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -1921,8 +2121,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorIsSetupValidFailsWhenViaDoesNotFit)
   // The via's bottom enclosure spans 70 wide. A 50-wide lower rect cannot
   // contain it on the x sides -> contains drops to 2.
   const odb::Rect tight_x(0, 0, 50, 2000);
-  TechViaGenerator gen(getLogger(), s.via, tight_x, loose(),
-                       odb::Rect(0, 0, 2000, 2000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       tight_x,
+                       loose(),
+                       odb::Rect(0, 0, 2000, 2000),
+                       loose());
   EXPECT_FALSE(gen.isSetupValid(s.bottom, s.top));
 }
 
@@ -1930,18 +2134,17 @@ TEST_F(TestPDNViaTech, ViaGeneratorIsSetupValidFailsWhenViaDoesNotFit)
 // DbGenerateStackedVia::generate that picks the snap-axes differently.
 TEST_F(TestPDNViaTech, DbGenerateStackedViaVerticalBottomLayerGenerates)
 {
-  const ViaStack s1 = makeBasicViaStack("", 25, 35,
-                                        odb::dbTechLayerDir::VERTICAL);
+  const ViaStack s1
+      = makeBasicViaStack("", 25, 35, odb::dbTechLayerDir::VERTICAL);
   const ViaStack s2 = addStackedLevel(s1);
 
   odb::dbNet* net = odb::dbNet::create(block(), "VDDV");
   odb::dbSWire* wire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
-  std::vector<DbVia*> vias = {new DbTechVia(s1.via, 1, 0, 1, 0),
-                              new DbTechVia(s2.via, 1, 0, 1, 0)};
+  std::vector<DbVia*> vias
+      = {new DbTechVia(s1.via, 1, 0, 1, 0), new DbTechVia(s2.via, 1, 0, 1, 0)};
   DbGenerateStackedVia stacked(vias, s1.bottom, block());
-  const auto shapes = stacked.generate(block(), wire,
-                                       odb::dbWireShapeType::STRIPE,
-                                       400, 400, {}, getLogger());
+  const auto shapes = stacked.generate(
+      block(), wire, odb::dbWireShapeType::STRIPE, 400, 400, {}, getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -1954,20 +2157,23 @@ TEST_F(TestPDNViaTech, DbGenerateStackedViaOnGridPopulatesLayerGrids)
   const ViaStack s2 = addStackedLevel(s1);
   // Build a track grid on the middle metal so populateGrid has something
   // to read.
-  odb::dbTrackGrid* tracks
-      = odb::dbTrackGrid::create(block(), s1.top);
+  odb::dbTrackGrid* tracks = odb::dbTrackGrid::create(block(), s1.top);
   tracks->addGridPatternY(0, 5, 100);
 
   odb::dbNet* net = odb::dbNet::create(block(), "VDDVO");
   odb::dbSWire* wire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
-  std::vector<DbVia*> vias = {new DbTechVia(s1.via, 1, 0, 1, 0),
-                              new DbTechVia(s2.via, 1, 0, 1, 0)};
+  std::vector<DbVia*> vias
+      = {new DbTechVia(s1.via, 1, 0, 1, 0), new DbTechVia(s2.via, 1, 0, 1, 0)};
   DbGenerateStackedVia stacked(vias, s1.bottom, block());
   odb::PtrSet<odb::dbTechLayer> ongrid;
   ongrid.insert(s1.top);
-  const auto shapes = stacked.generate(block(), wire,
+  const auto shapes = stacked.generate(block(),
+                                       wire,
                                        odb::dbWireShapeType::STRIPE,
-                                       400, 400, ongrid, getLogger());
+                                       400,
+                                       400,
+                                       ongrid,
+                                       getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
 }
 
@@ -1999,8 +2205,11 @@ TEST_F(TestPDNViaTech, ViaGeneratorArraySpacingRuleWinsOnLargeRect)
   setCutLayerSpacing(s, /*spacing=*/50);  // pitch = 100 -> 20 cols x 20 rows
   // Long-array rule with a smaller rule cut_spacing keeps x_cuts
   // unconstrained; y limited to 4 cuts per segment, 50-unit array spacing.
-  addArraySpacingRule(s.cut, /*num_cuts=*/4, /*array_spacing=*/50,
-                      /*cut_spacing=*/30, /*long_array=*/true);
+  addArraySpacingRule(s.cut,
+                      /*num_cuts=*/4,
+                      /*array_spacing=*/50,
+                      /*cut_spacing=*/30,
+                      /*long_array=*/true);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -2022,7 +2231,7 @@ TEST_F(TestPDNViaTech, ViaGeneratorSplitCutArrayTakesShortCircuitBranch)
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
   gen.setSplitCutArray(/*split_bot=*/true, /*split_top=*/true);
-  (void)gen.build(false, false);
+  (void) gen.build(false, false);
   SUCCEED();
 }
 
@@ -2036,7 +2245,9 @@ TEST_F(TestPDNViaTech, ViaGeneratorEnclosureRuleClassFilterMatches)
   ViaStack s = makeBasicViaStack();
   auto* cls = addCutClassMatching(s, "VC", /*cut_dim=*/50);
   auto* enc_rule
-      = addCutEnclosureRule(s.cut, /*first=*/5, /*second=*/5,
+      = addCutEnclosureRule(s.cut,
+                            /*first=*/5,
+                            /*second=*/5,
                             odb::dbTechLayerCutEnclosureRule::DEFAULT);
   enc_rule->setCutClass(cls);
 
@@ -2055,8 +2266,7 @@ TEST_F(TestPDNViaTech, ViaGeneratorEnclosureRuleClassFilterRejectsOther)
   // Add an unrelated class and attach a too-big enclosure rule to it.
   auto* other_cls = odb::dbTechLayerCutClassRule::create(s.cut, "OTHER");
   other_cls->setWidth(999);  // won't match the cut
-  auto* enc_rule
-      = addCutEnclosureRule(s.cut, /*first=*/9999, /*second=*/9999);
+  auto* enc_rule = addCutEnclosureRule(s.cut, /*first=*/9999, /*second=*/9999);
   enc_rule->setCutClass(other_cls);
 
   const odb::Rect r(0, 0, 2000, 2000);
@@ -2075,9 +2285,12 @@ TEST_F(TestPDNViaTech, ViaGeneratorDetermineCutSpacingHonorsCenterAndEdge)
   auto* rule = addCutSpacingTableRule(s.cut, "VC", /*spacing=*/120);
   rule->addCenterAndEdgeEntry("VC", "VC");
 
-  TechViaGenerator gen(getLogger(), s.via,
-                       odb::Rect(0, 0, 1000, 1000), loose(),
-                       odb::Rect(0, 0, 1000, 1000), loose());
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose(),
+                       odb::Rect(0, 0, 1000, 1000),
+                       loose());
   // Same effective pitch as default branch (120 + cut = 170).
   EXPECT_EQ(gen.getCutPitchX(), 170);
   EXPECT_EQ(gen.getCutPitchY(), 170);
@@ -2113,7 +2326,9 @@ TEST_F(TestPDNViaTech, ViaGeneratorUpdateCutSpacingSkipsV54ExceptSamePgnet)
   setCutLayerSpacing(s, /*spacing=*/30);  // base pitch = 80
   odb::dbTechLayerSpacingRule* rule
       = odb::dbTechLayerSpacingRule::create(s.cut);
-  rule->setAdjacentCuts(/*numcuts=*/2, /*within=*/100, /*spacing=*/999,
+  rule->setAdjacentCuts(/*numcuts=*/2,
+                        /*within=*/100,
+                        /*spacing=*/999,
                         /*except_same_pgnet=*/true);
 
   const odb::Rect r(0, 0, 2000, 2000);
@@ -2142,9 +2357,8 @@ TEST_F(TestPDNViaTech, GenerateViaGeneratorIsSetupValidWithoutWidthRule)
 TEST_F(TestPDNViaTech, GenerateViaGeneratorIsSetupValidFailsForWrongLayers)
 {
   ViaStack s = makeBasicViaStack();
-  odb::dbTechLayer* wrong
-      = odb::dbTechLayer::create(tech(), "wrong",
-                                 odb::dbTechLayerType::ROUTING);
+  odb::dbTechLayer* wrong = odb::dbTechLayer::create(
+      tech(), "wrong", odb::dbTechLayerType::ROUTING);
 
   const odb::Rect r(0, 0, 200, 200);
   GenerateViaGenerator gen(getLogger(), s.rule, r, loose(), r, loose());
@@ -2232,8 +2446,7 @@ TEST_F(TestPDNViaTech, ViaGeneratorUpdateCutSpacingFiltersByDifferentClass)
   addCutClassMatching(s, "VC", /*cut_dim=*/50);
   setCutLayerSpacing(s, /*spacing=*/30);
   // Rule bound to an UNrelated cut class.
-  auto* other_cls
-      = odb::dbTechLayerCutClassRule::create(s.cut, "OTHER");
+  auto* other_cls = odb::dbTechLayerCutClassRule::create(s.cut, "OTHER");
   other_cls->setWidth(999);
   odb::dbTechLayerCutSpacingRule* rule
       = odb::dbTechLayerCutSpacingRule::create(s.cut);
@@ -2262,7 +2475,9 @@ TEST_F(TestPDNViaTech, ViaGeneratorCheckMinCutsFiltersUnrelatedCutClass)
   other->setWidth(999);
   // V58 MINIMUMCUT rule referencing the OTHER class. The rule's lookup
   // happens via the routing layer above, so attach to s.top.
-  addV58MinCutPerCutClass(s.top, "OTHER", /*num_cuts=*/9999,
+  addV58MinCutPerCutClass(s.top,
+                          "OTHER",
+                          /*num_cuts=*/9999,
                           /*width=*/1);
 
   const odb::Rect r(0, 0, 2000, 2000);
@@ -2294,21 +2509,27 @@ TEST_F(TestPDNViaTech, ViaGeneratorEnclosureRuleHonorsMinWidth)
 // vertical-snap layer instead of horizontal).
 TEST_F(TestPDNViaTech, DbSplitCutViaVerticalBottomDirectionPath)
 {
-  const ViaStack s = makeBasicViaStack("", 25, 35,
-                                       odb::dbTechLayerDir::VERTICAL);
+  const ViaStack s
+      = makeBasicViaStack("", 25, 35, odb::dbTechLayerDir::VERTICAL);
 
   odb::dbNet* net = odb::dbNet::create(block(), "VDDSV");
   odb::dbSWire* wire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
 
   auto* inner = new DbTechVia(s.via, 1, 0, 1, 0);
   DbSplitCutVia split(inner,
-                      /*rows=*/2, /*row_pitch=*/300, /*row_offset=*/0,
-                      /*cols=*/2, /*col_pitch=*/300, /*col_offset=*/0,
+                      /*rows=*/2,
+                      /*row_pitch=*/300,
+                      /*row_offset=*/0,
+                      /*cols=*/2,
+                      /*col_pitch=*/300,
+                      /*col_offset=*/0,
                       block(),
-                      s.bottom, false, s.top, false);
-  const auto shapes = split.generate(block(), wire,
-                                     odb::dbWireShapeType::STRIPE,
-                                     500, 500, {}, getLogger());
+                      s.bottom,
+                      false,
+                      s.top,
+                      false);
+  const auto shapes = split.generate(
+      block(), wire, odb::dbWireShapeType::STRIPE, 500, 500, {}, getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -2328,9 +2549,8 @@ TEST_F(TestPDNViaTech, DbGenerateStackedViaArrayLevelsEmitPatches)
   std::vector<DbVia*> vias = {new DbTechVia(s1.via, 2, 200, 2, 200),
                               new DbTechVia(s2.via, 2, 200, 2, 200)};
   DbGenerateStackedVia stacked(vias, s1.bottom, block());
-  const auto shapes = stacked.generate(block(), wire,
-                                       odb::dbWireShapeType::STRIPE,
-                                       500, 500, {}, getLogger());
+  const auto shapes = stacked.generate(
+      block(), wire, odb::dbWireShapeType::STRIPE, 500, 500, {}, getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -2345,13 +2565,12 @@ TEST_F(TestPDNViaTech, DbGenerateStackedViaThreeLevelStackEmitsPatches)
   // Manually add a third level by reusing m3 as the bottom of a new
   // stack. Build a fresh cut + top metal above m3.
   odb::dbTechLayer* v2_b = s2.cut;  // unused below; just a marker
-  (void)v2_b;
+  (void) v2_b;
   odb::dbTechLayer* cut3
       = odb::dbTechLayer::create(tech(), "v3", odb::dbTechLayerType::CUT);
   cut3->setWidth(50);
   odb::dbTechLayer* m4
-      = odb::dbTechLayer::create(tech(), "m4",
-                                 odb::dbTechLayerType::ROUTING);
+      = odb::dbTechLayer::create(tech(), "m4", odb::dbTechLayerType::ROUTING);
   m4->setDirection(odb::dbTechLayerDir::VERTICAL);
   m4->setWidth(70);
 
@@ -2367,10 +2586,13 @@ TEST_F(TestPDNViaTech, DbGenerateStackedViaThreeLevelStackEmitsPatches)
                               new DbTechVia(s2.via, 1, 0, 1, 0),
                               new DbTechVia(v3, 1, 0, 1, 0)};
   DbGenerateStackedVia stacked(vias, s1.bottom, block());
-  const auto shapes = stacked.generate(block(), wire,
+  const auto shapes = stacked.generate(block(),
+                                       wire,
                                        odb::dbWireShapeType::STRIPE,
-                                       /*x=*/500, /*y=*/500,
-                                       /*ongrid=*/{}, getLogger());
+                                       /*x=*/500,
+                                       /*y=*/500,
+                                       /*ongrid=*/{},
+                                       getLogger());
   EXPECT_FALSE(shapes.bottom.empty());
   EXPECT_FALSE(shapes.top.empty());
 }
@@ -2403,8 +2625,11 @@ TEST_F(TestPDNViaTech, ViaGeneratorGenerateProducesArrayPathWithEndVias)
   ViaStack s = makeBasicViaStack();
   addCutClassMatching(s, "VC", /*cut_dim=*/50);
   setCutLayerSpacing(s, /*spacing=*/50);
-  addArraySpacingRule(s.cut, /*num_cuts=*/4, /*array_spacing=*/50,
-                      /*cut_spacing=*/30, /*long_array=*/true);
+  addArraySpacingRule(s.cut,
+                      /*num_cuts=*/4,
+                      /*array_spacing=*/50,
+                      /*cut_spacing=*/30,
+                      /*long_array=*/true);
 
   const odb::Rect r(0, 0, 2000, 2000);
   TechViaGenerator gen(getLogger(), s.via, r, loose(), r, loose());
@@ -2425,8 +2650,11 @@ TEST_F(TestPDNViaTech, DbTechViaMultiCutMismatchedColPitch)
   // With col_pitch=150 -> 200 % 150 = 50 != 0 -> pitch_match drops to false.
   odb::dbTechVia* mv = addMultiCutViaToStack(
       s, "MV2", /*cut_half=*/25, /*cut_pitch=*/100, /*enc_half=*/30);
-  DbTechVia dbtv(mv, /*rows=*/2, /*row_pitch=*/200,
-                 /*cols=*/2, /*col_pitch=*/150);
+  DbTechVia dbtv(mv,
+                 /*rows=*/2,
+                 /*row_pitch=*/200,
+                 /*cols=*/2,
+                 /*col_pitch=*/150);
   EXPECT_EQ(dbtv.getName(), std::string("MV2"));
 }
 
@@ -2438,8 +2666,11 @@ TEST_F(TestPDNViaTech, DbTechViaMultiCutMismatchedRowPitch)
   odb::dbTechVia* mv = addMultiCutViaToStack(
       s, "MV3", /*cut_half=*/25, /*cut_pitch=*/100, /*enc_half=*/30);
   // col_pitch=200 matches; row_pitch=150 mismatches the y direction.
-  DbTechVia dbtv(mv, /*rows=*/2, /*row_pitch=*/150,
-                 /*cols=*/2, /*col_pitch=*/200);
+  DbTechVia dbtv(mv,
+                 /*rows=*/2,
+                 /*row_pitch=*/150,
+                 /*cols=*/2,
+                 /*col_pitch=*/200);
   EXPECT_EQ(dbtv.getName(), std::string("MV3"));
 }
 
@@ -2494,6 +2725,103 @@ TEST_F(TestPDNViaTech, ViaGeneratorGenerateSplitCutPath)
   DbVia* db_via = gen.generate(block());
   EXPECT_NE(db_via, nullptr);
   delete db_via;
+}
+
+// Exposes the protected enclosure/row-column machinery so a test can drive a
+// single enclosure combination directly instead of going through build()'s
+// combination search.
+class TestableGenerateVia : public GenerateViaGenerator
+{
+ public:
+  using GenerateViaGenerator::GenerateViaGenerator;
+
+  void exposeDetermineRowsAndColumns(const Enclosure& bottom,
+                                     const Enclosure& top)
+  {
+    determineRowsAndColumns(/*use_bottom_min_enclosure=*/false,
+                            /*use_top_min_enclosure=*/false,
+                            bottom,
+                            top);
+  }
+
+  bool exposeCheckMinEnclosure() const { return checkMinEnclosure(); }
+};
+
+// Stack mirroring a real M1/V1/M2 VIARULE GENERATE: the bottom (vertical) strap
+// encloses the cut only along its length (Y), the top (horizontal) strap only
+// along its length (X). The cut is 50x50, the bottom layer requires 20 of Y
+// enclosure, so any legal via is cut + 2*20 = 90 tall.
+//
+// When the top strap is only as wide as the cut (min width), there is no room
+// for that Y enclosure -- the via the generator produces has zero enclosure on
+// the top strap. checkMinEnclosure should reject this, but the top ABOVE rule
+// "30 0" (DEFAULT type, swap-allowed) is satisfied by the (X=30, Y=0)
+// enclosure, so it returns true and the foundry-illegal via is accepted.
+//
+// This is the bug. The test pins the current (incorrect) acceptance; see the
+// FIXME at the assertion for the intended fix.
+TEST_F(TestPDNViaTech, MinWidthTopStrapEnclosureIsWronglyAccepted)
+{
+  const int cut_half = 25;
+  const int cut_height = 2 * cut_half;  // 50
+  ViaStack s = makeGenerateViaStack(cut_half,
+                                    /*bottom_enc_x=*/0,
+                                    /*bottom_enc_y=*/20,
+                                    /*top_enc_x=*/30,
+                                    /*top_enc_y=*/0,
+                                    /*cut_spacing=*/100);
+  // Cut layer LEF58 enclosure rules checkMinEnclosure validates against
+  // (anonymized M1/V1/M2): one asymmetric BELOW rule, two ABOVE rules.
+  addAboveBelowCutEnclosureRule(s.cut, 20, 0, /*above=*/false, /*below=*/true);
+  addAboveBelowCutEnclosureRule(s.cut, 30, 0, /*above=*/true, /*below=*/false);
+  addAboveBelowCutEnclosureRule(s.cut, 20, 20, /*above=*/true, /*below=*/false);
+
+  // Bottom (M1, vertical): 3x min-width strap. Top (M2, horizontal): min-width
+  // strap == cut, leaving no room for the bottom strap's required Y enclosure.
+  const odb::Rect lower(0, 0, 150, 1000);
+  const odb::Rect upper(0, 0, 1000, cut_height);
+  TestableGenerateVia gen(getLogger(), s.rule, lower, loose(), upper, loose());
+
+  gen.exposeDetermineRowsAndColumns(Enclosure(0, 20), Enclosure(30, 0));
+
+  // The via that was produced cannot legally fit: its required height
+  // (cut + 2 * bottom Y enclosure) exceeds the min-width top strap.
+  ASSERT_GT(cut_height + 2 * gen.getBottomEnclosure()->getY(), upper.dy());
+
+  // FIXME(pdn via enclosure): checkMinEnclosure SHOULD return false here so the
+  // via is rejected -- it cannot legally fit the min-width top strap. It
+  // currently returns true because the top "30 0" ABOVE rule (DEFAULT type,
+  // swap-allowed) is satisfied by zero enclosure on the strap's width axis.
+  // This EXPECT pins the current (incorrect) behavior; flip it to EXPECT_FALSE
+  // once the enclosure check accounts for the strap width.
+  EXPECT_TRUE(gen.exposeCheckMinEnclosure());
+}
+
+// Same stack, but the top strap is 2x min width -- the via's 90-unit height
+// fits within the strap, so the enclosure is legitimate and accepted.
+TEST_F(TestPDNViaTech, DoubleWidthTopStrapEnclosureIsAccepted)
+{
+  const int cut_half = 25;
+  const int cut_height = 2 * cut_half;  // 50
+  ViaStack s = makeGenerateViaStack(cut_half,
+                                    /*bottom_enc_x=*/0,
+                                    /*bottom_enc_y=*/20,
+                                    /*top_enc_x=*/30,
+                                    /*top_enc_y=*/0,
+                                    /*cut_spacing=*/100);
+  addAboveBelowCutEnclosureRule(s.cut, 20, 0, /*above=*/false, /*below=*/true);
+  addAboveBelowCutEnclosureRule(s.cut, 30, 0, /*above=*/true, /*below=*/false);
+  addAboveBelowCutEnclosureRule(s.cut, 20, 20, /*above=*/true, /*below=*/false);
+
+  const odb::Rect lower(0, 0, 150, 1000);
+  const odb::Rect upper(0, 0, 1000, 2 * cut_height);  // 2x min-width top strap
+  TestableGenerateVia gen(getLogger(), s.rule, lower, loose(), upper, loose());
+
+  gen.exposeDetermineRowsAndColumns(Enclosure(0, 20), Enclosure(30, 0));
+
+  ASSERT_LE(cut_height + 2 * gen.getBottomEnclosure()->getY(), upper.dy());
+
+  EXPECT_TRUE(gen.exposeCheckMinEnclosure());
 }
 
 }  // namespace

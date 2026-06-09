@@ -547,6 +547,20 @@ class ViaGenerator
                                     std::vector<Enclosure>& top,
                                     bool rules_only) const;
 
+  // Compute the cut rows/columns (and resulting enclosures) for a given
+  // pair of minimum enclosures. Exposed at protected scope so unit tests can
+  // drive a single enclosure combination directly, without going through the
+  // combination search in build().
+  void determineRowsAndColumns(bool use_bottom_min_enclosure,
+                               bool use_top_min_enclosure,
+                               const Enclosure& bottom_min_enclosure,
+                               const Enclosure& top_min_enclosure);
+
+  // Validate the enclosures computed by determineRowsAndColumns against the
+  // cut layer's LEF58 enclosure rules. Protected so unit tests can assert on
+  // the accept/reject decision in isolation.
+  bool checkMinEnclosure() const;
+
  private:
   utl::Logger* logger_;
 
@@ -590,16 +604,9 @@ class ViaGenerator
   bool checkMinCuts(odb::dbTechLayer* layer, int width) const;
   bool appliesToLayers(odb::dbTechLayer* lower, odb::dbTechLayer* upper) const;
 
-  bool checkMinEnclosure() const;
-
   std::vector<odb::dbTechLayerCutEnclosureRule*> getCutMinimumEnclosureRules(
       int width,
       bool above) const;
-
-  void determineRowsAndColumns(bool use_bottom_min_enclosure,
-                               bool use_top_min_enclosure,
-                               const Enclosure& bottom_min_enclosure,
-                               const Enclosure& top_min_enclosure);
 
   odb::dbTechLayerDir getRectDirection(const odb::Rect& rect) const;
 

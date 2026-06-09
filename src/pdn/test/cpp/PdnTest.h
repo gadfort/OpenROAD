@@ -71,11 +71,11 @@ class PdnTest : public tst::Fixture
   // enclosures on both ends).
   struct ViaStack
   {
-    odb::dbTechLayer* bottom = nullptr;             // routing, HORIZONTAL
-    odb::dbTechLayer* cut = nullptr;                // cut layer
-    odb::dbTechLayer* top = nullptr;                // routing, VERTICAL
-    odb::dbTechVia* via = nullptr;                  // single-cut tech via
-    odb::dbTechViaGenerateRule* rule = nullptr;     // VIARULE GENERATE
+    odb::dbTechLayer* bottom = nullptr;          // routing, HORIZONTAL
+    odb::dbTechLayer* cut = nullptr;             // cut layer
+    odb::dbTechLayer* top = nullptr;             // routing, VERTICAL
+    odb::dbTechVia* via = nullptr;               // single-cut tech via
+    odb::dbTechViaGenerateRule* rule = nullptr;  // VIARULE GENERATE
   };
 
   // Build a metal-cut-metal stack named "{prefix}_m1 / {prefix}_v1 /
@@ -83,27 +83,24 @@ class PdnTest : public tst::Fixture
   // produce a single-cut via with a 25-unit-wide cut and 10-unit enclosure
   // on each side. `bottom_dir` lets tests pick whether the lower metal is
   // horizontal or vertical (the top metal is set to the opposite).
-  ViaStack makeBasicViaStack(
-      const std::string& prefix = "",
-      int cut_half = 25,
-      int enc_half = 35,
-      odb::dbTechLayerDir bottom_dir = odb::dbTechLayerDir::HORIZONTAL)
+  ViaStack makeBasicViaStack(const std::string& prefix = "",
+                             int cut_half = 25,
+                             int enc_half = 35,
+                             odb::dbTechLayerDir bottom_dir
+                             = odb::dbTechLayerDir::HORIZONTAL)
   {
     ViaStack s;
-    s.bottom = odb::dbTechLayer::create(tech(),
-                                        (prefix + "m1").c_str(),
-                                        odb::dbTechLayerType::ROUTING);
+    s.bottom = odb::dbTechLayer::create(
+        tech(), (prefix + "m1").c_str(), odb::dbTechLayerType::ROUTING);
     s.bottom->setDirection(bottom_dir);
     s.bottom->setWidth(2 * enc_half);
 
-    s.cut = odb::dbTechLayer::create(tech(),
-                                     (prefix + "v1").c_str(),
-                                     odb::dbTechLayerType::CUT);
+    s.cut = odb::dbTechLayer::create(
+        tech(), (prefix + "v1").c_str(), odb::dbTechLayerType::CUT);
     s.cut->setWidth(2 * cut_half);
 
-    s.top = odb::dbTechLayer::create(tech(),
-                                     (prefix + "m2").c_str(),
-                                     odb::dbTechLayerType::ROUTING);
+    s.top = odb::dbTechLayer::create(
+        tech(), (prefix + "m2").c_str(), odb::dbTechLayerType::ROUTING);
     s.top->setDirection(bottom_dir == odb::dbTechLayerDir::HORIZONTAL
                             ? odb::dbTechLayerDir::VERTICAL
                             : odb::dbTechLayerDir::HORIZONTAL);
@@ -113,27 +110,72 @@ class PdnTest : public tst::Fixture
     // Boxes: metal enclosure / cut / metal enclosure. Order doesn't
     // matter for bottom/top determination (odb uses layer creation
     // order via layer->number_).
-    odb::dbBox::create(s.via, s.bottom, -enc_half, -enc_half, enc_half, enc_half);
+    odb::dbBox::create(
+        s.via, s.bottom, -enc_half, -enc_half, enc_half, enc_half);
     odb::dbBox::create(s.via, s.cut, -cut_half, -cut_half, cut_half, cut_half);
     odb::dbBox::create(s.via, s.top, -enc_half, -enc_half, enc_half, enc_half);
 
     // Matching VIARULE GENERATE rule with the same enclosures, so that
     // a GenerateViaGenerator built from this rule will succeed.
-    s.rule
-        = odb::dbTechViaGenerateRule::create(tech(),
-                                             (prefix + "Rule1").c_str(),
-                                             /*is_default=*/false);
+    s.rule = odb::dbTechViaGenerateRule::create(tech(),
+                                                (prefix + "Rule1").c_str(),
+                                                /*is_default=*/false);
     odb::dbTechViaLayerRule* bot_rule
         = odb::dbTechViaLayerRule::create(tech(), s.rule, s.bottom);
     bot_rule->setEnclosure(enc_half - cut_half, enc_half - cut_half);
     odb::dbTechViaLayerRule* cut_rule
         = odb::dbTechViaLayerRule::create(tech(), s.rule, s.cut);
-    cut_rule->setRect(
-        odb::Rect(-cut_half, -cut_half, cut_half, cut_half));
+    cut_rule->setRect(odb::Rect(-cut_half, -cut_half, cut_half, cut_half));
     cut_rule->setSpacing(2 * cut_half, 2 * cut_half);  // cut pitch == 2*cut
     odb::dbTechViaLayerRule* top_rule
         = odb::dbTechViaLayerRule::create(tech(), s.rule, s.top);
     top_rule->setEnclosure(enc_half - cut_half, enc_half - cut_half);
+
+    return s;
+  }
+
+  // Build a VIARULE GENERATE stack with independent, per-axis enclosures on
+  // each metal layer (unlike makeBasicViaStack, which uses one symmetric
+  // overhang). This lets a test reproduce real techs where the bottom and top
+  // enclosures are asymmetric and oriented differently -- e.g. a vertical
+  // bottom strap enclosing only along its length while a horizontal top strap
+  // encloses only across its width. `bottom_dir` sets the lower metal's
+  // routing direction; the upper metal is set to the opposite.
+  ViaStack makeGenerateViaStack(int cut_half,
+                                int bottom_enc_x,
+                                int bottom_enc_y,
+                                int top_enc_x,
+                                int top_enc_y,
+                                int cut_spacing,
+                                odb::dbTechLayerDir bottom_dir
+                                = odb::dbTechLayerDir::VERTICAL)
+  {
+    ViaStack s;
+    s.bottom
+        = odb::dbTechLayer::create(tech(), "m1", odb::dbTechLayerType::ROUTING);
+    s.bottom->setDirection(bottom_dir);
+    s.bottom->setWidth(2 * cut_half);
+
+    s.cut = odb::dbTechLayer::create(tech(), "v1", odb::dbTechLayerType::CUT);
+    s.cut->setWidth(2 * cut_half);
+
+    s.top
+        = odb::dbTechLayer::create(tech(), "m2", odb::dbTechLayerType::ROUTING);
+    s.top->setDirection(bottom_dir == odb::dbTechLayerDir::VERTICAL
+                            ? odb::dbTechLayerDir::HORIZONTAL
+                            : odb::dbTechLayerDir::VERTICAL);
+    s.top->setWidth(2 * cut_half);
+
+    s.rule = odb::dbTechViaGenerateRule::create(tech(),
+                                                "GenRule",
+                                                /*is_default=*/false);
+    auto* br = odb::dbTechViaLayerRule::create(tech(), s.rule, s.bottom);
+    br->setEnclosure(bottom_enc_x, bottom_enc_y);
+    auto* cr = odb::dbTechViaLayerRule::create(tech(), s.rule, s.cut);
+    cr->setRect(odb::Rect(-cut_half, -cut_half, cut_half, cut_half));
+    cr->setSpacing(cut_spacing, cut_spacing);
+    auto* tr = odb::dbTechViaLayerRule::create(tech(), s.rule, s.top);
+    tr->setEnclosure(top_enc_x, top_enc_y);
 
     return s;
   }
@@ -153,17 +195,28 @@ class PdnTest : public tst::Fixture
     // 2x2 cuts laid out so adjacent centers are exactly cut_pitch apart.
     for (int dx : {-half, half}) {
       for (int dy : {-half, half}) {
-        odb::dbBox::create(mv, s.cut,
-                           dx - cut_half, dy - cut_half,
-                           dx + cut_half, dy + cut_half);
+        odb::dbBox::create(mv,
+                           s.cut,
+                           dx - cut_half,
+                           dy - cut_half,
+                           dx + cut_half,
+                           dy + cut_half);
       }
     }
     // Single combined enclosure rect on each metal large enough to cover
     // the cut grid plus enclosure padding.
-    odb::dbBox::create(mv, s.bottom, -half - enc_half, -half - enc_half,
-                       half + enc_half, half + enc_half);
-    odb::dbBox::create(mv, s.top, -half - enc_half, -half - enc_half,
-                       half + enc_half, half + enc_half);
+    odb::dbBox::create(mv,
+                       s.bottom,
+                       -half - enc_half,
+                       -half - enc_half,
+                       half + enc_half,
+                       half + enc_half);
+    odb::dbBox::create(mv,
+                       s.top,
+                       -half - enc_half,
+                       -half - enc_half,
+                       half + enc_half,
+                       half + enc_half);
     return mv;
   }
 
@@ -179,23 +232,23 @@ class PdnTest : public tst::Fixture
     s.cut = odb::dbTechLayer::create(tech(), "v2", odb::dbTechLayerType::CUT);
     s.cut->setWidth(2 * cut_half);
 
-    s.top = odb::dbTechLayer::create(tech(), "m3",
-                                     odb::dbTechLayerType::ROUTING);
+    s.top
+        = odb::dbTechLayer::create(tech(), "m3", odb::dbTechLayerType::ROUTING);
     s.top->setDirection(odb::dbTechLayerDir::HORIZONTAL);
     s.top->setWidth(2 * enc_half);
 
     s.via = odb::dbTechVia::create(tech(), "TV2");
-    odb::dbBox::create(s.via, s.bottom, -enc_half, -enc_half, enc_half, enc_half);
+    odb::dbBox::create(
+        s.via, s.bottom, -enc_half, -enc_half, enc_half, enc_half);
     odb::dbBox::create(s.via, s.cut, -cut_half, -cut_half, cut_half, cut_half);
     odb::dbBox::create(s.via, s.top, -enc_half, -enc_half, enc_half, enc_half);
 
-    s.rule = odb::dbTechViaGenerateRule::create(tech(), "Rule2",
+    s.rule = odb::dbTechViaGenerateRule::create(tech(),
+                                                "Rule2",
                                                 /*is_default=*/false);
-    auto* br
-        = odb::dbTechViaLayerRule::create(tech(), s.rule, s.bottom);
+    auto* br = odb::dbTechViaLayerRule::create(tech(), s.rule, s.bottom);
     br->setEnclosure(enc_half - cut_half, enc_half - cut_half);
-    auto* cr
-        = odb::dbTechViaLayerRule::create(tech(), s.rule, s.cut);
+    auto* cr = odb::dbTechViaLayerRule::create(tech(), s.rule, s.cut);
     cr->setRect(odb::Rect(-cut_half, -cut_half, cut_half, cut_half));
     cr->setSpacing(2 * cut_half, 2 * cut_half);
     auto* tr = odb::dbTechViaLayerRule::create(tech(), s.rule, s.top);
@@ -300,7 +353,9 @@ class PdnTest : public tst::Fixture
   {
     odb::dbTechLayerSpacingRule* rule
         = odb::dbTechLayerSpacingRule::create(cut_layer);
-    rule->setAdjacentCuts(numcuts, within, spacing,
+    rule->setAdjacentCuts(numcuts,
+                          within,
+                          spacing,
                           /*except_same_pgnet=*/false);
     return rule;
   }
@@ -385,8 +440,7 @@ class PdnTest : public tst::Fixture
       bool below)
   {
     odb::dbTechLayerCutEnclosureRule* rule = addCutEnclosureRule(
-        cut_layer, first, second,
-        odb::dbTechLayerCutEnclosureRule::DEFAULT);
+        cut_layer, first, second, odb::dbTechLayerCutEnclosureRule::DEFAULT);
     if (above) {
       rule->setAbove(true);
     }
