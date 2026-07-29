@@ -74,6 +74,7 @@ genrule(
           " $(location src/charts-widget.js)" +
           " $(location src/timing-widget.js)" +
           " $(location src/drc-widget.js)" +
+          " $(location src/sdc-widget.js)" +
           " $(location src/main.js)",
     tools = [":embed_report_assets"],
 )
@@ -98,9 +99,11 @@ _WEB_ASSET_FILES = [
     "src/title.js",
     "src/clock-tree-widget.js",
     "src/schematic-widget.js",
+    "src/openroad_skin.svg",
     "src/charts-widget.js",
     "src/timing-widget.js",
     "src/drc-widget.js",
+    "src/sdc-widget.js",
     "src/main.js",
 ]
 
