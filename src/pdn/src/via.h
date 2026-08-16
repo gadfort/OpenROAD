@@ -703,6 +703,17 @@ class TechViaGenerator : public ViaGenerator
                             std::vector<Enclosure>& top,
                             bool rules_only) const override;
 
+  // The shape-containment checks behind isSetupValid. Exposed at protected
+  // scope so unit tests can drive a single containment decision directly with
+  // synthetic rects, instead of having to reverse-engineer a tech via whose
+  // generated metal happens to land on the branch under test.
+  bool fitsShapes() const;
+  bool mostlyContains(const odb::Rect& full_shape,
+                      const odb::Rect& intersection,
+                      const odb::Rect& small_shape,
+                      const Constraint& constraint,
+                      odb::dbTechLayer* layer) const;
+
  private:
   odb::dbTechVia* via_;
 
@@ -712,13 +723,6 @@ class TechViaGenerator : public ViaGenerator
   odb::dbTechLayer* bottom_;
   odb::dbTechLayer* cut_ = nullptr;
   odb::dbTechLayer* top_;
-
-  bool fitsShapes() const;
-  bool mostlyContains(const odb::Rect& full_shape,
-                      const odb::Rect& intersection,
-                      const odb::Rect& small_shape,
-                      const Constraint& constraint,
-                      odb::dbTechLayer* layer) const;
 };
 
 class Via

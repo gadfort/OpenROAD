@@ -257,6 +257,56 @@ class PdnTest : public tst::Fixture
     return s;
   }
 
+  // A metal/cut/metal/.../metal stack of alternating routing directions,
+  // as `Connect` sees a real tech: routing layers named "M1".."M<levels>"
+  // with cut layers "V1".."V<levels-1>" interleaved. `first_dir` sets M1's
+  // routing direction; every layer above alternates.
+  //
+  // `Connect` walks `dbTech::findLayer(number)` between its two endpoints, so
+  // the interleaved creation order (and therefore layer numbering) is what
+  // makes the intermediate-layer discovery work.
+  struct RoutingStack
+  {
+    std::vector<odb::dbTechLayer*> routing;  // M1, M2, ...
+    std::vector<odb::dbTechLayer*> cuts;     // V1, V2, ...
+  };
+
+  RoutingStack makeRoutingStack(int levels,
+                                int min_width = 100,
+                                odb::dbTechLayerDir first_dir
+                                = odb::dbTechLayerDir::HORIZONTAL)
+  {
+    RoutingStack stack;
+    odb::dbTechLayerDir dir = first_dir;
+    for (int i = 1; i <= levels; i++) {
+      if (i > 1) {
+        odb::dbTechLayer* cut
+            = odb::dbTechLayer::create(tech(),
+                                       ("V" + std::to_string(i - 1)).c_str(),
+                                       odb::dbTechLayerType::CUT);
+        cut->setWidth(min_width / 2);
+        stack.cuts.push_back(cut);
+      }
+
+      odb::dbTechLayer* metal
+          = odb::dbTechLayer::create(tech(),
+                                     ("M" + std::to_string(i)).c_str(),
+                                     odb::dbTechLayerType::ROUTING);
+      metal->setDirection(dir);
+      // getWidth() is the default routing width, which is what
+      // Connect::generateMinEnclosureViaRects uses as the min-width target;
+      // getMinWidth() feeds the complex-stack path.
+      metal->setWidth(min_width);
+      metal->setMinWidth(min_width);
+      stack.routing.push_back(metal);
+
+      dir = dir == odb::dbTechLayerDir::HORIZONTAL
+                ? odb::dbTechLayerDir::VERTICAL
+                : odb::dbTechLayerDir::HORIZONTAL;
+    }
+    return stack;
+  }
+
   // ---------- Rule-augmentation helpers ----------
   // Each helper layers one optional tech feature on top of a basic stack so
   // tests can drive the ViaGenerator branches they care about.

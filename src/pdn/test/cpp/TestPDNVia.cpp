@@ -1940,8 +1940,10 @@ TEST_F(TestPDNViaTech, ViaGeneratorMinCutPicksLargestApplicableWidthRule)
   EXPECT_TRUE(gen.checkConstraints());
 }
 
-// must_fit_x with a tight lower rect drives the x-only-fits branch of
-// TechViaGenerator::mostlyContains (called via isSetupValid -> fitsShapes).
+// must_fit_x with a lower rect that comfortably holds the via's 70-wide
+// bottom enclosure drives the x-only-fits branch of
+// TechViaGenerator::mostlyContains (called via isSetupValid -> fitsShapes)
+// and accepts.
 TEST_F(TestPDNViaTech, ViaGeneratorMustFitXOnlyDrivesXAxisCheck)
 {
   const ViaStack s = makeBasicViaStack();
@@ -1953,10 +1955,28 @@ TEST_F(TestPDNViaTech, ViaGeneratorMustFitXOnlyDrivesXAxisCheck)
                        must_fit_x,
                        odb::Rect(0, 0, 2000, 2000),
                        loose());
-  // isSetupValid drives mostlyContains' must_fit_x branch directly.
-  (void) gen.isSetupValid(s.bottom, s.top);
-  (void) gen.build(false, false);
-  SUCCEED();
+  EXPECT_TRUE(gen.isSetupValid(s.bottom, s.top));
+  EXPECT_TRUE(gen.build(false, false));
+}
+
+// must_fit_x rejects a lower rect narrower than the via's bottom enclosure.
+// The bottom layer is HORIZONTAL, so without must_fit_x this rect would be
+// accepted by the bridging branch (see
+// TechViaBridgesHorizontalBottomAlongPreferredDirection); must_fit_x has to
+// win, because a constrained layer must never be allowed to extend.
+TEST_F(TestPDNViaTech, ViaGeneratorMustFitXOverridesHorizontalBridging)
+{
+  const ViaStack s = makeBasicViaStack();
+  // 40 < the 70-wide bottom enclosure -> the via overhangs both x sides.
+  const odb::Rect lower(0, 0, 40, 2000);
+  const ViaGenerator::Constraint must_fit_x{true, false, false};
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       lower,
+                       must_fit_x,
+                       odb::Rect(0, 0, 2000, 2000),
+                       loose());
+  EXPECT_FALSE(gen.isSetupValid(s.bottom, s.top));
 }
 
 // must_fit_y, symmetric to the must_fit_x case.
@@ -1971,9 +1991,26 @@ TEST_F(TestPDNViaTech, ViaGeneratorMustFitYOnlyDrivesYAxisCheck)
                        must_fit_y,
                        odb::Rect(0, 0, 2000, 2000),
                        loose());
-  (void) gen.isSetupValid(s.bottom, s.top);
-  (void) gen.build(false, false);
-  SUCCEED();
+  EXPECT_TRUE(gen.isSetupValid(s.bottom, s.top));
+  EXPECT_TRUE(gen.build(false, false));
+}
+
+// must_fit_y rejects a lower rect shorter than the via's bottom enclosure,
+// mirroring ViaGeneratorMustFitXOverridesHorizontalBridging for a VERTICAL
+// bottom layer (which would otherwise be free to extend in y).
+TEST_F(TestPDNViaTech, ViaGeneratorMustFitYOverridesVerticalBridging)
+{
+  const ViaStack s
+      = makeBasicViaStack("", 25, 35, odb::dbTechLayerDir::VERTICAL);
+  const odb::Rect lower(0, 0, 2000, 40);
+  const ViaGenerator::Constraint must_fit_y{false, true, false};
+  TechViaGenerator gen(getLogger(),
+                       s.via,
+                       lower,
+                       must_fit_y,
+                       odb::Rect(0, 0, 2000, 2000),
+                       loose());
+  EXPECT_FALSE(gen.isSetupValid(s.bottom, s.top));
 }
 
 // DbTechVia::generate with the bottom layer in ongrid triggers the
@@ -2112,18 +2149,20 @@ TEST_F(TestPDNViaTech, ViaGeneratorArraySpacingParallelOverlapIsIgnored)
 }
 
 // mostlyContains' "contains > 2" fallback returns false when fewer than
-// three sides of the lower rect contain the via shape. A narrow lower
-// rect (smaller than the via in x) gives contains == 2 -> isSetupValid
-// returns false.
+// three sides of the lower rect contain the via shape and the shape spills
+// out along the layer's *width* direction. The bottom layer is HORIZONTAL,
+// so a lower rect shorter than the via in y (its width axis) gives
+// contains == 2 with inside_y false -> isSetupValid returns false.
 TEST_F(TestPDNViaTech, ViaGeneratorIsSetupValidFailsWhenViaDoesNotFit)
 {
   const ViaStack s = makeBasicViaStack();
-  // The via's bottom enclosure spans 70 wide. A 50-wide lower rect cannot
-  // contain it on the x sides -> contains drops to 2.
-  const odb::Rect tight_x(0, 0, 50, 2000);
+  // The via's bottom enclosure spans 70 tall. A 50-tall lower rect cannot
+  // contain it on the y sides -> contains drops to 2 and the horizontal
+  // layer may not extend across its width.
+  const odb::Rect tight_y(0, 0, 2000, 50);
   TechViaGenerator gen(getLogger(),
                        s.via,
-                       tight_x,
+                       tight_y,
                        loose(),
                        odb::Rect(0, 0, 2000, 2000),
                        loose());
@@ -2688,6 +2727,18 @@ class TechViaGeneratorAccess : public TechViaGenerator
   {
     return getUpperHeight(only_real);
   }
+  bool callFitsShapes() const { return fitsShapes(); }
+  // mostlyContains reads nothing but its arguments, so the hosting
+  // generator's own geometry is irrelevant to the decision under test.
+  bool callMostlyContains(const odb::Rect& full_shape,
+                          const odb::Rect& intersection,
+                          const odb::Rect& small_shape,
+                          const Constraint& constraint,
+                          odb::dbTechLayer* layer) const
+  {
+    return mostlyContains(
+        full_shape, intersection, small_shape, constraint, layer);
+  }
 };
 
 // Note: GenerateViaGenerator::getLayerEnclosureRule is declared `private`
@@ -2822,6 +2873,360 @@ TEST_F(TestPDNViaTech, DoubleWidthTopStrapEnclosureIsAccepted)
   ASSERT_LE(cut_height + 2 * gen.getBottomEnclosure()->getY(), upper.dy());
 
   EXPECT_TRUE(gen.exposeCheckMinEnclosure());
+}
+
+// =============================================================================
+// TechViaGenerator::mostlyContains -- the containment decision behind
+// isSetupValid / fitsShapes.
+//
+// The decision has three tiers, checked in order:
+//   1. an explicit must_fit_x / must_fit_y constraint is absolute: the axis it
+//      names has to contain the via metal, full stop;
+//   2. otherwise a shape contained on three or more sides is accepted;
+//   3. otherwise -- an internal routing layer of a stacked via, which has no
+//      strap of its own to land on -- the metal may spill past the stripe
+//      overlap along the layer's *preferred routing* direction (a metal patch
+//      is generated at placement time to bridge the gap), but never across the
+//      orthogonal width direction.
+//
+// Tier 3 is what lets a stacked via bridge to an on-grid neighbor -- e.g. M2
+// snapped to its track while M4 stays on its stripe -- and it is the tier the
+// -min_width_layers / -ongrid combination depends on. These tests pin every
+// branch of the decision.
+// =============================================================================
+
+// A bare routing layer that exists only to give mostlyContains a preferred
+// direction to reason about; it never carries any geometry.
+static odb::dbTechLayer* makeDirLayer(odb::dbTech* tech,
+                                      const char* name,
+                                      odb::dbTechLayerDir dir)
+{
+  odb::dbTechLayer* layer
+      = odb::dbTechLayer::create(tech, name, odb::dbTechLayerType::ROUTING);
+  layer->setDirection(dir);
+  return layer;
+}
+
+// The stripe overlap every case below is framed against.
+static odb::Rect fullShape()
+{
+  return {0, 0, 100, 100};
+}
+
+// Hosts a single mostlyContains call plus one routing layer per direction.
+class TestMostlyContains : public PdnTest
+{
+ protected:
+  void SetUp() override
+  {
+    PdnTest::SetUp();
+    stack_ = makeBasicViaStack();
+    horizontal_ = makeDirLayer(tech(), "hdir", odb::dbTechLayerDir::HORIZONTAL);
+    vertical_ = makeDirLayer(tech(), "vdir", odb::dbTechLayerDir::VERTICAL);
+    undirected_ = makeDirLayer(tech(), "nodir", odb::dbTechLayerDir::NONE);
+
+    const odb::Rect r(0, 0, 1000, 1000);
+    gen_ = std::make_unique<TechViaGeneratorAccess>(
+        getLogger(), stack_.via, r, loose(), r, loose());
+  }
+
+  // Unconstrained check against the default full shape.
+  bool check(const odb::Rect& small, odb::dbTechLayer* layer) const
+  {
+    return gen_->callMostlyContains(
+        fullShape(), fullShape(), small, loose(), layer);
+  }
+
+  bool checkConstrained(const odb::Rect& small,
+                        odb::dbTechLayer* layer,
+                        const ViaGenerator::Constraint& constraint) const
+  {
+    return gen_->callMostlyContains(
+        fullShape(), fullShape(), small, constraint, layer);
+  }
+
+  bool checkAgainstIntersection(const odb::Rect& small,
+                                const odb::Rect& intersection,
+                                odb::dbTechLayer* layer,
+                                bool intersection_only) const
+  {
+    const ViaGenerator::Constraint constraint{false, false, intersection_only};
+    return gen_->callMostlyContains(
+        fullShape(), intersection, small, constraint, layer);
+  }
+
+  ViaStack stack_;
+  odb::dbTechLayer* horizontal_ = nullptr;
+  odb::dbTechLayer* vertical_ = nullptr;
+  odb::dbTechLayer* undirected_ = nullptr;
+  std::unique_ptr<TechViaGeneratorAccess> gen_;
+};
+
+// -------- Tier 2: contained on three or more sides --------
+
+// Fully contained: all four sides pass, so the layer direction never matters.
+TEST_F(TestMostlyContains, AcceptsShapeContainedOnAllFourSides)
+{
+  const odb::Rect small(10, 10, 90, 90);
+  EXPECT_TRUE(check(small, horizontal_));
+  EXPECT_TRUE(check(small, vertical_));
+  EXPECT_TRUE(check(small, undirected_));
+  EXPECT_TRUE(check(small, nullptr));
+}
+
+// The comparisons are inclusive (>= / <=), so a shape flush with every edge
+// of the full shape still counts as contained on all four sides.
+TEST_F(TestMostlyContains, AcceptsShapeFlushWithEveryEdge)
+{
+  EXPECT_TRUE(check(fullShape(), horizontal_));
+  EXPECT_TRUE(check(fullShape(), vertical_));
+  EXPECT_TRUE(check(fullShape(), nullptr));
+}
+
+// A degenerate (zero-area) shape inside the full shape is contained.
+TEST_F(TestMostlyContains, AcceptsDegenerateShapeInsideFullShape)
+{
+  EXPECT_TRUE(check(odb::Rect(50, 50, 50, 50), nullptr));
+}
+
+// Spilling past exactly one side leaves three contained -> accepted for any
+// layer, including a HORIZONTAL layer spilling across its own width. Tier 3
+// must not have tightened tier 2.
+TEST_F(TestMostlyContains, AcceptsShapeSpillingPastASingleSide)
+{
+  EXPECT_TRUE(check(odb::Rect(10, 10, 110, 90), horizontal_));  // x high
+  EXPECT_TRUE(check(odb::Rect(-10, 10, 90, 90), horizontal_));  // x low
+  EXPECT_TRUE(check(odb::Rect(10, 10, 90, 110), horizontal_));  // y high
+  EXPECT_TRUE(check(odb::Rect(10, -10, 90, 90), horizontal_));  // y low
+  EXPECT_TRUE(check(odb::Rect(10, -10, 90, 90), vertical_));
+  EXPECT_TRUE(check(odb::Rect(10, -10, 90, 90), nullptr));
+}
+
+// -------- Tier 3: bridging along the preferred routing direction --------
+
+// A HORIZONTAL layer routes in x, so it may spill past both x sides of the
+// overlap as long as it stays inside in y. This is the stacked-via bridge.
+TEST_F(TestMostlyContains, HorizontalLayerBridgesAlongPreferredDirection)
+{
+  EXPECT_TRUE(check(odb::Rect(-10, 10, 110, 90), horizontal_));
+}
+
+// The same shape on a VERTICAL layer spills across its width -> rejected.
+TEST_F(TestMostlyContains, VerticalLayerRejectsSpillAcrossItsWidth)
+{
+  EXPECT_FALSE(check(odb::Rect(-10, 10, 110, 90), vertical_));
+}
+
+// Mirror image: a VERTICAL layer routes in y and may spill past both y sides.
+TEST_F(TestMostlyContains, VerticalLayerBridgesAlongPreferredDirection)
+{
+  EXPECT_TRUE(check(odb::Rect(10, -10, 90, 110), vertical_));
+}
+
+// And that shape on a HORIZONTAL layer spills across its width -> rejected.
+TEST_F(TestMostlyContains, HorizontalLayerRejectsSpillAcrossItsWidth)
+{
+  EXPECT_FALSE(check(odb::Rect(10, -10, 90, 110), horizontal_));
+}
+
+// Spilling on both axes is never a bridge -- neither direction is contained.
+TEST_F(TestMostlyContains, RejectsShapeSpillingOnBothAxes)
+{
+  const odb::Rect small(-10, -10, 110, 110);
+  EXPECT_FALSE(check(small, horizontal_));
+  EXPECT_FALSE(check(small, vertical_));
+}
+
+// A diagonal overhang (one x side and one y side out) leaves contains == 2
+// with neither axis fully inside, so it is rejected in both directions.
+TEST_F(TestMostlyContains, RejectsShapeSpillingDiagonally)
+{
+  const odb::Rect small(-10, -10, 90, 90);
+  EXPECT_FALSE(check(small, horizontal_));
+  EXPECT_FALSE(check(small, vertical_));
+}
+
+// A layer with no preferred direction has no axis it is entitled to extend
+// along, so it falls through to the reject.
+TEST_F(TestMostlyContains, UndirectedLayerCannotBridge)
+{
+  EXPECT_FALSE(check(odb::Rect(-10, 10, 110, 90), undirected_));
+  EXPECT_FALSE(check(odb::Rect(10, -10, 90, 110), undirected_));
+}
+
+// A null layer (the caller has no layer context) likewise cannot bridge.
+TEST_F(TestMostlyContains, NullLayerCannotBridge)
+{
+  EXPECT_FALSE(check(odb::Rect(-10, 10, 110, 90), nullptr));
+  EXPECT_FALSE(check(odb::Rect(10, -10, 90, 110), nullptr));
+}
+
+// -------- Tier 1: must_fit constraints are absolute --------
+
+// must_fit_x checks x only: a shape that spills in y is still accepted...
+TEST_F(TestMostlyContains, MustFitXChecksOnlyTheXAxis)
+{
+  const ViaGenerator::Constraint must_fit_x{true, false, false};
+  EXPECT_TRUE(checkConstrained(odb::Rect(10, 10, 90, 90), nullptr, must_fit_x));
+  EXPECT_TRUE(
+      checkConstrained(odb::Rect(10, -10, 90, 110), nullptr, must_fit_x));
+}
+
+// ...but a shape that spills in x is rejected even on a HORIZONTAL layer,
+// which tier 3 would otherwise have let bridge. A constrained layer must
+// never be allowed to extend along the direction it has to fit.
+//
+// Tier 3 restates that invariant in its own `!constraint.must_fit_x` /
+// `!constraint.must_fit_y` guards. Those guards are defensive: tier 1 has
+// already returned for any constrained layer, so removing them changes no
+// behavior today (a mutation that drops them keeps this suite green). What
+// this test pins is the invariant itself -- it fails if tier 1 is ever
+// reordered below the bridging tier.
+TEST_F(TestMostlyContains, MustFitXOverridesHorizontalBridging)
+{
+  const ViaGenerator::Constraint must_fit_x{true, false, false};
+  const odb::Rect bridging(-10, 10, 110, 90);
+  ASSERT_TRUE(check(bridging, horizontal_));  // tier 3 would accept
+  EXPECT_FALSE(checkConstrained(bridging, horizontal_, must_fit_x));
+}
+
+// must_fit_y is the mirror image on both counts.
+TEST_F(TestMostlyContains, MustFitYChecksOnlyTheYAxis)
+{
+  const ViaGenerator::Constraint must_fit_y{false, true, false};
+  EXPECT_TRUE(checkConstrained(odb::Rect(10, 10, 90, 90), nullptr, must_fit_y));
+  EXPECT_TRUE(
+      checkConstrained(odb::Rect(-10, 10, 110, 90), nullptr, must_fit_y));
+}
+
+TEST_F(TestMostlyContains, MustFitYOverridesVerticalBridging)
+{
+  const ViaGenerator::Constraint must_fit_y{false, true, false};
+  const odb::Rect bridging(10, -10, 90, 110);
+  ASSERT_TRUE(check(bridging, vertical_));  // tier 3 would accept
+  EXPECT_FALSE(checkConstrained(bridging, vertical_, must_fit_y));
+}
+
+// Both constraints together require containment on both axes.
+TEST_F(TestMostlyContains, MustFitBothRequiresBothAxes)
+{
+  const ViaGenerator::Constraint must_fit_both{true, true, false};
+  EXPECT_TRUE(
+      checkConstrained(odb::Rect(10, 10, 90, 90), horizontal_, must_fit_both));
+  EXPECT_FALSE(checkConstrained(
+      odb::Rect(-10, 10, 110, 90), horizontal_, must_fit_both));
+  EXPECT_FALSE(
+      checkConstrained(odb::Rect(10, -10, 90, 110), vertical_, must_fit_both));
+}
+
+// -------- intersection_only --------
+
+// intersection_only swaps the rect the inside_x / inside_y tests are taken
+// against, which tightens the tier-3 bridge check: the same shape bridges
+// against the full stripe but not against the smaller overlap.
+TEST_F(TestMostlyContains, IntersectionOnlyTightensTheBridgeCheck)
+{
+  const odb::Rect small(-10, 10, 110, 90);
+  const odb::Rect intersection(0, 20, 100, 80);  // shorter than `small` in y
+  EXPECT_TRUE(checkAgainstIntersection(
+      small, intersection, horizontal_, /*intersection_only=*/false));
+  EXPECT_FALSE(checkAgainstIntersection(
+      small, intersection, horizontal_, /*intersection_only=*/true));
+}
+
+// The tier-2 side counter, unlike the tier-1 and tier-3 checks, always counts
+// against the full shape -- intersection_only does not narrow it. A shape
+// contained on three sides of the stripe is accepted even when it escapes a
+// much smaller intersection.
+//
+// NOTE: this asymmetry is the production behavior as written; if
+// intersection_only is ever meant to bound the three-side tier too, this is
+// the test that should change.
+TEST_F(TestMostlyContains, IntersectionOnlyDoesNotNarrowTheThreeSideTier)
+{
+  const odb::Rect small(10, 30, 110, 70);  // 3 sides inside the full shape
+  const odb::Rect intersection(50, 50, 60, 60);  // `small` escapes it entirely
+  EXPECT_TRUE(checkAgainstIntersection(
+      small, intersection, horizontal_, /*intersection_only=*/true));
+}
+
+// =============================================================================
+// TechViaGenerator::fitsShapes -- the same decision applied to a real tech via
+// placed at the center of the lower/upper overlap, for both endpoints of the
+// stack. makeBasicViaStack's via carries a 70x70 metal enclosure on each end.
+// =============================================================================
+
+// A HORIZONTAL bottom layer whose stripe overlap is narrower than the via
+// metal bridges along x: the via is accepted and a patch fills the gap.
+TEST_F(TestPDNViaTech, TechViaBridgesHorizontalBottomAlongPreferredDirection)
+{
+  const ViaStack s = makeBasicViaStack();
+  ASSERT_EQ(s.bottom->getDirection(), odb::dbTechLayerDir::HORIZONTAL);
+
+  // 40 wide < the via's 70-wide metal -> overhangs both x sides.
+  const odb::Rect lower(0, 0, 40, 200);
+  const odb::Rect upper(0, 0, 200, 200);
+  TechViaGeneratorAccess gen(
+      getLogger(), s.via, lower, loose(), upper, loose());
+  EXPECT_TRUE(gen.callFitsShapes());
+  EXPECT_TRUE(gen.isSetupValid(s.bottom, s.top));
+}
+
+// A VERTICAL bottom layer is the mirror image: it bridges along y.
+TEST_F(TestPDNViaTech, TechViaBridgesVerticalBottomAlongPreferredDirection)
+{
+  const ViaStack s
+      = makeBasicViaStack("", 25, 35, odb::dbTechLayerDir::VERTICAL);
+  ASSERT_EQ(s.bottom->getDirection(), odb::dbTechLayerDir::VERTICAL);
+
+  const odb::Rect lower(0, 0, 200, 40);  // 40 tall < the via's 70-tall metal
+  const odb::Rect upper(0, 0, 200, 200);
+  TechViaGeneratorAccess gen(
+      getLogger(), s.via, lower, loose(), upper, loose());
+  EXPECT_TRUE(gen.callFitsShapes());
+  EXPECT_TRUE(gen.isSetupValid(s.bottom, s.top));
+}
+
+// ...but a VERTICAL bottom layer may not spill across its width (x).
+TEST_F(TestPDNViaTech, TechViaRejectsVerticalBottomSpillingAcrossItsWidth)
+{
+  const ViaStack s
+      = makeBasicViaStack("", 25, 35, odb::dbTechLayerDir::VERTICAL);
+  const odb::Rect lower(0, 0, 40, 200);
+  const odb::Rect upper(0, 0, 200, 200);
+  TechViaGeneratorAccess gen(
+      getLogger(), s.via, lower, loose(), upper, loose());
+  EXPECT_FALSE(gen.callFitsShapes());
+  EXPECT_FALSE(gen.isSetupValid(s.bottom, s.top));
+}
+
+// fitsShapes checks both endpoints: a bottom layer that fits perfectly does
+// not rescue a top layer that spills across its width.
+TEST_F(TestPDNViaTech, TechViaFitsShapesRejectsWhenOnlyTheTopLayerFails)
+{
+  const ViaStack s = makeBasicViaStack();
+  ASSERT_EQ(s.top->getDirection(), odb::dbTechLayerDir::VERTICAL);
+
+  const odb::Rect lower(0, 0, 2000, 2000);  // contains the via on all sides
+  const odb::Rect upper(0, 0, 40, 2000);    // vertical top, too narrow in x
+  TechViaGeneratorAccess gen(
+      getLogger(), s.via, lower, loose(), upper, loose());
+  EXPECT_FALSE(gen.callFitsShapes());
+}
+
+// Both endpoints may bridge at once, each along its own routing direction:
+// the horizontal bottom extends in x while the vertical top extends in y.
+TEST_F(TestPDNViaTech, TechViaFitsShapesAcceptsBothEndpointsBridging)
+{
+  const ViaStack s = makeBasicViaStack();
+
+  // Overlap is (0, -20) .. (40, 20); the via metal is 70x70 around its center
+  // at (20, 0), so it escapes the lower rect in x and the upper rect in y.
+  const odb::Rect lower(0, -1000, 40, 1000);
+  const odb::Rect upper(-1000, -20, 1000, 20);
+  TechViaGeneratorAccess gen(
+      getLogger(), s.via, lower, loose(), upper, loose());
+  EXPECT_TRUE(gen.callFitsShapes());
 }
 
 }  // namespace
