@@ -46,6 +46,71 @@ Grid::Grid(VoltageDomain* domain,
 
 Grid::~Grid() = default;
 
+// R0, MY, MX and R180 keep the axes, so they are measured against the master as
+// it was drawn and the answer is just the orientation's own sign flips.
+//
+// The right-angle orientations are measured against their own base rotation
+// instead.  A rotated macro is given its own define_pdn_grid, whose widths,
+// pitches and offsets are already written in the rotated frame, so applying the
+// rotation again would double-count it; only the flip half is honored.  In
+// DEF's decomposition every F orientation is its base rotation with the placed
+// x negated, which is why all four right-angle flips mirror x and none mirror
+// y.
+Grid::AxisMirror Grid::getAxisMirror(const odb::dbOrientType orient)
+{
+  switch (orient) {
+    // axis preserving, measured against the master as drawn
+    case odb::dbOrientType::R0:  // N
+      return {false, false};
+    case odb::dbOrientType::MY:  // FN
+      return {true, false};
+    case odb::dbOrientType::MX:  // FS
+      return {false, true};
+    case odb::dbOrientType::R180:  // S
+      return {true, true};
+    // axis swapping, measured against R90 / R270
+    case odb::dbOrientType::R90:   // W
+    case odb::dbOrientType::R270:  // E
+      return {false, false};
+    case odb::dbOrientType::MXR90:  // FW
+    case odb::dbOrientType::MYR90:  // FE
+      return {true, false};
+  }
+  return {false, false};
+}
+
+// defined here, alongside the mirror table the remapping is driven by
+EdgeSpec EdgeSpec::transform(const odb::dbOrientType orient) const
+{
+  const Grid::AxisMirror mirror = Grid::getAxisMirror(orient);
+
+  EdgeSpec placed = *this;
+  if (mirror.x) {
+    std::swap(placed.left, placed.right);
+  }
+  if (mirror.y) {
+    std::swap(placed.bottom, placed.top);
+  }
+  return placed;
+}
+
+EdgeSpec EdgeSpec::untransform(const odb::dbOrientType orient) const
+{
+  // every remapping transform() can produce is a pair of independent edge
+  // swaps, so it is its own inverse
+  return transform(orient);
+}
+
+bool Grid::mirrorsX() const
+{
+  return getAxisMirror(getOrientation()).x;
+}
+
+bool Grid::mirrorsY() const
+{
+  return getAxisMirror(getOrientation()).y;
+}
+
 odb::dbBlock* Grid::getBlock() const
 {
   return domain_->getBlock();
@@ -469,6 +534,7 @@ void Grid::report() const
   auto* logger = getLogger();
   logger->report("Grid name: {}", getLongName());
   logger->report("Type: {}", typeToString(type()));
+  reportHeader();
 
   if (!rings_.empty()) {
     logger->report("Rings:");
@@ -1107,12 +1173,12 @@ void Grid::getGridLevelObstructions(ShapeVectorMap& obstructions) const
   for (const auto& ring : rings_) {
     int hor_size, ver_size;
     ring->getTotalWidth(hor_size, ver_size);
-    auto offset = ring->getOffset();
+    const EdgeSpec& offset = ring->getOffset();
 
-    const odb::Rect ring_rect(core.xMin() - ver_size - offset[0],
-                              core.yMin() - hor_size - offset[1],
-                              core.xMax() + ver_size + offset[2],
-                              core.yMax() + hor_size + offset[3]);
+    const odb::Rect ring_rect(core.xMin() - ver_size - offset.left,
+                              core.yMin() - hor_size - offset.bottom,
+                              core.xMax() + ver_size + offset.right,
+                              core.yMax() + hor_size + offset.top);
     for (auto* layer : ring->getLayers()) {
       auto obs = std::make_shared<GridObsShape>(layer, ring_rect, this);
       obs->generateObstruction();
@@ -1437,11 +1503,12 @@ InstanceGrid::InstanceGrid(
 {
   auto* halo = inst->getHalo();
   if (halo != nullptr && !halo->isSoft()) {
-    odb::Rect halo_box = inst->getTransformedHalo();
+    // getTransformedHalo has already mapped the halo onto the placed
+    // instance, so it is assigned rather than passed through addHalo
+    const odb::Rect halo_box = inst->getTransformedHalo();
 
-    // copy halo from db
-    addHalo(
-        {halo_box.xMin(), halo_box.yMin(), halo_box.xMax(), halo_box.yMax()});
+    halos_
+        = {halo_box.xMin(), halo_box.yMin(), halo_box.xMax(), halo_box.yMax()};
   }
 }
 
@@ -1450,9 +1517,9 @@ std::string InstanceGrid::getLongName() const
   return getName() + " - " + inst_->getName();
 }
 
-void InstanceGrid::addHalo(const std::array<int, 4>& halos)
+void InstanceGrid::addHalo(const Halo& halos)
 {
-  halos_ = halos;
+  halos_ = halos.transform(getOrientation());
 }
 
 void InstanceGrid::setGridToBoundary(bool value)
@@ -1515,12 +1582,12 @@ odb::Rect InstanceGrid::applyHalo(const odb::Rect& rect,
 {
   odb::Rect halo_rect = rect;
   if (apply_horizontal) {
-    halo_rect.set_xlo(halo_rect.xMin() - halo[0]);
-    halo_rect.set_xhi(halo_rect.xMax() + halo[2]);
+    halo_rect.set_xlo(halo_rect.xMin() - halo.left);
+    halo_rect.set_xhi(halo_rect.xMax() + halo.right);
   }
   if (apply_vertical) {
-    halo_rect.set_ylo(halo_rect.yMin() - halo[1]);
-    halo_rect.set_yhi(halo_rect.yMax() + halo[3]);
+    halo_rect.set_ylo(halo_rect.yMin() - halo.bottom);
+    halo_rect.set_yhi(halo_rect.yMax() + halo.top);
   }
   if (rect_is_min) {
     halo_rect.merge(rect);
@@ -1550,10 +1617,15 @@ ShapeVectorMap InstanceGrid::getInstanceObstructions(
     auto* layer = ob->getTechLayer();
     odb::Rect spacing_rect;
     obs_rect.bloat(layer->getSpacing(), spacing_rect);
+
+    // the halo is held in the placed frame, so it has to be applied after the
+    // obstruction has been moved there; this matches the pin shapes below,
+    // which are already transformed by getInstancePins
+    transform.apply(obs_rect);
+    transform.apply(spacing_rect);
     obs_rect = applyHalo(obs_rect, halo, true, true, true);
     obs_rect.merge(spacing_rect);
 
-    transform.apply(obs_rect);
     auto shape = std::make_shared<Shape>(layer, obs_rect, Shape::kBlockObs);
 
     obs[layer].push_back(std::move(shape));
@@ -1689,6 +1761,12 @@ std::vector<odb::dbNet*> InstanceGrid::getNets(bool starts_with_power) const
   return nets;
 }
 
+void InstanceGrid::reportHeader() const
+{
+  // the offsets and halo reported below are all resolved against this
+  getLogger()->report("Orientation: {}", getOrientation().getString());
+}
+
 void InstanceGrid::report() const
 {
   Grid::report();
@@ -1696,10 +1774,10 @@ void InstanceGrid::report() const
 
   const double units = getDomain()->getBlock()->getDbUnitsPerMicron();
   logger->report("Halo:");
-  logger->report("  Left: {:.4f}", halos_[0] / units);
-  logger->report("  Bottom: {:.4f}", halos_[1] / units);
-  logger->report("  Right: {:.4f}", halos_[2] / units);
-  logger->report("  Top: {:.4f}", halos_[3] / units);
+  logger->report("  Left: {:.4f}", halos_.left / units);
+  logger->report("  Bottom: {:.4f}", halos_.bottom / units);
+  logger->report("  Right: {:.4f}", halos_.right / units);
+  logger->report("  Top: {:.4f}", halos_.top / units);
 }
 
 bool InstanceGrid::isValid() const
@@ -1719,12 +1797,7 @@ bool InstanceGrid::isValid() const
 
 bool InstanceGrid::hasHalo() const
 {
-  for (int margin : halos_) {
-    if (margin != 0) {
-      return true;
-    }
-  }
-  return false;
+  return !halos_.isZero();
 }
 
 InstanceGrid::Halo InstanceGrid::suggestHalo(
@@ -1752,15 +1825,17 @@ InstanceGrid::Halo InstanceGrid::suggestHalo(
   for (const odb::Rect& row : rows) {
     if (overlaps_y(row)) {
       if (row.xMin() >= inst_box.xMax()) {  // right of the instance
-        suggested[2] = std::min(suggested[2], row.xMin() - inst_box.xMax());
+        suggested.right
+            = std::min(suggested.right, row.xMin() - inst_box.xMax());
       } else {  // left of the instance
-        suggested[0] = std::min(suggested[0], inst_box.xMin() - row.xMax());
+        suggested.left = std::min(suggested.left, inst_box.xMin() - row.xMax());
       }
     } else if (overlaps_x(row)) {
       if (row.yMin() >= inst_box.yMax()) {  // above the instance
-        suggested[3] = std::min(suggested[3], row.yMin() - inst_box.yMax());
+        suggested.top = std::min(suggested.top, row.yMin() - inst_box.yMax());
       } else {  // below the instance
-        suggested[1] = std::min(suggested[1], inst_box.yMin() - row.yMax());
+        suggested.bottom
+            = std::min(suggested.bottom, inst_box.yMin() - row.yMax());
       }
     } else {
       corner_rows.push_back(row);
@@ -1775,17 +1850,17 @@ InstanceGrid::Halo InstanceGrid::suggestHalo(
       continue;
     }
     const bool right = row.xMin() >= inst_box.xMax();
-    const int x_side = right ? 2 : 0;
+    int& x_edge = right ? suggested.right : suggested.left;
     const int x_halo
         = right ? row.xMin() - inst_box.xMax() : inst_box.xMin() - row.xMax();
     const bool above = row.yMin() >= inst_box.yMax();
-    const int y_side = above ? 3 : 1;
+    int& y_edge = above ? suggested.top : suggested.bottom;
     const int y_halo
         = above ? row.yMin() - inst_box.yMax() : inst_box.yMin() - row.yMax();
-    if (suggested[x_side] - x_halo <= suggested[y_side] - y_halo) {
-      suggested[x_side] = std::min(suggested[x_side], x_halo);
+    if (x_edge - x_halo <= y_edge - y_halo) {
+      x_edge = std::min(x_edge, x_halo);
     } else {
-      suggested[y_side] = std::min(suggested[y_side], y_halo);
+      y_edge = std::min(y_edge, y_halo);
     }
   }
 
@@ -1821,7 +1896,10 @@ void InstanceGrid::checkHalo() const
     return;
   }
 
-  const Halo suggested = suggestHalo(overlapping_rows);
+  // suggestHalo works in the placed frame; report the suggestion in the
+  // master's frame so the user can type it back into -halo unchanged
+  const Halo suggested
+      = suggestHalo(overlapping_rows).untransform(getOrientation());
 
   const double dbus = getBlock()->getDbUnitsPerMicron();
   getLogger()->error(
@@ -1832,10 +1910,10 @@ void InstanceGrid::checkHalo() const
       getLongName(),
       first_row,
       overlapping_rows.size() - 1,
-      suggested[0] / dbus,
-      suggested[1] / dbus,
-      suggested[2] / dbus,
-      suggested[3] / dbus);
+      suggested.left / dbus,
+      suggested.bottom / dbus,
+      suggested.right / dbus,
+      suggested.top / dbus);
 }
 
 void InstanceGrid::checkSetup() const
