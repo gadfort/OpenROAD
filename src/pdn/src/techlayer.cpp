@@ -60,7 +60,7 @@ void TechLayer::populateGrid(odb::dbBlock* block, odb::dbTechLayerDir dir)
   }
 }
 
-int TechLayer::snapToGrid(int pos, int greater_than) const
+int TechLayer::snapToGrid(int pos, int greater_than, int less_than) const
 {
   if (grid_.empty()) {
     return pos;
@@ -72,6 +72,10 @@ int TechLayer::snapToGrid(int pos, int greater_than) const
     if (grid_pos < greater_than) {
       // ignore since it is lower than the minimum
       continue;
+    }
+    if (grid_pos > less_than) {
+      // the grid is ordered, so nothing further can be under the maximum
+      break;
     }
 
     // look for smallest delta
