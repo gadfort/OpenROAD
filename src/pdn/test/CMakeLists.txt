@@ -136,6 +136,15 @@ or_integration_tests(
     pads_black_parrot_straps
     pads_connect_from_non_pref_edge
     pads_ihp_sg13g2_balance
+    polygon_core_grid
+    polygon_core_grid_extend_to_boundary
+    polygon_core_grid_rings_outside_die
+    polygon_core_grid_rings_outside_die_allowed
+    polygon_core_grid_with_rings
+    polygon_die_and_macro
+    polygon_macro_grid
+    polygon_macro_grid_r180
+    polygon_macro_grid_with_rings
     power_switch
     power_switch_cut_rows
     power_switch_daisy
