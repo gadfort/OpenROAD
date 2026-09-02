@@ -28,6 +28,16 @@
 # -extend_to_core_ring, so they are meant to reach past the macro to the ring,
 # but they are generated across the bounding box rather than the outline.  That
 # is what polygon_macro_grid pins.
+#
+# It also pins the area a macro ring claims from other grids.
+# Grid::getGridLevelObstructions marks the ring's own layers as occupied so
+# that another grid's vias keep off them, and it built that mark as the
+# bounding box grown by the ring offset and width -- which claims the notch
+# too, where this grid has no ring at all.  The core grid's vias in the notch
+# were rejected for it: 9 of them here, three stacks of
+# metal4-metal5-metal6-metal7, which the golden below now carries.  Two metal7
+# straps reach x = 121.740 and 111.740 rather than 114.465 and 109.465, each
+# held by one of the new vias.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef

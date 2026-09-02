@@ -54,8 +54,13 @@ void Rings::checkDieArea() const
   // ring that leaves a polygon die at the notch is still inside the bounding
   // box of that die, which is what the test used to compare against and why it
   // never fired there.
+  //
+  // The vertical layer's stacked metal is what grows X and the horizontal
+  // layer's is what grows Y, which is how makeShapes builds the ring: a side
+  // is swept outward by the width of its own layer, so the bottom and top --
+  // the horizontal layer's sides -- add their thickness to Y.
   const Region ring_outline = getInnerRingOutline().bloat(
-      {hor_width, ver_width, hor_width, ver_width});
+      {ver_width, hor_width, ver_width, hor_width});
   // Read straight from the block: Grid::getGridRegion() is the die for a core
   // grid but the macro for an instance grid, and a ring on either has to fit
   // inside the die.
@@ -101,9 +106,9 @@ std::pair<int, int> Rings::getDieAreaDeficit(const Region& die_area) const
 
     int needed = 0;
     if (horizontal) {
-      needed = (edge.normal.y() > 0 ? offset_.top : offset_.bottom) + ver_width;
+      needed = (edge.normal.y() > 0 ? offset_.top : offset_.bottom) + hor_width;
     } else {
-      needed = (edge.normal.x() > 0 ? offset_.right : offset_.left) + hor_width;
+      needed = (edge.normal.x() > 0 ? offset_.right : offset_.left) + ver_width;
     }
 
     const int deficit = needed - die_area.getMarginBeyond(edge);

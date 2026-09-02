@@ -66,6 +66,7 @@ or_integration_tests(
     core_grid_with_fixed_pins
     core_grid_with_m2_straps
     core_grid_with_rings
+    core_grid_with_rings_asymmetric_widths
     core_grid_with_rings_connect
     core_grid_with_rings_different_offset
     core_grid_with_rings_different_width1
@@ -152,6 +153,8 @@ or_integration_tests(
     polygon_macro_grid_r180
     polygon_macro_grid_with_rings
     polygon_macro_tall_straps
+    polygon_power_switch
+    polygon_two_macros
     power_switch
     power_switch_cut_rows
     power_switch_daisy

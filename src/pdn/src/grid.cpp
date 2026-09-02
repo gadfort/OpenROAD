@@ -1247,7 +1247,6 @@ void Grid::getGridLevelObstructions(ShapeVectorMap& obstructions) const
              1,
              "Collecting grid obstructions from: {}",
              getLongName());
-  const odb::Rect core = getDomainArea();
 
   odb::PtrSet<odb::dbTechLayer> layers;
 
@@ -1285,22 +1284,31 @@ void Grid::getGridLevelObstructions(ShapeVectorMap& obstructions) const
     ring->getTotalWidth(hor_size, ver_size);
     const EdgeSpec& offset = ring->getOffset();
 
-    const odb::Rect ring_rect(core.xMin() - ver_size - offset.left,
-                              core.yMin() - hor_size - offset.bottom,
-                              core.xMax() + ver_size + offset.right,
-                              core.yMax() + hor_size + offset.top);
-    for (auto* layer : ring->getLayers()) {
-      auto obs = std::make_shared<GridObsShape>(layer, ring_rect, this);
-      obs->generateObstruction();
-      debugPrint(
-          getLogger(),
-          utl::PDN,
-          "Obs",
-          2,
-          "Adding obstruction on layer {} covering {}",
-          layer->getName(),
-          Shape::getRectText(ring_rect, getBlock()->getDbUnitsPerMicron()));
-      obstructions[layer].push_back(obs);
+    // A ring reaches out of the domain by its offset plus its width on each
+    // side, so the area it claims is the outline grown by those amounts.  As
+    // the bounding box grown by them it would also claim the notch of a
+    // polygon domain -- where this grid has no ring, and where another grid is
+    // entitled to its vias.
+    const Region ring_region = getDomainRegion().bloat({
+        .left = ver_size + offset.left,
+        .bottom = hor_size + offset.bottom,
+        .right = ver_size + offset.right,
+        .top = hor_size + offset.top,
+    });
+    for (const odb::Rect& ring_rect : ring_region.getRects()) {
+      for (auto* layer : ring->getLayers()) {
+        auto obs = std::make_shared<GridObsShape>(layer, ring_rect, this);
+        obs->generateObstruction();
+        debugPrint(
+            getLogger(),
+            utl::PDN,
+            "Obs",
+            2,
+            "Adding obstruction on layer {} covering {}",
+            layer->getName(),
+            Shape::getRectText(ring_rect, getBlock()->getDbUnitsPerMicron()));
+        obstructions[layer].push_back(obs);
+      }
     }
   }
 }
@@ -1583,40 +1591,56 @@ void CoreGrid::getGridLevelObstructions(ShapeVectorMap& obstructions) const
 
 void CoreGrid::cleanupShapes()
 {
-  // remove shapes that are wholly contained inside a macro
-  Shape::ShapeTreeMap macros;
+  // Remove shapes that are wholly contained inside a macro.
+  //
+  // Containment is measured against the outline of the macro rather than its
+  // bounding box.  A shape in the notch of an L-shaped macro is in ordinary
+  // core area, over rows and connected to them, and deleting it would take the
+  // followpins of the notch with it.  The bounding box is kept as a cheap
+  // first test, which is the whole test for a rectangular macro.
+  struct Macro
+  {
+    odb::Rect bbox;
+    Region outline;
+    odb::PtrSet<odb::dbTechLayer> layers;
+  };
+
+  std::vector<Macro> macros;
   for (auto* inst : getBlock()->getInsts()) {
     if (!inst->isFixed()) {
       continue;
     }
 
-    const odb::Rect outline = inst->getBBox()->getBox();
+    Macro macro;
+    macro.outline = getInstanceOutline(inst);
+    macro.bbox = macro.outline.getEnclosingRect();
 
     for (auto* obs : inst->getMaster()->getObstructions()) {
-      auto shape = std::make_shared<Shape>(
-          obs->getTechLayer(), outline, Shape::ShapeType::kMacroObs);
-      shape->setObstruction(outline);
-      macros[obs->getTechLayer()].insert(shape);
+      macro.layers.insert(obs->getTechLayer());
     }
     for (auto* term : inst->getMaster()->getMTerms()) {
       for (auto* pin : term->getMPins()) {
         for (auto* geom : pin->getGeometry()) {
-          auto shape = std::make_shared<Shape>(
-              geom->getTechLayer(), outline, Shape::ShapeType::kMacroObs);
-          shape->setObstruction(outline);
-          macros[geom->getTechLayer()].insert(shape);
+          macro.layers.insert(geom->getTechLayer());
         }
       }
     }
+
+    macros.push_back(std::move(macro));
   }
 
   std::set<Shape*> remove;
   for (const auto& [layer, shapes] : getShapes()) {
-    const auto& layer_avoid = macros[layer];
     for (const auto& shape : shapes) {
-      if (layer_avoid.qbegin(bgi::contains(shape->getRect()))
-          != layer_avoid.qend()) {
-        remove.insert(shape.get());
+      for (const Macro& macro : macros) {
+        if (!macro.layers.contains(layer)
+            || !macro.bbox.contains(shape->getRect())) {
+          continue;
+        }
+        if (macro.outline.contains(Region(shape->getRect()))) {
+          remove.insert(shape.get());
+          break;
+        }
       }
     }
   }

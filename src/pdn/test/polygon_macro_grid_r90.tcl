@@ -15,6 +15,14 @@
 #
 # The ring must follow the turned L: three sides per layer, its concave corner
 # at (78 53.7).
+#
+# It also pins the area a macro ring claims from other grids.
+# Grid::getGridLevelObstructions marks the ring's own layers as occupied so
+# that another grid's vias keep off them, and it built that mark as the
+# bounding box grown by the ring offset and width -- which claims the notch
+# too, where this grid has no ring at all.  The core grid's vias in the notch
+# were rejected for it: 9 of them here, three stacks of
+# metal4-metal5-metal6-metal7, which the golden below now carries.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef

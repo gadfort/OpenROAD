@@ -30,6 +30,15 @@
 #
 # The die notch itself has been right all along: none of the shapes reaches it,
 # because odb obstructs it.
+#
+# The macro also pins CoreGrid::cleanupShapes, which drops core shapes that lie
+# inside a macro.  Measured against the bounding-box version of that test: 13
+# followpin rails in the notch of the macro, at x = 39.900 - 45.900, and the 81
+# vias that go with them, were dropped as being inside the macro, and the
+# metal4 strap at x = 41.500 stopped at y = 59.700 rather than reaching down to
+# y = 54.515, having lost the rails it connects to there.  Those rails sit over
+# real rows.  polygon_two_macros measures the same thing on a macro that fills
+# its arm.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef
