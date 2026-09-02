@@ -105,6 +105,16 @@ class Region
   int getMarginBeyond(const odb::Rect& from, const odb::Point& normal) const;
   int getMarginBeyond(const Edge& edge) const;
 
+  // True when the named face of `rect` sits on a wall of the region that lies
+  // strictly inside its bounding box -- the wall of a notch, which is as much
+  // an edge of a polygon die as the sides of its bounding box are.
+  //
+  // Faces on the bounding box itself are deliberately excluded, so a caller
+  // that already compares against the bounding box can add this as a second
+  // condition and be sure of changing nothing on a rectangular region: there,
+  // no face can be both strictly inside the box and on the boundary.
+  bool isOnInteriorWall(const odb::Rect& rect, const odb::Point& normal) const;
+
  private:
   explicit Region(odb::geom::BoostPolygon90Set set);
 
