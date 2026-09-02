@@ -12,10 +12,18 @@
 # leave the body of the macro bare -- and the bounding box is symmetric under
 # R180, so nothing else in the flow would notice.
 #
-# Today the result is byte-identical to polygon_macro_grid_with_rings in the
-# ring geometry -- same four rectangles around (49 42.4) - (122 100.4) -- which
-# is the tell: the bounding box is invariant under R180 and nothing else is
-# consulted.  Regenerate the golden when polygon support lands.
+# The straps here carry -extend_to_core_ring, so unlike polygon_macro_grid
+# they are meant to reach past the macro and land on the ring; it is the
+# ring they land on that has to follow the outline.
+#
+# Before the outline was read this was byte-identical to
+# polygon_macro_grid_with_rings in the ring geometry -- the same four
+# rectangles around (49 42.4) - (122 100.4) -- which was the tell: the bounding
+# box is invariant under R180 and nothing else was consulted.
+#
+# The golden below is now genuinely different from that test's: the ring turns
+# its concave corner at (83.5 69.4) instead of (87.5 73.4), and the metal6 side
+# that runs the full height is the right one rather than the left.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef

@@ -15,7 +15,7 @@
 # Verified to hold today: PDN generates the straps across the bounding box and
 # the notch obstructions cut them back, so none of the 783 shapes in the result
 # reaches the notch.  This is the "straps degrade gracefully" half, and the
-# golden should survive the polygon work unchanged.
+# golden should survive the polygon work unchanged -- and it did.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef

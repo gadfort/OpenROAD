@@ -16,11 +16,18 @@
 # corner, and the core area inside the notch must stay available to the core
 # grid.
 #
-# Today it does not: the golden below records four rectangles per layer around
-# (49 42.4) - (122 100.4), the offset bounding box, so the ring encloses
-# 28.5x21um of core that is not part of the macro and leaves 9 more
-# metal5/metal6 shapes over the notch.  Regenerate the golden when polygon
-# support lands.
+# The straps here carry -extend_to_core_ring, so unlike polygon_macro_grid
+# they are meant to reach past the macro and land on the ring; it is the
+# ring they land on that has to follow the outline.
+#
+# It does now: the golden below records three sides per layer, joined at the
+# concave corner (87.5 73.4) where a 2x2um overlap carries the via, so the ring
+# no longer encloses the 28.5x21um of core that is not part of the macro.
+#
+# The straps are a separate matter and still cross the notch: they carry
+# -extend_to_core_ring, so they are meant to reach past the macro to the ring,
+# but they are generated across the bounding box rather than the outline.  That
+# is what polygon_macro_grid pins.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef
