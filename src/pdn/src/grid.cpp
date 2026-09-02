@@ -1324,14 +1324,25 @@ void Grid::makeInitialObstructions(odb::dbBlock* block,
       obs_rect.bloat(ob->getMinSpacing(), obs_rect);
     }
 
+    // A system-reserved obstruction is odb's marker for the part of the
+    // bounding box a polygon die does not cover, so it is an absence of die
+    // rather than metal to keep clear of.
+    const bool die_absence = ob->isSystemReserved();
+
     if (box->getTechLayer() == nullptr) {
       for (auto* layer : block->getDb()->getTech()->getLayers()) {
         auto shape = std::make_shared<Shape>(layer, obs_rect, Shape::kBlockObs);
+        if (die_absence) {
+          shape->setIsDieAbsence();
+        }
         obs[layer].push_back(std::move(shape));
       }
     } else {
       auto shape = std::make_shared<Shape>(
           box->getTechLayer(), obs_rect, Shape::kBlockObs);
+      if (die_absence) {
+        shape->setIsDieAbsence();
+      }
       obs[box->getTechLayer()].push_back(std::move(shape));
     }
   }

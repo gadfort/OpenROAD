@@ -7,10 +7,22 @@
 # where there is no die.
 #
 # A metal4 strap at x > 47.5 must stop at y = 56 and a metal7 strap at y > 56
-# must stop at x = 47.5.  The system obstructions over the notch do trim the
-# overhang, so the surviving geometry is right; what this pins is that nothing
-# is left protruding and that the straps still reach the die edge on the sides
-# where the die really does extend that far.
+# must stop at x = 47.5 -- and stop *on* those walls, with a pin, exactly as a
+# strap reaching x = 95 or y = 112 does.  The wall of a notch is a die edge.
+#
+# Two things had to be true for that.  The pin is placed where a shape reaches
+# an edge, and the test for "an edge" was a comparison against the bounding
+# box, which no notch wall is on.  And the shape has to be able to touch the
+# wall in the first place: odb marks the notch with a system-reserved
+# obstruction, and a shape keeping min spacing from that stopped 0.27um short
+# of it, so it never reached the wall, never earned a pin, and was then trimmed
+# back to its last via at 53.28.  Nothing is owed a spacing from an absence of
+# die -- there is no metal there to be clear of, and on a rectangular die none
+# of these obstructions exists, which is why a strap abuts that edge freely.
+#
+# So the golden below has the metal4 straps at 51.26, 61.26, 71.26 and 81.26
+# ending at exactly y = 56.00, and carries 5 pins on the x = 47.5 wall and 4 on
+# the y = 56 wall alongside the 27 on the bounding box.
 #
 # Verified to hold today, by the same obstruction cut as polygon_core_grid:
 # none of the 787 shapes in the result reaches the notch.  The golden should

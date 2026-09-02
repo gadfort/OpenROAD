@@ -339,6 +339,49 @@ int Region::getMarginBeyond(const Edge& edge) const
   return getMarginBeyond(face, edge.normal);
 }
 
+bool Region::isOnInteriorWall(const odb::Rect& rect,
+                              const odb::Point& normal) const
+{
+  if (isEmpty()) {
+    return false;
+  }
+
+  const bool towards_high = normal.x() > 0 || normal.y() > 0;
+  const bool horizontal = normal.x() != 0;
+  const auto face_of = [&](const odb::Rect& r) {
+    if (horizontal) {
+      return towards_high ? r.xMax() : r.xMin();
+    }
+    return towards_high ? r.yMax() : r.yMin();
+  };
+
+  const odb::Rect bounds = getEnclosingRect();
+  const int box = face_of(bounds);
+  const int face = face_of(rect);
+
+  // Strictly inside the bounding box, which is what keeps this from firing on
+  // a rectangular region.
+  if (towards_high ? face >= box : face <= box) {
+    return false;
+  }
+
+  // Measure across the part of the shape that is actually in the region, not
+  // across all of it.  A rail on the edge of the core hangs half its width
+  // past the die, and measuring across that overhang finds the region missing
+  // immediately -- which would make every face of it look like a wall.
+  const Region touching = Region(rect).intersect(*this);
+  if (touching.isEmpty()) {
+    return false;
+  }
+  const odb::Rect clipped = touching.getEnclosingRect();
+  if (face_of(clipped) != face) {
+    // the region stops short of this face, so the face is not on it
+    return false;
+  }
+
+  return getMarginBeyond(clipped, normal) == 0;
+}
+
 Region getInstanceOutline(odb::dbInst* inst)
 {
   odb::dbMaster* master = inst->getMaster();
