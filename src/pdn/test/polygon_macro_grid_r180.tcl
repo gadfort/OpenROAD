@@ -24,6 +24,16 @@
 # The golden below is now genuinely different from that test's: the ring turns
 # its concave corner at (83.5 69.4) instead of (87.5 73.4), and the metal6 side
 # that runs the full height is the right one rather than the left.
+#
+# It also pins the area a macro ring claims from other grids.
+# Grid::getGridLevelObstructions marks the ring's own layers as occupied so
+# that another grid's vias keep off them, and it built that mark as the
+# bounding box grown by the ring offset and width -- which claims the notch
+# too, where this grid has no ring at all.  The core grid's vias in the notch
+# were rejected for it: 12 of them here, four stacks of
+# metal4-metal5-metal6-metal7, which the golden below now carries.  One metal7
+# strap reaches x = 61.740 rather than stopping at 41.740, because it now has
+# a via to hold it.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef

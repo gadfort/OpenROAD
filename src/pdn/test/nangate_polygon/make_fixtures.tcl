@@ -3,7 +3,7 @@
 #
 #   for f in floorplan floorplan_u floorplan_macro floorplan_macro_r180 \
 #            floorplan_macro_r90 floorplan_polygon_macro \
-#            floorplan_macro_tall ; do
+#            floorplan_macro_tall floorplan_two_macros ; do
 #     FIXTURE=$f openroad -no_splash -no_init -exit \
 #       nangate_polygon/make_fixtures.tcl
 #   done
@@ -29,6 +29,16 @@ set poly_core {9.5 8.4  85.5 8.4  85.5 53.2  43.7 53.2  43.7 103.6  9.5 103.6}
 set u_die {0 0  152 0  152 112  104.5 112  104.5 56  47.5 56  47.5 112  0 112}
 set u_core {9.5 8.4  142.5 8.4  142.5 103.6  110.2 103.6  110.2 50.4
   41.8 50.4  41.8 103.6  9.5 103.6}
+
+# The same U-shaped die with a core whose arms are exactly as wide as the
+# macro placed in each of them (28.5um), so that a macro fills its arm from
+# side to side.  A wider arm would leave a strip of rows a couple of microns
+# wide alongside the macro, too narrow for a strap and so an unrepairable
+# followpin channel (PDN-0179), which has nothing to do with the polygon
+# question.  The arms are inset 9.5um from the walls of the die notch, as the
+# outer edges are.
+set two_macro_core {9.5 8.4  142.5 8.4  142.5 103.6  114 103.6  114 50.4
+  38 50.4  38 103.6  9.5 103.6}
 
 # A padring around a core whose four corners are cut away.  Each cut turns one
 # convex corner into two convex corners and one concave one, so this shape has
@@ -81,10 +91,10 @@ strip_unneeded
 # orientation.  setOrigin moves the master origin, which for a rotated master
 # is not the lower-left corner of the placed bounding box, so the offset has to
 # be measured after the orientation is applied.
-proc place_macro { master_name x y orient } {
+proc place_macro { master_name name x y orient } {
   set block [ord::get_db_block]
   set master [[ord::get_db] findMaster $master_name]
-  set inst [odb::dbInst_create $block $master "macro_L"]
+  set inst [odb::dbInst_create $block $master $name]
   $inst setOrient $orient
   $inst setOrigin 0 0
   set bbox [$inst getBBox]
@@ -237,9 +247,10 @@ proc cut_rows_to_body { inst halo_x halo_y } {
 }
 
 set fixture $::env(FIXTURE)
-set macro ""
+set macros {}
 # how far clear of the macro body the rows are cut, in dbu
-set halo 0
+set halo_x 0
+set halo_y 0
 switch -exact -- $fixture {
   floorplan {
     # polygon die and core, no macro
@@ -249,21 +260,21 @@ switch -exact -- $fixture {
     # rectangular die and core, one L-shaped macro.  The notch of the macro is
     # at the upper right of its bounding box.
     initialize_floorplan -die_area $rect_die -core_area $rect_core -site $site
-    set macro [place_macro polygon_macro_L 57 50.4 R0]
+    lappend macros [place_macro polygon_macro_L macro_L 57 50.4 R0]
   }
   floorplan_macro_r180 {
     # the same bounding box rotated 180 degrees, so the notch moves to the
     # lower left.  Any outline handling that ignores the instance transform
     # gets this one backwards.
     initialize_floorplan -die_area $rect_die -core_area $rect_core -site $site
-    set macro [place_macro polygon_macro_L 57 50.4 R180]
+    lappend macros [place_macro polygon_macro_L macro_L 57 50.4 R180]
   }
   floorplan_macro_tall {
     # rectangular die and core with a macro 70um high in a 95.2um core, so a
     # core strap crossing it cannot be routed around.  Straps at x in
     # 61.75..76 meet the body up to y = 65.8 and then pass through the notch.
     initialize_floorplan -die_area $rect_die -core_area $rect_core -site $site
-    set macro [place_macro polygon_macro_tall 47.5 19.6 R0]
+    lappend macros [place_macro polygon_macro_tall macro_L 47.5 19.6 R0]
   }
   floorplan_u {
     # U-shaped die and core, no macro
@@ -289,15 +300,16 @@ switch -exact -- $fixture {
     # 3um halo has somewhere to sit.  PDN-0008 refuses a halo that overlaps a
     # row, and the other macro fixtures cut their rows right up to the body.
     initialize_floorplan -die_area $rect_die -core_area $rect_core -site $site
-    set macro [place_macro polygon_macro_L 57 50.4 R0]
-    set halo [expr { int(3.0 * 2000) }]
+    lappend macros [place_macro polygon_macro_L macro_L 57 50.4 R0]
+    set halo_x [expr { int(3.0 * 2000) }]
+    set halo_y $halo_x
   }
   floorplan_macro_r90 {
     # rectangular die and core with the L-shaped macro turned a quarter, so
     # that its bounding box is 42x57 rather than 57x42.  R0 and R180 leave the
     # axes alone; only a quarter turn swaps them.
     initialize_floorplan -die_area $rect_die -core_area $rect_core -site $site
-    set macro [place_macro polygon_macro_L 57 25.2 R90]
+    lappend macros [place_macro polygon_macro_L macro_L 57 25.2 R90]
   }
   floorplan_polygon_macro {
     # polygon die and core with the L-shaped macro tucked into the corner of
@@ -307,7 +319,32 @@ switch -exact -- $fixture {
     # min-spacing bloat of the macro obstructions, which would confuse the
     # polygon question with an unrelated one.
     initialize_floorplan -die_area $poly_die -core_area $poly_core -site $site
-    set macro [place_macro polygon_macro_L 11.4 30.8 R0]
+    lappend macros [place_macro polygon_macro_L macro_L 11.4 30.8 R0]
+  }
+  floorplan_two_macros {
+    # U-shaped die and core with a tall macro in each arm, mirrored so that
+    # their notches face each other across the gap between the arms.  Both
+    # macros run up to the top of the core, so the area they occupy is a notch
+    # in the row footprint that opens onto the core boundary rather than a hole
+    # inside it: filling holes does not recover it, and only the union of the
+    # macro outlines does.  That is the branch of
+    # VoltageDomain::getDomainRegion that a single macro never reaches.
+    #
+    # Left macro bbox (9.5 33.6) - (38 103.6), notch at its upper right; right
+    # macro bbox (114 33.6) - (142.5 103.6), notch at its upper left.  Each
+    # fills its arm from side to side, so the only rows left in an arm are the
+    # ones in the macro's own notch.
+    initialize_floorplan -die_area $u_die -core_area $two_macro_core \
+      -site $site
+    lappend macros [place_macro polygon_macro_tall macro_left 9.5 33.6 R0]
+    lappend macros [place_macro polygon_macro_tall macro_right 114 33.6 MY]
+    # Half a row clear in Y.  A row that abuts the body exactly puts its
+    # followpin rail half over the macro's own metal1, and the rail on the
+    # floor of the notch then has no metal4 above it either -- the body blocks
+    # metal1 through metal5, so the strap crossing the notch cannot start until
+    # a spacing past the body.  Neither has anything to do with the polygon
+    # question; a real flow keeps a keepout around a macro for the same reason.
+    set halo_y [expr { int(0.7 * 2000) }]
   }
   default {
     puts "unknown fixture: $fixture"
@@ -315,8 +352,8 @@ switch -exact -- $fixture {
   }
 }
 
-if { $macro ne "" } {
-  cut_rows_to_body $macro $halo $halo
+foreach macro $macros {
+  cut_rows_to_body $macro $halo_x $halo_y
 }
 
 source Nangate45/Nangate45.tracks
