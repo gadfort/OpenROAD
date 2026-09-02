@@ -13,10 +13,10 @@
 #
 # PDN-0351 must fire here.
 #
-# Today nothing is reported: the golden below records an empty catch, because
-# Rings::checkDieArea tests containment against the die bounding box, which
-# contains this ring by construction.  Regenerate the golden when the
-# containment test becomes polygon-aware.
+# The 4.2 and 5.2 in the message are the deficits at the notch: the ring needs
+# 8.0um and has 3.8um in X and 2.8um there.  They are measured per side of the
+# core rather than from the area that overruns, which on a polygon die would
+# report the length of the offending side instead of how far it went past.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef

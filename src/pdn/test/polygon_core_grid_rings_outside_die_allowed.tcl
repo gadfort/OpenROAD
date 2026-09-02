@@ -7,10 +7,15 @@
 # polygon-aware containment test neither branch of Rings::checkDieArea is
 # reached on this design, so passing the flag changes nothing.
 #
-# Today neither branch is reached, so no PDN-0239 appears in the golden below,
-# and the geometry it records is a ring with only a bottom and a left side --
-# the top and right sides were cut at the notch and trimmed away.  Regenerate
-# the golden when the containment test becomes polygon-aware.
+# The warning fires, but the geometry recorded below is still a ring with only
+# a bottom and a left side: the top and right sides are cut where they cross
+# the notch and then trimmed away as dangling metal.  That is what
+# -allow_out_of_die buys on a polygon die today, and it is what changes when
+# the ring itself becomes rectilinear.
+#
+# The followpins in the tall arm are left at the core edge here, and that is
+# right: the ring sides that belonged beside them were cut at the notch and
+# trimmed away, so there is nothing there to reach.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef

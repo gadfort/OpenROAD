@@ -14,8 +14,8 @@
 #
 # Verified to hold today, by the same obstruction cut as polygon_core_grid:
 # none of the 787 shapes in the result reaches the notch.  The golden should
-# survive the polygon work unchanged; what would change is the wasted work, not
-# the geometry.
+# survive the polygon work unchanged -- and it did.  What changed is the wasted
+# work, not the geometry.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef

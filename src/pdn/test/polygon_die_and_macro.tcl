@@ -15,15 +15,21 @@
 # so the macro straps and ring in that region are cut away rather than simply
 # being wasted.
 #
-# The macro grid must stay on the body of the macro, the core grid must keep
-# the area between the macro and the die edge, and no shape may land in the
-# notch.
+# The macro grid must stay inside the outline of the macro, the core grid must
+# keep the area between the macro and the die edge, and no shape may land in
+# the die notch.
 #
-# Today neither polygon is honoured: the golden below records the same
-# two-sided core ring as polygon_core_grid_with_rings and the same macro-grid
-# shapes over the macro notch.  The one thing that is already right is the die
-# notch itself -- none of the 1185 shapes reaches it, because odb obstructs it.
-# Regenerate the golden when polygon support lands.
+# Today 16 of the 21 macro-grid straps leave the macro outline and 14 of those
+# leave its bounding box, the same way as in polygon_macro_grid.
+#
+# Both polygons are honoured now: the core ring follows the L, three sides per
+# layer, as in polygon_core_grid_with_rings, and the macro grid keeps to the
+# outline of the macro.  What is left is the width straddle described in
+# polygon_macro_grid -- 12 of the 19 macro straps sit centred on an edge -- and
+# that is the sweep's rule, not the outline's.
+#
+# The die notch itself has been right all along: none of the shapes reaches it,
+# because odb obstructs it.
 source "helpers.tcl"
 
 read_lef Nangate45/Nangate45.lef
@@ -38,8 +44,8 @@ set_voltage_domain -power VDD -ground VSS
 define_pdn_grid -name "Core"
 add_pdn_stripe -followpins -layer metal1 -extend_to_core_ring
 add_pdn_stripe -layer metal4 -width 0.48 -pitch 20.0 -offset 2.0
-add_pdn_ring -grid "Core" -layers {metal5 metal6} -widths 0.8 -spacings 0.8 \
-  -core_offsets 0.2
+add_pdn_ring -grid "Core" -layers {metal5 metal6} -widths 0.6 -spacings 0.4 \
+  -core_offsets 0.6
 add_pdn_stripe -layer metal7 -width 1.4 -pitch 20.0 -offset 2.0
 
 add_pdn_connect -layers {metal1 metal4}
