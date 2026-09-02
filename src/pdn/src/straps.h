@@ -16,6 +16,7 @@
 #include "odb/dbTypes.h"
 #include "odb/geom.h"
 #include "pdn/PdnGen.hh"
+#include "polygon.h"
 #include "shape.h"
 
 namespace pdn {
@@ -83,6 +84,12 @@ class Straps : public GridComponent
   // own absolute position return false.
   virtual bool honorsGridFlip() const { return true; }
 
+  // The parts of a strap that fall inside the area it belongs to, run along
+  // the layer's own direction.  Only the length is clipped: where a strap sits
+  // and how wide it is are the sweep's business.
+  std::vector<odb::Rect> clipToExtent(const odb::Rect& strap,
+                                      const Region& extent) const;
+
  private:
   odb::dbTechLayer* layer_;
   int width_;
@@ -109,7 +116,8 @@ class Straps : public GridComponent
                   int abs_end,
                   bool is_delta_x,
                   const TechLayer& layer,
-                  const Shape::ObstructionTree& avoid);
+                  const Shape::ObstructionTree& avoid,
+                  const Region& extent);
 };
 
 class FollowPins : public Straps

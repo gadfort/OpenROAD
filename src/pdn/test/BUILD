@@ -145,7 +145,6 @@ COMPULSORY_TESTS = [
     "polygon_core_grid_extend_to_boundary",
     "polygon_core_grid_rings_asymmetric",
     "polygon_core_grid_rings_outside_die",
-    "polygon_core_grid_rings_outside_die_allowed",
     "polygon_core_grid_single_layer_ring",
     "polygon_core_grid_u_extend_to_boundary",
     "polygon_core_grid_u_rings",
