@@ -182,18 +182,28 @@ void Straps::makeShapes(const Shape::ShapeTreeMap& other_shapes)
   const odb::Rect die = grid->getBlock()->getDieArea();
   odb::Rect boundary;
   const odb::Rect core = grid->getDomainArea();
+  // The area the straps may occupy, as an outline.  A strap is generated
+  // across the full extent of `boundary` and then clipped to this, which on a
+  // rectangular floorplan leaves it exactly as it was: the two describe the
+  // same area.  On a polygon one it is what keeps a strap off the part of the
+  // bounding box that is not there.
+  Region extent;
   switch (extend_mode_) {
     case kCore:
       boundary = grid->getDomainBoundary();
+      extent = grid->getDomainBoundaryRegion();
       break;
     case kRings:
       boundary = grid->getRingArea();
+      extent = Region(boundary);
       break;
     case kBoundary:
       boundary = grid->getGridBoundary();
+      extent = grid->getGridBoundaryRegion();
       break;
     case kFixed:
       boundary = odb::Rect(strap_start_, strap_start_, strap_end_, strap_end_);
+      // an explicit extent is the user's to place, wherever it lands
       break;
   }
 
@@ -243,7 +253,8 @@ void Straps::makeShapes(const Shape::ShapeTreeMap& other_shapes)
                die.yMax(),
                false,
                layer,
-               avoid);
+               avoid,
+               extent);
   } else {
     const int core_far = allow_out_of_core_ ? die.xMax() : core.xMax();
     const int core_near = allow_out_of_core_ ? die.xMin() : core.xMin();
@@ -256,7 +267,8 @@ void Straps::makeShapes(const Shape::ShapeTreeMap& other_shapes)
                die.xMax(),
                true,
                layer,
-               avoid);
+               avoid,
+               extent);
   }
   debugPrint(getLogger(),
              utl::PDN,
@@ -275,7 +287,8 @@ void Straps::makeStraps(const int extent_start,
                         const int abs_end,
                         const bool is_delta_x,
                         const TechLayer& layer,
-                        const Shape::ObstructionTree& avoid)
+                        const Shape::ObstructionTree& avoid,
+                        const Region& extent)
 {
   const int half_width = width_ / 2;
   int strap_count = 0;
@@ -379,8 +392,12 @@ void Straps::makeStraps(const int extent_start,
         }
       }
 
-      addShape(std::make_unique<Shape>(
-          layer_, net, strap_rect, odb::dbWireShapeType::STRIPE));
+      // A strap runs the length of the area it belongs to, which on a
+      // polygon outline can be several runs rather than one.
+      for (const odb::Rect& piece : clipToExtent(strap_rect, extent)) {
+        addShape(std::make_unique<Shape>(
+            layer_, net, piece, odb::dbWireShapeType::STRIPE));
+      }
     }
     strap_count++;
     if (number_of_straps_ != 0 && strap_count == number_of_straps_) {
@@ -388,6 +405,61 @@ void Straps::makeStraps(const int extent_start,
       return;
     }
   }
+}
+
+std::vector<odb::Rect> Straps::clipToExtent(const odb::Rect& strap,
+                                            const Region& extent) const
+{
+  if (extent.isEmpty()) {
+    return {strap};
+  }
+
+  const Region clipped = Region(strap).intersect(extent);
+  if (clipped.isEmpty()) {
+    // The strap does not sit in the area at all.  That is not this function's
+    // business to correct: where a strap sits is the sweep's decision, and
+    // -allow_out_of_core exists to put one outside the core deliberately.
+    return {strap};
+  }
+
+  const bool horizontal = isHorizontal();
+
+  // Only how far the strap runs is clipped, never how wide it is or where it
+  // sits, so the runs are projected onto the strap's own direction and the
+  // width is put back afterwards.  A strap that overhangs the area across its
+  // width -- the last one of a sweep, sitting half outside -- keeps the length
+  // it always had.
+  std::vector<std::pair<int, int>> runs;
+  for (const odb::Rect& piece : clipped.getRects()) {
+    if (horizontal) {
+      runs.emplace_back(piece.xMin(), piece.xMax());
+    } else {
+      runs.emplace_back(piece.yMin(), piece.yMax());
+    }
+  }
+  std::sort(runs.begin(), runs.end());
+
+  std::vector<odb::Rect> pieces;
+  for (const auto& [start, end] : runs) {
+    if (!pieces.empty()) {
+      // touching or overlapping runs are one run
+      const int last_end
+          = horizontal ? pieces.back().xMax() : pieces.back().yMax();
+      if (start <= last_end) {
+        if (horizontal) {
+          pieces.back().set_xhi(std::max(last_end, end));
+        } else {
+          pieces.back().set_yhi(std::max(last_end, end));
+        }
+        continue;
+      }
+    }
+    pieces.push_back(horizontal
+                         ? odb::Rect(start, strap.yMin(), end, strap.yMax())
+                         : odb::Rect(strap.xMin(), start, strap.xMax(), end));
+  }
+
+  return pieces;
 }
 
 void Straps::report() const
@@ -502,6 +574,7 @@ void FollowPins::makeShapes(const Shape::ShapeTreeMap& other_shapes)
   auto* grid = getGrid();
 
   const odb::Rect core = grid->getDomainArea();
+  const Region domain = grid->getDomainRegion();
   odb::Rect boundary;
   switch (getExtendMode()) {
     case kCore:
@@ -516,6 +589,30 @@ void FollowPins::makeShapes(const Shape::ShapeTreeMap& other_shapes)
       boundary = grid->getGridBoundary();
       break;
   }
+
+  // How far a rail at `band` may be run out on the side `normal` points to.
+  // Every mode resolves this against what is actually beside the rail, so a
+  // rail in the tall arm of an L reaches that arm's ring or that arm's die
+  // edge and not the ones belonging to the wide arm.  On a rectangular core
+  // there is only one of each, and this is the boundary it always was.
+  const ExtensionMode mode = getExtendMode();
+  const auto reach = [&](const odb::Rect& band, const odb::Point& normal) {
+    const bool high = normal.x() > 0;
+    switch (mode) {
+      case kRings:
+        return grid->getRingReach(band, normal);
+      case kBoundary: {
+        const int margin
+            = grid->getGridBoundaryRegion().getMarginBeyond(band, normal);
+        return high ? band.xMax() + margin : band.xMin() - margin;
+      }
+      case kCore:
+      case kFixed:
+        // the core is where the row already ends
+        break;
+    }
+    return high ? band.xMax() : band.xMin();
+  };
 
   odb::dbNet* power = getDomain()->getPower();
   odb::dbNet* ground = getDomain()->getGround();
@@ -575,18 +672,31 @@ void FollowPins::makeShapes(const Shape::ShapeTreeMap& other_shapes)
                getBlock()->dbuToMicrons(rail_pitch),
                start_with_power ? "power" : "ground");
 
-    int x0 = bbox.xMin();
-    if (x0 == core.xMin()) {
-      x0 = x_start;
-    }
-    int x1 = bbox.xMax();
-    if (x1 == core.xMax()) {
-      x1 = x_end;
-    }
+    // A rail is extended off the end of its row when that end is on the edge
+    // of the core, which is where the ring or the boundary it is being
+    // extended to sits.  Asking the outline whether there is any core further
+    // along is what says so: comparing against the bounding box instead, as
+    // this did, only recognises the rows reaching the widest part of a polygon
+    // core and leaves every rail in a narrower arm short of the ring beside it.
+    const bool extend_low
+        = domain.getMarginBeyond(bbox, odb::Point(-1, 0)) == 0;
+    const bool extend_high
+        = domain.getMarginBeyond(bbox, odb::Point(1, 0)) == 0;
 
     bool do_power = start_with_power;
     for (int y = bbox.yMin(); y <= bbox.yMax(); y += rail_pitch) {
       const int y_start = y - width / 2;
+      const odb::Rect band(bbox.xMin(), y_start, bbox.xMax(), y_start + width);
+
+      int x0 = bbox.xMin();
+      if (extend_low) {
+        x0 = std::min(x0, reach(band, odb::Point(-1, 0)));
+      }
+      int x1 = bbox.xMax();
+      if (extend_high) {
+        x1 = std::max(x1, reach(band, odb::Point(1, 0)));
+      }
+
       auto strap = std::make_unique<FollowPinShape>(
           layer,
           do_power ? power : ground,
