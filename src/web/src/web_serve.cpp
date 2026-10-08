@@ -6,11 +6,17 @@
 // references (which would require the full gui library including Qt
 // SWIG wrappers and ord::OpenRoad symbols).
 
+#include <fcntl.h>
+#include <spawn.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -124,6 +130,103 @@ class WebLogSink : public spdlog::sinks::base_sink<std::mutex>
   WebViewerHook* hook_;
   std::string pending_;
 };
+
+#if !defined(__APPLE__) && !defined(_WIN32)
+// The executable of the user's default browser if it is one known to accept
+// --new-window, else nullptr.
+static const char* newWindowBrowser()
+{
+  // Desktop entry, as xdg-settings reports it, to executable.  All are
+  // Firefox or Chromium based, and both accept --new-window.
+  static constexpr std::pair<const char*, const char*> kBrowsers[] = {
+      {"firefox.desktop", "firefox"},
+      {"firefox_firefox.desktop", "firefox"},  // snap
+      {"firefox-esr.desktop", "firefox-esr"},
+      {"google-chrome.desktop", "google-chrome"},
+      {"com.google.Chrome.desktop", "google-chrome"},
+      {"chromium.desktop", "chromium"},
+      {"chromium-browser.desktop", "chromium-browser"},
+      {"chromium_chromium.desktop", "chromium"},  // snap
+  };
+
+  std::string desktop;
+  if (FILE* pipe
+      = popen("xdg-settings get default-web-browser < /dev/null 2> /dev/null",
+              "r")) {
+    char line[256];
+    if (std::fgets(line, sizeof(line), pipe) != nullptr) {
+      desktop = line;
+    }
+    pclose(pipe);
+  }
+  while (!desktop.empty()
+         && std::isspace(static_cast<unsigned char>(desktop.back()))) {
+    desktop.pop_back();
+  }
+
+  for (const auto& [entry, executable] : kBrowsers) {
+    if (desktop == entry) {
+      return executable;
+    }
+  }
+  return nullptr;
+}
+
+// Opens `url` in a new window of the default browser.  Returns false if it
+// could not, so the caller can fall back to xdg-open, which passes no flags
+// through to the browser.
+static bool openInNewWindow(const std::string& url)
+{
+  const char* browser = newWindowBrowser();
+  if (browser == nullptr) {
+    return false;
+  }
+
+  // A new session and no pty, for the reasons given at the xdg-open launch
+  // in serve().
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+  posix_spawn_file_actions_t io;
+  posix_spawn_file_actions_init(&io);
+  posix_spawn_file_actions_addopen(&io, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_addopen(
+      &io, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+  posix_spawn_file_actions_addopen(
+      &io, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+
+  std::string program = browser;
+  std::string flag = "--new-window";
+  std::string target = url;
+  char* argv[] = {program.data(), flag.data(), target.data(), nullptr};
+  pid_t pid;
+  const int spawn_error
+      = posix_spawnp(&pid, browser, &io, &attr, argv, environ);
+  posix_spawn_file_actions_destroy(&io);
+  posix_spawnattr_destroy(&attr);
+  if (spawn_error != 0) {
+    return false;
+  }
+
+  // A browser that is already running hands the url over and exits, while
+  // one that is not keeps running as the browser itself.  So only a failing
+  // exit within the grace period counts as failure.
+  constexpr auto kGracePeriod = std::chrono::seconds(3);
+  const auto deadline = std::chrono::steady_clock::now() + kGracePeriod;
+  while (std::chrono::steady_clock::now() < deadline) {
+    int status = 0;
+    if (waitpid(pid, &status, WNOHANG) == pid) {
+      return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  // Still running, so this is the browser.  Reap it when it exits so it does
+  // not linger as a zombie.
+  std::thread([pid] { waitpid(pid, nullptr, 0); }).detach();
+  return true;
+}
+#endif
 
 void WebServer::initLogger()
 {
@@ -391,6 +494,7 @@ void WebServer::serve(int port, const std::string& bind_address)
     logger_->info(utl::WEB, 1, "Server started on {}.", url);
 
     // Open the url with the default browser
+    bool opened = false;
 #if defined(__APPLE__)
     std::string open_cmd = "open " + url + " > /dev/null 2> " + errfile;
 #elif defined(_WIN32)
@@ -407,8 +511,10 @@ void WebServer::serve(int port, const std::string& bind_address)
     // can be forwarded to setsid
     std::string open_cmd = "setsid -f -w xdg-open " + url
                            + " < /dev/null > /dev/null 2> " + errfile;
+    // Prefer a new window, falling back to xdg-open when that fails.
+    opened = openInNewWindow(url);
 #endif
-    int ret = std::system(open_cmd.c_str());
+    int ret = opened ? 0 : std::system(open_cmd.c_str());
     if (ret != 0) {
       std::ifstream err(errfile);
       std::string errout = "";
